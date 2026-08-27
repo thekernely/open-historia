@@ -212,11 +212,11 @@ function World({ mapRef, projection, terrainEnabled, onInitialIdle }) {
 
   const handleMove = useCallback(({ viewState }) => {
     viewStateRef.current = viewState;
-    applyDynamicPixelRatio(viewState.zoom);
-  }, [applyDynamicPixelRatio]);
+  }, []);
   const handleIdle = useCallback(() => {
-    // The soft ratio applies from the very first frame settled at world zoom —
-    // not only after the player first moves the camera.
+    // Change render density only after camera motion has settled. setPixelRatio
+    // rebuilds render targets, so doing it mid-zoom can turn one threshold
+    // crossing into a visible hitch.
     applyDynamicPixelRatio(viewStateRef.current?.zoom ?? 0);
     if (hasReportedInitialIdleRef.current) return;
     hasReportedInitialIdleRef.current = true;
