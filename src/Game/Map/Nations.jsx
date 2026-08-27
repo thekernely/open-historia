@@ -189,9 +189,13 @@ const buildStripeImage = (rgbList) => {
 
 // Neutral tone for unowned custom regions (land with no owner code).
 const NEUTRAL_LAND_COLOR = "rgb(88, 98, 110)";
-// Constant GL expression — the colour data is baked into each feature's
-// _fillColor property by enrichedCustomRegionData above.
-const CUSTOM_FILL_COLOR = ["get", "_fillColor"];
+// Keep the hot paint path tiny. Base colour is baked once into the GeoJSON;
+// only live ownership changes ride feature-state, so territory updates don't
+// rebuild the multi-million-vertex source.
+const CUSTOM_FILL_COLOR = [
+  "to-color",
+  ["coalesce", ["feature-state", "fillColor"], ["get", "_fillColor"], NEUTRAL_LAND_COLOR],
+];
 
 // GADM region ids contain a dot ("DEU.2_1"); author-drawn regions ("reg_...")
 // don't. On custom maps, GADM regions crossfade between two sources: the seed
@@ -860,80 +864,71 @@ const WorldMap = ({ isGlobe = false }) => {
     };
   }, [colorMap, regionOwnershipOverrides, ownerColorCss]);
 
-  // Fill for custom (editor) regions: we pre-compute a _fillColor property onto
-  // every feature so the MapLibre paint expression is just ["get", "_fillColor"]
-  // — a constant GL expression that never needs recompilation. Ownership-override
-  // colours, owner-based colours, and the neutral fallback are all computed in
-  // fast JS and baked into the GeoJSON data itself.
-  const enrichedCustomRegionData = useMemo(() => {
+  // Bake only scenario/base colours into the heavy GeoJSON. Live ownership is
+  // applied with feature-state below, so changing one region does not clone and
+  // resend every polygon in the world.
+  const baseCustomRegionData = useMemo(() => {
     if (!customRegionData?.features) return customRegionData;
-
-    const overrideColor = {};
-    for (const [regionId, ownerCode] of Object.entries(regionOwnershipOverrides)) {
-      overrideColor[regionId] = ownerColorCss(ownerCode);
-    }
-
-    const rgbForOwner = (owner) => resolveOwnerRgb(owner) ?? fallbackRgbFromOwner(owner);
-
     return {
       ...customRegionData,
-      features: customRegionData.features.map((f) => {
-        const props = f.properties || {};
-        const id = props.id;
-        let fillColor;
-        if (overrideColor[id]) {
-          fillColor = overrideColor[id];
-        } else if (props.owner) {
-          fillColor = ownerColorCss(props.owner);
-        } else {
-          fillColor = NEUTRAL_LAND_COLOR;
-        }
-        // Disputed regions carry a stripe-tile id built from the current
-        // administrator's color plus every claimant's — the layers below select
-        // on _stripes and paint with fill-pattern instead of the solid fill.
-        // Claimants come from WORLD data first (regionClaimants — how the
-        // modern-world scenario declares its disputes, since its geometry is an
-        // immutable seed), then from the region feature's own claimants prop
-        // (editor-authored maps).
-        let stripes = null;
-        const claimants = regionClaimants[id]?.length
-          ? regionClaimants[id]
-          : Array.isArray(props.claimants) && props.claimants.length > 0
-            ? props.claimants
-            : null;
-        if (claimants) {
-          const liveOwner = regionOwnershipOverrides[id] ?? props.owner ?? "";
-          const seen = new Set();
-          const stripeRgbs = [];
-          for (const name of (liveOwner ? [liveOwner, ...claimants] : claimants)) {
-            const key = String(name ?? "").trim();
-            if (!key || seen.has(key)) continue;
-            seen.add(key);
-            stripeRgbs.push(rgbForOwner(key));
-          }
-          if (stripeRgbs.length >= 2) stripes = stripeImageId(stripeRgbs);
-        }
+      features: customRegionData.features.map((feature) => {
+        const props = feature.properties || {};
+        const fillColor = props.owner ? ownerColorCss(props.owner) : NEUTRAL_LAND_COLOR;
         return {
-          ...f,
-          properties: stripes
-            ? { ...props, _fillColor: fillColor, _stripes: stripes }
-            : { ...props, _fillColor: fillColor },
+          ...feature,
+          properties: { ...props, _fillColor: fillColor },
         };
       }),
     };
-  }, [customRegionData, colorMap, regionOwnershipOverrides, regionClaimants, ownerColorCss, resolveOwnerRgb]);
+  }, [customRegionData, colorMap, ownerColorCss]);
 
-  // GADM disputed regions also paint the stock tiles (the crisp z>6.5 layer):
-  // GID_1 -> stripe-tile id stops for the tile twin of the disputed layer.
-  const disputedTileStops = useMemo(() => {
+  // fill-pattern cannot use feature-state, but disputed regions are a tiny set.
+  // Keep their live pattern table in the style instead of stamping it into the
+  // full GeoJSON source.
+  const disputedRegionStops = useMemo(() => {
     const stops = [];
-    for (const f of enrichedCustomRegionData?.features ?? []) {
-      const props = f.properties || {};
-      if (!props._stripes || !String(props.id ?? "").includes(".")) continue;
-      stops.push(String(props.id), props._stripes);
+    const rgbForOwner = (owner) => resolveOwnerRgb(owner) ?? fallbackRgbFromOwner(owner);
+    for (const feature of customRegionData?.features ?? []) {
+      const props = feature.properties || {};
+      const id = String(props.id ?? "");
+      if (!id) continue;
+
+      const claimants = regionClaimants[id]?.length
+        ? regionClaimants[id]
+        : Array.isArray(props.claimants) && props.claimants.length > 0
+          ? props.claimants
+          : null;
+      if (!claimants) continue;
+
+      const liveOwner = regionOwnershipOverrides[id] ?? props.owner ?? "";
+      const seen = new Set();
+      const stripeRgbs = [];
+      for (const name of (liveOwner ? [liveOwner, ...claimants] : claimants)) {
+        const key = String(name ?? "").trim();
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        stripeRgbs.push(rgbForOwner(key));
+      }
+      if (stripeRgbs.length >= 2) stops.push(id, stripeImageId(stripeRgbs));
     }
     return stops;
-  }, [enrichedCustomRegionData]);
+  }, [customRegionData, regionOwnershipOverrides, regionClaimants, resolveOwnerRgb]);
+
+  const disputedRegionIds = useMemo(
+    () => disputedRegionStops.filter((_, index) => index % 2 === 0),
+    [disputedRegionStops],
+  );
+
+  // GADM disputed regions also paint the stock tiles (the crisp z>6.5 layer).
+  const disputedTileStops = useMemo(() => {
+    const stops = [];
+    for (let index = 0; index < disputedRegionStops.length; index += 2) {
+      if (String(disputedRegionStops[index]).includes(".")) {
+        stops.push(disputedRegionStops[index], disputedRegionStops[index + 1]);
+      }
+    }
+    return stops;
+  }, [disputedRegionStops]);
 
   // Region id -> current owner (live overrides win). Drives the stock-tile fill,
   // and the click handler uses it to resolve era owner/unclaimed for the popup.
@@ -952,6 +947,58 @@ const WorldMap = ({ isGlobe = false }) => {
   useEffect(() => {
     ownerLookupRef.current = ownerByRegionId;
   }, [ownerByRegionId]);
+
+  // Apply only changed live ownership colours to the GeoJSON source. MapLibre
+  // keeps feature-state outside the source data, so the geometry stays untouched.
+  const appliedRegionFillStateRef = useRef(new Map());
+  const featureStateGeometryRef = useRef(null);
+  useEffect(() => {
+    const mapInstance = map?.getMap ? map.getMap() : map;
+    if (!mapInstance?.getSource || !customActive) {
+      appliedRegionFillStateRef.current = new Map();
+      featureStateGeometryRef.current = customRegionData;
+      return;
+    }
+
+    const source = mapInstance.getSource("custom-regions-source");
+    if (!source) return;
+
+    if (featureStateGeometryRef.current !== customRegionData) {
+      try {
+        mapInstance.removeFeatureState({ source: "custom-regions-source" });
+      } catch {
+        // Source may still be mounting during a scenario switch; the next
+        // ownership/world update will apply the current state.
+      }
+      appliedRegionFillStateRef.current = new Map();
+      featureStateGeometryRef.current = customRegionData;
+    }
+
+    const previous = appliedRegionFillStateRef.current;
+    const next = new Map();
+    for (const [regionId, owner] of Object.entries(regionOwnershipOverrides)) {
+      const id = String(regionId ?? "");
+      if (!id) continue;
+      next.set(id, owner ? ownerColorCss(owner) : NEUTRAL_LAND_COLOR);
+    }
+
+    for (const [id, fillColor] of next) {
+      if (previous.get(id) === fillColor) continue;
+      mapInstance.setFeatureState(
+        { source: "custom-regions-source", id },
+        { fillColor },
+      );
+    }
+    for (const id of previous.keys()) {
+      if (next.has(id)) continue;
+      mapInstance.removeFeatureState(
+        { source: "custom-regions-source", id },
+        "fillColor",
+      );
+    }
+
+    appliedRegionFillStateRef.current = next;
+  }, [map, customActive, customRegionData, regionOwnershipOverrides, ownerColorCss]);
 
 
 
@@ -1136,7 +1183,7 @@ const WorldMap = ({ isGlobe = false }) => {
           and each region simplifies independently — shared borders drift
           apart at low zoom. Full resolution keeps them connected everywhere;
           the seed geometry is coarse enough that this stays cheap. */}
-      <Source id="custom-regions-source" type="geojson" data={enrichedCustomRegionData} tolerance={0.6}>
+      <Source id="custom-regions-source" type="geojson" data={baseCustomRegionData} promoteId="id" tolerance={0.6}>
         {/* coarse seed geometry sits underneath the tile layer as a safety net.
             black holes are a worse fallback than slightly soft borders. */}
         <Layer
@@ -1172,25 +1219,35 @@ const WorldMap = ({ isGlobe = false }) => {
             all-zoom twin for author-drawn shapes. The stripes REPLACE the solid
             look (they sit above it at the same opacity, administrator's color
             first), so a contested border reads at a glance. */}
-        <Layer
-          id="custom-regions-disputed-far"
-          type="fill"
-          maxzoom={7}
-          filter={["all", STOCK_GEOMETRY_FILTER, ["has", "_stripes"]]}
-          paint={{ "fill-pattern": ["get", "_stripes"], "fill-opacity": customActive ? FAR_OVERLAY_FADE : 0 }}
-        />
+        {disputedRegionStops.length > 0 && (
+          <Layer
+            id="custom-regions-disputed-far"
+            type="fill"
+            maxzoom={7}
+            filter={["all", STOCK_GEOMETRY_FILTER, ["in", ["get", "id"], ["literal", disputedRegionIds]]]}
+            paint={{
+              "fill-pattern": ["match", ["get", "id"], ...disputedRegionStops, disputedRegionStops[1]],
+              "fill-opacity": customActive ? FAR_OVERLAY_FADE : 0,
+            }}
+          />
+        )}
         <Layer
           id="custom-regions-fill"
           type="fill"
           filter={AUTHORED_GEOMETRY_FILTER}
           paint={{ "fill-color": CUSTOM_FILL_COLOR, "fill-opacity": 0.72 }}
         />
-        <Layer
-          id="custom-regions-disputed"
-          type="fill"
-          filter={["all", AUTHORED_GEOMETRY_FILTER, ["has", "_stripes"]]}
-          paint={{ "fill-pattern": ["get", "_stripes"], "fill-opacity": customActive ? 0.72 : 0 }}
-        />
+        {disputedRegionStops.length > 0 && (
+          <Layer
+            id="custom-regions-disputed"
+            type="fill"
+            filter={["all", AUTHORED_GEOMETRY_FILTER, ["in", ["get", "id"], ["literal", disputedRegionIds]]]}
+            paint={{
+              "fill-pattern": ["match", ["get", "id"], ...disputedRegionStops, disputedRegionStops[1]],
+              "fill-opacity": customActive ? 0.72 : 0,
+            }}
+          />
+        )}
         <Layer
           id="custom-regions-outline"
           type="line"
