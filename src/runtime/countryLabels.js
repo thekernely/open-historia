@@ -648,8 +648,8 @@ const buildGentleWorldWarpPath = (pathInfo, name) => {
     (points[0][1] + points[2][1]) / 2,
   ];
   points[1] = [
-    points[1][0] * 0.62 + chordMid[0] * 0.38,
-    points[1][1] * 0.62 + chordMid[1] * 0.38,
+    points[1][0] * 0.78 + chordMid[0] * 0.22,
+    points[1][1] * 0.78 + chordMid[1] * 0.22,
   ];
 
   const length = getPolylineLength(points);
@@ -922,27 +922,19 @@ const buildCountryLabelCollections = async (tileData, ownedCodes = null) => {
 // visibility and diagnostics all consume the SAME decision so we cannot fix one
 // layer and accidentally leave another with stale thresholds.
 export const POLITY_LABEL_TIERS = Object.freeze([
-  // R6 freezes the successful R4/R5 overview coverage, but adds a separate
-  // close-zoom guarantee. Collision management may defer a small neighbour at
-  // regional zoom; once the camera is close enough, the label is allowed to
-  // overlap rather than vanish forever. Visibility, warping and collision are
-  // therefore three independent policies instead of one overloaded threshold.
-  { id: "continental", minZoom: 0.80, curveMinZoom: 3.85, forceOverlapZoom: 0.80, minScale: 170000, maxScale: Infinity, allowOverlap: true },
-  { id: "major", minZoom: 1.15, curveMinZoom: 4.05, forceOverlapZoom: 1.15, minScale: 65000, maxScale: 170000, allowOverlap: true },
-  { id: "regional", minZoom: 1.75, curveMinZoom: 4.40, forceOverlapZoom: 4.80, minScale: 22000, maxScale: 65000, allowOverlap: false },
-  { id: "small", minZoom: 2.45, curveMinZoom: 4.75, forceOverlapZoom: 5.20, minScale: 7500, maxScale: 22000, allowOverlap: false },
-  { id: "local", minZoom: 3.25, curveMinZoom: 5.10, forceOverlapZoom: 5.65, minScale: 0, maxScale: 7500, allowOverlap: false },
+  // Entry zoom, collision escalation, and typography are independent. Major
+  // atlas labels are already readable at the repeated-world view; increasingly
+  // small polities enter in later bands instead of all competing at once.
+  { id: "continental", minZoom: 0.55, curveMinZoom: 0.55, forceOverlapZoom: 0.55, minScale: 170000, maxScale: Infinity, allowOverlap: true, minFontPx: 10.5 },
+  { id: "major", minZoom: 0.85, curveMinZoom: 0.85, forceOverlapZoom: 0.85, minScale: 65000, maxScale: 170000, allowOverlap: true, minFontPx: 9.0 },
+  { id: "regional", minZoom: 1.20, curveMinZoom: 1.20, forceOverlapZoom: 3.20, minScale: 22000, maxScale: 65000, allowOverlap: false, minFontPx: 7.5 },
+  { id: "small", minZoom: 2.00, curveMinZoom: 2.00, forceOverlapZoom: 4.15, minScale: 7500, maxScale: 22000, allowOverlap: false, minFontPx: 6.5 },
+  { id: "local", minZoom: 2.80, curveMinZoom: 2.80, forceOverlapZoom: 4.90, minScale: 0, maxScale: 7500, allowOverlap: false, minFontPx: 5.75 },
 ]);
 
 export const curveMinZoomForPolityLabelTier = (tier, band = "standard") => {
   if (!tier) return null;
-  if (band === "world") {
-    return Math.max(tier.minZoom + 0.15, 0.95);
-  }
-  if (band === "early") {
-    return Math.max(tier.minZoom + 0.75, tier.curveMinZoom - 0.55);
-  }
-  return tier.curveMinZoom;
+  return tier.minZoom;
 };
 
 const REFERENCE_ZOOM = 4;
@@ -1241,28 +1233,12 @@ const cartographicPolygonSetsForOwner = (owner, allPolygons) => {
   };
 };
 
-export const selectPolityPointFallbacks = (pointLabelData, renderedWarpOwners = new Set()) => {
-  const features = Array.isArray(pointLabelData?.features) ? pointLabelData.features : [];
-  const visibleWarpOwners = renderedWarpOwners instanceof Set
-    ? renderedWarpOwners
-    : new Set(renderedWarpOwners ?? []);
-  return {
-    type: "FeatureCollection",
-    features: features.filter((feature) => {
-      const props = feature?.properties ?? {};
-      if (props.presentation !== "overview") return true;
-      return !visibleWarpOwners.has(String(props.owner ?? ""));
-    }),
-  };
-};
-
 // Map vNext labels are generated from the same live dissolved polity surfaces
 // that paint the political map. There is ONE canonical logical record per owner.
-// Rendering derives a guaranteed overview point plus an optional curved detail
-// line from that record; their zoom ranges are disjoint in Nations.jsx. This is
-// deliberately different from R2's one-geometry-only model, because diagnostics
-// proved every missing world/regional label was a line-mode polity while every
-// visible peer was point-mode.
+// Rendering derives exactly one native symbol from that record: a whole-word
+// territory-following line when the geometry is safe, otherwise a fitted point.
+// This prevents duplicates, camera-event lag, and the blank handoff band that
+// occurred when point and line renderers traded ownership at different zooms.
 export const buildPolityLabelCollections = (
   politySurfaces,
   { nameResolver = (owner) => owner, extent = 4096 } = {},
@@ -1349,42 +1325,37 @@ export const buildPolityLabelCollections = (
     const turnDegrees = safeWarpPath?.totalTurnDegrees
       ?? (rawPathInfo ? getTotalTurnDegrees(rawPathInfo.points) : 0);
 
-    // R7 never hands a polity over to MapLibre's line renderer merely because a
-    // geometric spine exists. The path must survive a second renderer-safety
-    // pass first. If it does not, the polity remains on the point presentation
-    // at every zoom, which makes a one-click zoom incapable of deleting a name.
+    // A polity gets one renderer for its entire lifetime. If a safe interior
+    // spine exists, the whole word follows that spine at every eligible zoom;
+    // otherwise the fitted point form remains authoritative. Camera movement
+    // never swaps between the two forms.
     const visibilityScale = visibilityScaleFor(priorityScale, upperName);
-    // World-scale bending is deliberately rare and gentle. Only very large
-    // labels qualify; ordinary countries keep the fitted/rotated point form
-    // until the existing regional/detail warp thresholds.
+    // Continental and major countries use a deliberately gentle world path.
+    // Regional/small elongated shapes use the fuller safe path, which lets
+    // France, Spain, Ukraine, Poland and similar territories read as part of
+    // their shape without splitting the word into detached glyphs.
     const worldCurve = Boolean(
-      visibilityScale >= 400000
+      visibilityScale >= 65000
       && worldWarpPath?.points?.length === 3
-      && worldWarpPath.length >= Math.max(170, compactNameLength * 16)
-      && worldWarpPath.width >= Math.max(48, compactNameLength * 3.25)
+      && worldWarpPath.length >= Math.max(132, compactNameLength * 12)
+      && worldWarpPath.width >= Math.max(34, compactNameLength * 2.5)
       && worldWarpPath.totalTurnDegrees <= 42
       && worldWarpPath.maxSegmentTurnDegrees <= 42
     );
-    const continentalCurve = Boolean(
-      visibilityScale >= 170000
+    const territorialCurve = Boolean(
+      visibilityScale >= 7500
       && safeWarpPath?.points?.length >= 5
-      && safeWarpPath.length >= Math.max(120, compactNameLength * 11)
-      && safeWarpPath.width >= Math.max(38, compactNameLength * 3.0)
-      && safeWarpPath.totalTurnDegrees <= 92
-      && safeWarpPath.maxSegmentTurnDegrees <= 32
-      && aspectRatio >= 1.18
+      && safeWarpPath.length >= Math.max(88, compactNameLength * 10.5)
+      && safeWarpPath.width >= Math.max(18, compactNameLength * 1.75)
+      && safeWarpPath.totalTurnDegrees <= 96
+      && safeWarpPath.maxSegmentTurnDegrees <= 34
     );
-    const elongatedCurve = Boolean(
-      visibilityScale >= 22000
-      && safeWarpPath?.points?.length >= 5
-      && safeWarpPath.length >= Math.max(104, compactNameLength * 11)
-      && safeWarpPath.width >= Math.max(24, compactNameLength * 2.25)
-      && safeWarpPath.totalTurnDegrees <= 82
-      && safeWarpPath.maxSegmentTurnDegrees <= 30
-      && axisAspectRatio >= 1.52
-    );
-    const lineEligible = worldCurve || continentalCurve || elongatedCurve;
-    const linePathInfo = worldCurve ? worldWarpPath : lineEligible ? safeWarpPath : null;
+    const lineEligible = worldCurve || territorialCurve;
+    const linePathInfo = worldCurve
+      ? (safeWarpPath ?? worldWarpPath)
+      : territorialCurve
+        ? safeWarpPath
+        : null;
 
     const anchorPath = linePathInfo ?? rawPathInfo;
     const centerSample = anchorPath?.points?.length >= 4
@@ -1408,16 +1379,10 @@ export const buildPolityLabelCollections = (
       : null;
     const featureId = ownerFeatureId(owner);
     const rotation = axisMetrics.angle;
-    // Strongly elongated states benefit from their territory-following form
-    // earlier than generic continental curves. This specifically prevents the
-    // point fallback from becoming a giant NORWAY/CHILE banner just before the
-    // warped label would otherwise take over.
     const curveBand = worldCurve
       ? "world"
-      : lineEligible && elongatedCurve && !continentalCurve
-        ? "early"
-        : lineEligible
-          ? "standard"
+      : lineEligible
+          ? "detail"
           : "none";
     const curveMinZoom = lineEligible
       ? curveMinZoomForPolityLabelTier(tier, curveBand)
@@ -1432,6 +1397,7 @@ export const buildPolityLabelCollections = (
       curveBand,
       forceOverlapZoom: tier.forceOverlapZoom,
       allowOverlap: tier.allowOverlap,
+      minFontPx: tier.minFontPx,
       areaScale: priorityScale,
       priorityScale,
       visibilityScale: Number(visibilityScale.toFixed(2)),
@@ -1463,7 +1429,7 @@ export const buildPolityLabelCollections = (
       geometry: { type: "Point", coordinates: [anchorLng, lat] },
       properties: {
         ...common,
-        mode: lineEligible ? "hybrid" : "point",
+        mode: lineEligible ? "line" : "point",
         fitScale: pointTypography.fitScale,
         fontPxAtZoom4: pointTypography.fontPxAtZoom4,
         letterSpacing: pointTypography.letterSpacing,
@@ -1473,24 +1439,6 @@ export const buildPolityLabelCollections = (
         lineLetterSpacing: lineTypography?.letterSpacing ?? null,
         lineTargetOccupancy: lineTypography?.targetOccupancy ?? null,
         lineEstimatedOccupancy: lineTypography?.estimatedOccupancy ?? null,
-      },
-    });
-
-    // Guaranteed overview renderer. For line-capable polities Nations.jsx shows
-    // this only below curveMinZoom; point-only polities keep it through z7.1.
-    pointFeatures.push({
-      type: "Feature",
-      id: `${featureId}-point`,
-      geometry: { type: "Point", coordinates: [anchorLng, lat] },
-      properties: {
-        ...common,
-        mode: "point",
-        presentation: lineEligible ? "overview" : "persistent",
-        fitScale: pointTypography.fitScale,
-        fontPxAtZoom4: pointTypography.fontPxAtZoom4,
-        letterSpacing: pointTypography.letterSpacing,
-        targetOccupancy: pointTypography.targetOccupancy,
-        estimatedOccupancy: pointTypography.estimatedOccupancy,
       },
     });
 
@@ -1505,12 +1453,28 @@ export const buildPolityLabelCollections = (
         properties: {
           ...common,
           mode: "line",
-          presentation: "detail",
+          presentation: "persistent",
           fitScale: lineTypography.fitScale,
           fontPxAtZoom4: lineTypography.fontPxAtZoom4,
           letterSpacing: lineTypography.letterSpacing,
           targetOccupancy: lineTypography.targetOccupancy,
           estimatedOccupancy: lineTypography.estimatedOccupancy,
+        },
+      });
+    } else {
+      pointFeatures.push({
+        type: "Feature",
+        id: `${featureId}-point`,
+        geometry: { type: "Point", coordinates: [anchorLng, lat] },
+        properties: {
+          ...common,
+          mode: "point",
+          presentation: "persistent",
+          fitScale: pointTypography.fitScale,
+          fontPxAtZoom4: pointTypography.fontPxAtZoom4,
+          letterSpacing: pointTypography.letterSpacing,
+          targetOccupancy: pointTypography.targetOccupancy,
+          estimatedOccupancy: pointTypography.estimatedOccupancy,
         },
       });
     }
@@ -1576,6 +1540,7 @@ export const buildPolityLabelCollections = (
           curveBand: "none",
           forceOverlapZoom: territoryTier.forceOverlapZoom,
           allowOverlap: true,
+          minFontPx: territoryTier.minFontPx,
           areaScale: territoryPriority,
           priorityScale: territoryPriority,
           visibilityScale: Number(territoryVisibility.toFixed(2)),

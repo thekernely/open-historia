@@ -30,7 +30,6 @@ import { toCountryName } from "../../runtime/ownerNames.js";
 import {
   buildPolityLabelCollections,
   loadCountryLabelCollections,
-  selectPolityPointFallbacks,
   summarizePolityLabelDiagnostics,
 } from "../../runtime/countryLabels.js";
 import { translateLabel } from "../../runtime/translator.js";
@@ -64,13 +63,19 @@ const buildCountryTextSize = (
   correctForGlobe = false,
   maxSize = 254,
   scaleProperty = "areaScale",
+  minSizeProperty = null,
 ) => {
   const scale = correctForGlobe ? ["*", multiplier, GLOBE_LAT_CORRECTION] : multiplier;
-  const atZoom = (power) => [
+  const atZoom = (power) => {
+    const scaledSize = [
     "min",
     maxSize,
     ["*", scale, ["*", ["get", scaleProperty], ["^", 2, power]]],
-  ];
+    ];
+    return minSizeProperty
+      ? ["max", ["coalesce", ["get", minSizeProperty], 0], scaledSize]
+      : scaledSize;
+  };
 
   return [
     "interpolate", ["exponential", 2], ["zoom"],
@@ -589,10 +594,6 @@ const WorldMap = ({ isGlobe = false, vNext = false }) => {
   const [polityBoundaryData, setPolityBoundaryData] = useState(EMPTY_FEATURE_COLLECTION);
   const [politySurfaceData, setPolitySurfaceData] = useState(EMPTY_FEATURE_COLLECTION);
   const [labelZoom, setLabelZoom] = useState(3.5);
-  // R5.4.6: owners whose curved polity label MapLibre has actually confirmed
-  // as rendered after the map settles. A curve-capable point fallback is never
-  // hidden from theoretical zoom eligibility alone.
-  const [renderConfirmedCurveOwners, setRenderConfirmedCurveOwners] = useState([]);
   const polityBoundaryWorkerRef = useRef(null);
   const initialFramingAppliedRef = useRef(false);
   const latestBoundaryRequestRef = useRef(0);
@@ -733,75 +734,6 @@ const WorldMap = ({ isGlobe = false, vNext = false }) => {
 
   const useLivePolityLabels = vNext && polityLabelCollections.labelData.features.length > 0;
 
-  // R5.4.6: renderer-confirmed polity label handoff.
-  //
-  // The previous rule hid/demoted point fallbacks once a curve crossed its
-  // theoretical zoom threshold. That can still leave a blank label when
-  // MapLibre declines to place the line. Keep point fallbacks guaranteed while
-  // the camera moves, then inspect ONLY the two live polity curve layers after
-  // MapLibre reaches idle. No source mutation, no setData(), and no movement-
-  // time renderer scan.
-  useEffect(() => {
-    const mapInstance = map?.getMap ? map.getMap() : map;
-    if (!vNext || !customFlag || !useLivePolityLabels || !mapInstance?.on) {
-      setRenderConfirmedCurveOwners((current) => (current.length ? [] : current));
-      return undefined;
-    }
-
-    const clearRenderConfirmation = () => {
-      // During camera movement prefer a brief point+curve duplicate over a
-      // missing polity name. This is one bounded filter-state change at movement
-      // start; it does not rebuild either GeoJSON source.
-      setRenderConfirmedCurveOwners((current) => (current.length ? [] : current));
-    };
-
-    const confirmRenderedCurves = () => {
-      if (mapInstance.isMoving?.() || mapInstance.isZooming?.()) return;
-      if (!mapInstance.queryRenderedFeatures) return;
-
-      const curveLayers = [
-        "country-line-labels-live-world",
-        "country-line-labels-live-detail",
-      ].filter((layerId) => mapInstance.getLayer?.(layerId));
-
-      if (!curveLayers.length) {
-        clearRenderConfirmation();
-        return;
-      }
-
-      let rendered = [];
-      try {
-        rendered = mapInstance.queryRenderedFeatures({ layers: curveLayers }) ?? [];
-      } catch {
-        // A style remount can invalidate a layer between getLayer() and query.
-        // Fail safe to the guaranteed point labels and wait for the next idle.
-        clearRenderConfirmation();
-        return;
-      }
-
-      const nextOwners = [...new Set(
-        rendered
-          .map((feature) => String(feature?.properties?.owner ?? "").trim())
-          .filter(Boolean),
-      )].sort();
-
-      setRenderConfirmedCurveOwners((current) => {
-        if (
-          current.length === nextOwners.length
-          && current.every((owner, index) => owner === nextOwners[index])
-        ) return current;
-        return nextOwners;
-      });
-    };
-
-    mapInstance.on("movestart", clearRenderConfirmation);
-    mapInstance.on("idle", confirmRenderedCurves);
-    return () => {
-      mapInstance.off("movestart", clearRenderConfirmation);
-      mapInstance.off("idle", confirmRenderedCurves);
-    };
-  }, [customFlag, map, useLivePolityLabels, vNext]);
-
   // Development-time proof instead of screenshot guesswork. One authoritative
   // record per polity is exposed for inspection and the known regression set is
   // printed whenever live label geometry changes.
@@ -902,15 +834,9 @@ const WorldMap = ({ isGlobe = false, vNext = false }) => {
     : EMPTY_FEATURE_COLLECTION;
   const currentLabelZoom = Number(labelZoom ?? 3.5);
 
-  // R5.4.6: render-confirmed handoff. Curve-capable polities never enter the
-  // collision-managed fallback layer. Their point label remains in the
-  // guaranteed overlap layer until an idle-time renderer check confirms that
-  // MapLibre actually drew the curve for that owner.
-  const renderedCurveOwnersLiteral = useMemo(
-    () => ["literal", renderConfirmedCurveOwners],
-    [renderConfirmedCurveOwners],
-  );
-
+  // A polity is assigned to exactly one renderer by the geometry builder:
+  // either an atomic native line label or an atomic fitted point label. Zoom
+  // controls visibility only; it never swaps renderer type after camera input.
   const livePointManagedFilter = useMemo(() => [
     "all",
     ["<=", ["coalesce", ["get", "minZoom"], 0], currentLabelZoom],
@@ -922,47 +848,26 @@ const WorldMap = ({ isGlobe = false, vNext = false }) => {
   const livePointOverlapFilter = useMemo(() => [
     "all",
     ["<=", ["coalesce", ["get", "minZoom"], 0], currentLabelZoom],
+    ["==", ["coalesce", ["get", "curveBand"], "none"], "none"],
     [
       "any",
-      // Every curve-capable polity is guaranteed until its curve is visibly
-      // present in one of the two live curve layers after MapLibre reaches idle.
-      [
-        "all",
-        ["!=", ["coalesce", ["get", "curveBand"], "none"], "none"],
-        ["!", ["in", ["get", "owner"], renderedCurveOwnersLiteral]],
-      ],
-      // Point-only polities preserve their existing overlap policy.
-      [
-        "all",
-        ["==", ["coalesce", ["get", "curveBand"], "none"], "none"],
-        [
-          "any",
-          ["==", ["coalesce", ["get", "allowOverlap"], false], true],
-          ["<=", ["coalesce", ["get", "forceOverlapZoom"], 99], currentLabelZoom],
-        ],
-      ],
+      ["==", ["coalesce", ["get", "allowOverlap"], false], true],
+      ["<=", ["coalesce", ["get", "forceOverlapZoom"], 99], currentLabelZoom],
     ],
-  ], [currentLabelZoom, renderedCurveOwnersLiteral]);
+  ], [currentLabelZoom]);
 
   const liveWorldLineFilter = useMemo(() => [
     "all",
     ["==", ["get", "safeWarp"], true],
     ["==", ["coalesce", ["get", "curveBand"], "detail"], "world"],
-    ["<=", ["coalesce", ["get", "curveMinZoom"], 99], currentLabelZoom],
+    ["<=", ["coalesce", ["get", "minZoom"], 0], currentLabelZoom],
   ], [currentLabelZoom]);
 
   const liveDetailLineFilter = useMemo(() => [
     "all",
     ["==", ["get", "safeWarp"], true],
     ["!=", ["coalesce", ["get", "curveBand"], "detail"], "world"],
-    // Do not ask MapLibre to place the non-world curve at the exact theoretical
-    // threshold. Give it a small camera-space buffer, while the point label
-    // remains guaranteed through the same interval.
-    [
-      "<=",
-      ["+", ["coalesce", ["get", "curveMinZoom"], 99], 0.45],
-      currentLabelZoom,
-    ],
+    ["<=", ["coalesce", ["get", "minZoom"], 0], currentLabelZoom],
   ], [currentLabelZoom]);
 
   const activePointLabelData = !worldKnown
@@ -973,8 +878,7 @@ const WorldMap = ({ isGlobe = false, vNext = false }) => {
         : ownerLabelData
       : pointLabelData;
 
-  // Stock curved-label data remains separate. R5.4.6 renderer confirmation
-  // applies only to the two live custom-polity curve layers above.
+  // Stock curved-label data remains separate from the live custom-polity paths.
   const activeCurvedLabelData = worldKnown && !customFlag
     ? curvedLabelData
     : EMPTY_FEATURE_COLLECTION;
@@ -1808,7 +1712,7 @@ const WorldMap = ({ isGlobe = false, vNext = false }) => {
     ...pointLabelLayerLayout,
     // fitScale is solved from the actual territory width + name width at z4;
     // it then scales with the map at the same 2^zoom rate as the geometry.
-    "text-size": buildCountryTextSize(1, isGlobe, 148, "fitScale"),
+    "text-size": buildCountryTextSize(1, isGlobe, 148, "fitScale", "minFontPx"),
     "text-letter-spacing": ["coalesce", ["get", "letterSpacing"], 0.18],
     "text-allow-overlap": false,
     // Important tiers may still opt into overlap, but every placed polity label
@@ -1824,15 +1728,15 @@ const WorldMap = ({ isGlobe = false, vNext = false }) => {
     "text-font": labelFontStack,
     // Unlike R1, fitScale is the TARGET territory occupancy, not an area-based
     // size that is merely capped by the spine. This is what makes RUSSIA stretch.
-    "text-size": buildCountryTextSize(1, isGlobe, 300, "fitScale"),
+    "text-size": buildCountryTextSize(1, isGlobe, 300, "fitScale", "minFontPx"),
     "text-letter-spacing": ["coalesce", ["get", "letterSpacing"], 0.18],
-    // Pax-like warping should follow a territory, not corkscrew through it.
-    // A moderate max-angle keeps long labels visibly shaped by the polity while
-    // rejecting the extreme bends that previously made Bosnia-like cases ugly.
-    "text-max-angle": 48,
+    // Geometry is already simplified and turn-limited before it reaches
+    // MapLibre. A permissive renderer angle lets that vetted territorial bend
+    // survive intact instead of silently dropping the whole word.
+    "text-max-angle": 90,
     "text-padding": 1,
-    "text-allow-overlap": false,
-    "text-ignore-placement": false,
+    "text-allow-overlap": true,
+    "text-ignore-placement": true,
     "symbol-sort-key": ["-", ["coalesce", ["get", "visibilityScale"], ["get", "priorityScale"]]],
     "text-pitch-alignment": "map",
     "text-rotation-alignment": "map",
@@ -2215,11 +2119,7 @@ const WorldMap = ({ isGlobe = false, vNext = false }) => {
             type="symbol"
             maxzoom={7.1}
             filter={liveWorldLineFilter}
-            layout={{
-              ...liveLineLabelLayerLayout,
-              "text-max-angle": 28,
-              "text-allow-overlap": true,
-            }}
+            layout={liveLineLabelLayerLayout}
             paint={integratedLabelLayerPaint}
           />
         )}
@@ -2230,11 +2130,7 @@ const WorldMap = ({ isGlobe = false, vNext = false }) => {
             type="symbol"
             maxzoom={7.1}
             filter={liveDetailLineFilter}
-            layout={{
-              ...liveLineLabelLayerLayout,
-              "text-max-angle": 48,
-              "text-allow-overlap": true,
-            }}
+            layout={liveLineLabelLayerLayout}
             paint={integratedLabelLayerPaint}
           />
         )}
@@ -2272,8 +2168,8 @@ const WorldMap = ({ isGlobe = false, vNext = false }) => {
             filter={livePointOverlapFilter}
             layout={{
               ...livePointLabelLayerLayout,
-              // R5.4.6: this is a genuine guarantee layer. A failed curve must
-              // not let a city/neighbor collision erase the polity fallback.
+              // At close zoom, point-only edge cases become unconditional so a
+              // city or marker cannot erase the polity name.
               "text-allow-overlap": true,
               "text-ignore-placement": true,
             }}
