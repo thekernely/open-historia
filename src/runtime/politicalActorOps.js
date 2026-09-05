@@ -5,6 +5,7 @@ import {
   getPoliticalProfile,
   getPoliticalProfileKey,
   normalizePoliticalActorRecord,
+  normalizePoliticalBehavioralDisposition,
   normalizePoliticalActors,
   normalizePoliticalParty,
   normalizePoliticalPowerBloc,
@@ -23,6 +24,7 @@ export const POLITICAL_ACTOR_OPS = Object.freeze({
   UPDATE_POWER_BLOC: "update-power-bloc",
   SET_POWER_BLOC_INFLUENCE: "set-power-bloc-influence",
   SET_POLITICAL_PRESSURES: "set-political-pressures",
+  SET_BEHAVIORAL_DISPOSITION: "set-behavioral-disposition",
   SET_POLITICAL_SYSTEM: "set-political-system",
   SET_GOVERNMENT: "set-government",
   FORM_COALITION: "form-coalition",
@@ -263,6 +265,13 @@ export const applyPoliticalActorOperation = (world, operation) => {
     const state = normalizePoliticalPressureState(operation.state || operation.pressures);
     if (Object.keys(state.issues).length || state.updatedAt) actor.politicalPressures = state;
     else delete actor.politicalPressures;
+    return result({ applied: true, op, actor: commitActor(world, key, actor) });
+  }
+
+  if (op === POLITICAL_ACTOR_OPS.SET_BEHAVIORAL_DISPOSITION) {
+    const state = normalizePoliticalBehavioralDisposition(operation.state ?? operation.disposition);
+    if (state) actor.behavioralDisposition = state;
+    else delete actor.behavioralDisposition;
     return result({ applied: true, op, actor: commitActor(world, key, actor) });
   }
 

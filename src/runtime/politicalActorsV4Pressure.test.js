@@ -20,7 +20,7 @@ test("Political Actors v5 preserves and bounds the background political pressure
     },
   });
 
-  assert.equal(POLITICAL_ACTORS_SCHEMA_VERSION, 5);
+  assert.equal(POLITICAL_ACTORS_SCHEMA_VERSION, 6);
   assert.equal(actor.politicalPressures.issues.immigration.salience, 100);
   assert.equal(actor.politicalPressures.issues.immigration.lean, 72);
   assert.equal(actor.politicalPressures.updatedAt, "2020-01-01");
@@ -39,6 +39,6 @@ test("normalizing legacy actors without pressures does not invent background pol
     },
   });
 
-  assert.equal(normalized.schemaVersion, 5);
+  assert.equal(normalized.schemaVersion, 6);
   assert.equal("politicalPressures" in normalized.byPolity.Monarchy, false);
 });

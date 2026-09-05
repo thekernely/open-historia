@@ -265,3 +265,24 @@ test("background pressure state commits through the Political Actor mutation sea
   assert.equal(world.politicalActors.byPolity.Poland.politicalPressures.issues.cost_of_living.salience, 42.3);
   assert.equal(world.politicalActors.byPolity.Poland.politicalPressures.issues.cost_of_living.strain, 55.7);
 });
+
+test("behavioral disposition commits and clears through the canonical Political Actor mutation seam", () => {
+  const world = makeWorld();
+  const set = applyPoliticalActorOperation(world, {
+    op: POLITICAL_ACTOR_OPS.SET_BEHAVIORAL_DISPOSITION,
+    polityKey: "Poland",
+    state: { assertiveness: 112, riskTolerance: 74.36, regimeVulnerability: -5, updatedAt: "2014-04-22" },
+  });
+  assert.equal(set.applied, true);
+  assert.equal(world.politicalActors.byPolity.Poland.behavioralDisposition.assertiveness, 100);
+  assert.equal(world.politicalActors.byPolity.Poland.behavioralDisposition.riskTolerance, 74.4);
+  assert.equal(world.politicalActors.byPolity.Poland.behavioralDisposition.regimeVulnerability, 0);
+
+  const cleared = applyPoliticalActorOperation(world, {
+    op: POLITICAL_ACTOR_OPS.SET_BEHAVIORAL_DISPOSITION,
+    polityKey: "Poland",
+    state: null,
+  });
+  assert.equal(cleared.applied, true);
+  assert.equal(world.politicalActors.byPolity.Poland.behavioralDisposition, undefined);
+});

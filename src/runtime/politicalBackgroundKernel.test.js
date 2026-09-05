@@ -34,6 +34,8 @@ test("background kernel performs repeated response ticks on detached worker stat
   assert.ok(result.responseChangedEntities > result.responseOperations.length);
   assert.ok(result.responseOperations.length <= 2);
   assert.ok(result.responseOperations.every((op) => ["set-party-support", "set-power-bloc-influence"].includes(op.op)));
+  assert.equal(result.dispositionOperations.length, 1);
+  assert.equal(result.dispositionOperations[0].op, "set-behavioral-disposition");
   assert.equal(actorsByPolity.A.politicalPressures, undefined);
 });
 

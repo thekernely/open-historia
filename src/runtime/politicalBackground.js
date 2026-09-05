@@ -105,6 +105,19 @@ export const advancePoliticalBackgroundSimulation = async ({
     };
   }
 
+  const dispositionApply = applyPoliticalActorOperations(nextWorld, computed?.dispositionOperations || []);
+  if (dispositionApply.failed) {
+    return {
+      world: inputWorld,
+      skipped: true,
+      reason: "disposition-commit-failed",
+      plan,
+      pressureChangedPolities: 0,
+      responseChangedEntities: 0,
+      errors: dispositionApply.results.filter((entry) => entry.error).map((entry) => entry.error),
+    };
+  }
+
   nextWorld.politicalSimulation = plan.nextClock;
   return {
     world: nextWorld,
@@ -116,5 +129,7 @@ export const advancePoliticalBackgroundSimulation = async ({
     responseChangedPolities: Number(computed?.responseChangedPolities) || 0,
     structuralSignalPolities: Object.keys(signalsByPolity).length,
     committedResponseEntities: responseApply.applied,
+    dispositionChangedPolities: Number(computed?.dispositionChangedPolities) || 0,
+    committedDispositions: dispositionApply.applied,
   };
 };

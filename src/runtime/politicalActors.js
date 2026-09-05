@@ -3,7 +3,7 @@
 import { resolveStockCountryCode } from "./polityIdentity.js";
 import { normalizePoliticalPressureState } from "./politicalPressure.js";
 
-export const POLITICAL_ACTORS_SCHEMA_VERSION = 5;
+export const POLITICAL_ACTORS_SCHEMA_VERSION = 6;
 
 export const POLITICAL_REPRESENTATIONS = Object.freeze({
     ELECTORAL: "electoral",
@@ -88,6 +88,40 @@ export const normalizePoliticalResponseProfile = (value) => {
     if (Object.keys(issues).length) out.issues = issues;
 
     return Object.keys(out).length ? out : null;
+};
+
+export const POLITICAL_DISPOSITION_DIMENSIONS = Object.freeze([
+    "assertiveness",
+    "riskTolerance",
+    "escalationPressure",
+    "compromisePressure",
+    "regimeVulnerability",
+    "deterrenceSensitivity",
+    "opportunityPerception",
+    "threatPerception",
+]);
+
+// Behavioral disposition is hidden, derived canonical state. Preserve unknown
+// legacy extension fields for compatibility, but normalize the native dimensions
+// C4 owns so future consumers can rely on a stable bounded contract.
+export const normalizePoliticalBehavioralDisposition = (value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const out = cloneActorValue(value);
+    let ownedFields = 0;
+    for (const key of POLITICAL_DISPOSITION_DIMENSIONS) {
+        const number = clampPercent(value[key]);
+        if (number != null) {
+            out[key] = number;
+            ownedFields += 1;
+        } else {
+            delete out[key];
+        }
+    }
+    const updatedAt = clean(value.updatedAt);
+    if (updatedAt) out.updatedAt = updatedAt.slice(0, 32);
+    else delete out.updatedAt;
+    if (!ownedFields && !Object.keys(out).some((key) => key !== "updatedAt")) return null;
+    return out;
 };
 
 const cleanStringArray = (value, limit = 32) => {
@@ -603,13 +637,17 @@ export const normalizePoliticalActorRecord = (value, fallbackPolityKey = "") => 
         else delete out[key];
     }
 
-    for (const key of ["traits", "perceptions", "behavioralDisposition"]) {
+    for (const key of ["traits", "perceptions"]) {
         const record = normalizeMetricRecord(value[key], {
             clampNumeric: key !== "perceptions",
         });
         if (Object.keys(record).length) out[key] = record;
         else delete out[key];
     }
+
+    const behavioralDisposition = normalizePoliticalBehavioralDisposition(value.behavioralDisposition);
+    if (behavioralDisposition) out.behavioralDisposition = behavioralDisposition;
+    else delete out.behavioralDisposition;
 
     const politicalPressures = normalizePoliticalPressureState(value.politicalPressures);
     if (Object.keys(politicalPressures.issues).length || politicalPressures.updatedAt) {

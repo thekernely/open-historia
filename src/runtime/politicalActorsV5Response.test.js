@@ -38,7 +38,7 @@ test("Political Actors v5 owns bounded hidden response profiles for parties and 
     }],
   });
 
-  assert.equal(POLITICAL_ACTORS_SCHEMA_VERSION, 5);
+  assert.equal(POLITICAL_ACTORS_SCHEMA_VERSION, 6);
   assert.equal(actor.parties[0].politicalResponse.organization, 100);
   assert.equal(actor.parties[0].politicalResponse.credibility, 0);
   assert.equal(actor.parties[0].politicalResponse.inertia, 72.4);
@@ -61,7 +61,7 @@ test("legacy actors upgrade to schema v5 without inventing response profiles", (
     },
   });
 
-  assert.equal(normalized.schemaVersion, 5);
+  assert.equal(normalized.schemaVersion, 6);
   assert.equal("politicalResponse" in normalized.byPolity.Legacy.parties[0], false);
 });
 

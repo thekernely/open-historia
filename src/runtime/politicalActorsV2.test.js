@@ -52,7 +52,7 @@ test("Political Actors upgrades legacy party-name government references to stabl
   });
 
   assert.equal(normalized.schemaVersion, POLITICAL_ACTORS_SCHEMA_VERSION);
-  assert.equal(normalized.schemaVersion, 5);
+  assert.equal(normalized.schemaVersion, 6);
 
   const actor = normalized.byPolity.Ukraine;
   assert.deepEqual(actor.government.rulingPartyIds, ["batkivshchyna"]);

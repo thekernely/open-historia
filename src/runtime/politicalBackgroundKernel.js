@@ -3,6 +3,7 @@
 import { normalizePoliticalActors } from "./politicalActors.js";
 import { advancePoliticalPressureBatch } from "./politicalPressure.js";
 import { advancePoliticalResponseBatch } from "./politicalResponse.js";
+import { advancePoliticalDispositionBatch } from "./politicalDisposition.js";
 import { POLITICAL_ACTOR_OPS } from "./politicalActorOps.js";
 
 const clean = (value) => String(value ?? "").trim();
@@ -80,11 +81,18 @@ export const advancePoliticalBackgroundKernel = ({
     }
   }
 
+  const disposition = advancePoliticalDispositionBatch({
+    actorsByPolity: actors.byPolity,
+    updatedAt,
+  });
+
   return {
     pressurePatchesByPolity: pressure.patchesByPolity || {},
     pressureChangedPolities: Number(pressure.changedPolities) || 0,
     responseOperations: [...finalResponseOps.values()],
     responseChangedEntities,
     responseChangedPolities,
+    dispositionOperations: disposition.operations || [],
+    dispositionChangedPolities: Number(disposition.changedPolities) || 0,
   };
 };

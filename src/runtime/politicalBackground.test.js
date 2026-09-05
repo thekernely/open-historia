@@ -56,6 +56,9 @@ test("political background connects world structure -> pressure -> canonical par
   assert.ok(result.pressureChangedPolities >= 1);
   assert.equal(result.plan.responseTicks, 1);
   assert.ok(result.world.politicalActors.byPolity.A.politicalPressures.issues.cost_of_living);
+  assert.ok(result.world.politicalActors.byPolity.A.behavioralDisposition);
+  assert.ok(result.world.politicalActors.byPolity.A.behavioralDisposition.regimeVulnerability > 0);
+  assert.equal(result.dispositionChangedPolities, 1);
   const afterGov = result.world.politicalActors.byPolity.A.parties.find((party) => party.id === "gov").support.percent;
   const afterOpp = result.world.politicalActors.byPolity.A.parties.find((party) => party.id === "opp").support.percent;
   assert.ok(afterGov < beforeGov);
