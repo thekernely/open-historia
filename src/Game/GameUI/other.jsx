@@ -49,7 +49,7 @@ const FallbackBadge = ({ label }) => (
     </div>
 );
 
-const Other = memo(function Other({ rightShift = "0.5rem", embedded = false }) {
+const Other = memo(function Other({ rightShift = "0.5rem", embedded = false, isCountryOpen = false, onToggle = null }) {
     const { activeGame } = useLibraryState();
     const activeGameId = String(activeGame?.id || "");
     const activeGameCountry = String(activeGame?.country || "").trim();
@@ -155,10 +155,17 @@ const Other = memo(function Other({ rightShift = "0.5rem", embedded = false }) {
     const flagUrl = landless ? null : (resolvedFlag?.imageUrl || flagImageUrlFromGid(country));
     const flagEmoji = landless ? null : flagEmojiFromGid(country);
 
+    const Wrapper = embedded ? "div" : "button";
     return (
-        <div
+        <Wrapper
+        {...(!embedded ? {
+            type: "button",
+            onClick: onToggle,
+            "aria-label": `Country — ${displayName || country}`,
+            "aria-pressed": Boolean(isCountryOpen),
+        } : {})}
         className={embedded ? "oh-dock-polity" : undefined}
-        title={displayName}
+        title={embedded ? displayName : `Country — ${displayName || country}`}
         style={embedded ? {
             alignItems: "center",
             display: "flex",
@@ -173,11 +180,15 @@ const Other = memo(function Other({ rightShift = "0.5rem", embedded = false }) {
             ...baseStyle,
             bottom: "4.75rem",
             right: rightShift,
-            height: "2.75rem",
-            width: "2.75rem",
-            padding: "0.35rem",
+            height: "4rem",
+            width: "4rem",
+            padding: "0.55rem",
             boxSizing: "border-box",
-            transition: "right 0.35s cubic-bezier(0.4, 0, 0.2, 1)",
+            cursor: "pointer",
+            background: isCountryOpen
+                ? "linear-gradient(180deg, rgba(91,155,255,0.22), rgba(59,130,246,0.12))"
+                : "linear-gradient(180deg, rgba(53,53,58,0.58), rgba(17,17,19,0.48))",
+            transition: "right 0.35s cubic-bezier(0.4, 0, 0.2, 1), background 0.15s ease",
             overflow: "hidden",
         }}
         >
@@ -213,7 +224,7 @@ const Other = memo(function Other({ rightShift = "0.5rem", embedded = false }) {
                 </div>
             </div>
         )}
-        </div>
+        </Wrapper>
     );
 });
 

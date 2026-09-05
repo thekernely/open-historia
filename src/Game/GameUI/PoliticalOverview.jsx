@@ -1,6 +1,6 @@
 /*! Open Historia — Country political overview / party landscape */
 import React, { useEffect, useMemo, useState } from "react";
-import { buildPoliticalPartyLandscape } from "../../runtime/politicalPresentation.js";
+import { buildGovernmentPartyPresentation, buildPoliticalPartyLandscape } from "../../runtime/politicalPresentation.js";
 
 const clean = (value) => String(value ?? "").replace(/\s+/g, " ").trim();
 const list = (value) => (Array.isArray(value) ? value.map(clean).filter(Boolean) : (clean(value) ? [clean(value)] : []));
@@ -227,10 +227,9 @@ const GovernmentOverview = ({ profile, fallbackGovernment, fallbackLeader }) => 
   const form = clean(government.form || fallbackGovernment);
   const headOfState = officeholderName(government.headOfState || fallbackLeader || profile?.leader);
   const headOfGovernment = officeholderName(government.headOfGovernment);
-  const ruling = list(government.rulingParties);
-  const coalition = list(government.coalition);
+  const governmentParties = buildGovernmentPartyPresentation(profile);
 
-  if (!form && !headOfState && !headOfGovernment && !ruling.length && !coalition.length) return null;
+  if (!form && !headOfState && !headOfGovernment && !governmentParties.names.length) return null;
   return (
     <div style={{ ...card, padding: "0.72rem 0.78rem" }}>
       <div style={sectionLabel}>Government</div>
@@ -249,10 +248,12 @@ const GovernmentOverview = ({ profile, fallbackGovernment, fallbackLeader }) => 
           </div>
         )}
       </div>
-      {(ruling.length > 0 || coalition.length > 0) && (
-        <div style={{ borderTop: "1px solid rgba(255,255,255,0.06)", color: "rgba(255,255,255,0.48)", fontSize: "0.63rem", lineHeight: 1.4, marginTop: "0.65rem", paddingTop: "0.55rem" }}>
-          {ruling.length > 0 && <div><span style={{ color: "rgba(255,255,255,0.34)" }}>Ruling:</span> {ruling.join(", ")}</div>}
-          {coalition.length > 0 && <div style={{ marginTop: ruling.length ? "0.16rem" : 0 }}><span style={{ color: "rgba(255,255,255,0.34)" }}>Coalition:</span> {coalition.join(", ")}</div>}
+      {governmentParties.names.length > 0 && (
+        <div style={{ borderTop: "1px solid rgba(255,255,255,0.06)", color: "rgba(255,255,255,0.48)", fontSize: "0.63rem", lineHeight: 1.45, marginTop: "0.65rem", paddingTop: "0.55rem" }}>
+          <span style={{ color: "rgba(255,255,255,0.34)" }}>
+            {governmentParties.names.length > 1 ? "Governing coalition:" : "Government:"}
+          </span>{" "}
+          {governmentParties.names.join(" | ")}
         </div>
       )}
     </div>
@@ -300,6 +301,7 @@ export default function PoliticalOverview({ profile, fallbackGovernment = "", fa
 
   const selected = landscape.slices.find((party) => party.id === selectedId) || null;
   const goals = list(profile?.goals).slice(0, 5);
+  const governmentParties = buildGovernmentPartyPresentation(profile);
 
   return (
     <div style={{ marginTop: "0.82rem" }}>
@@ -342,6 +344,25 @@ export default function PoliticalOverview({ profile, fallbackGovernment = "", fa
               );
             })}
           </div>
+
+          {governmentParties.names.length > 0 && (
+            <div
+              style={{
+                background: "rgba(245,158,11,0.07)",
+                border: "1px solid rgba(245,158,11,0.16)",
+                borderRadius: "9px",
+                marginTop: "0.62rem",
+                padding: "0.5rem 0.58rem",
+              }}
+            >
+              <div style={{ color: "rgba(253,230,138,0.62)", fontSize: "0.56rem", fontWeight: 850, letterSpacing: "0.07em", textTransform: "uppercase" }}>
+                {governmentParties.label}
+              </div>
+              <div style={{ color: "#fde68a", fontSize: "0.64rem", fontWeight: 800, lineHeight: 1.45, marginTop: "0.24rem" }}>
+                {governmentParties.names.join(" | ")}
+              </div>
+            </div>
+          )}
 
           <PartyDetail party={selected} onClose={() => setSelectedId("")} />
         </div>

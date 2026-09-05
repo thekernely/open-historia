@@ -60,23 +60,71 @@ const samePartyToken = (left, right) => {
 };
 
 const governmentPartyTokens = (government) => [
+  ...asList(government?.rulingPartyIds, 12),
   ...asList(government?.rulingParties, 12),
+  ...asList(government?.coalitionPartyIds, 12),
   ...asList(government?.coalition, 12),
   clean(government?.rulingParty),
 ].filter(Boolean);
 
+const rulingPartyTokens = (government) => [
+  ...asList(government?.rulingPartyIds, 12),
+  ...asList(government?.rulingParties, 12),
+  clean(government?.rulingParty),
+].filter(Boolean);
+
+const coalitionPartyTokens = (government) => [
+  ...asList(government?.coalitionPartyIds, 12),
+  ...asList(government?.coalition, 12),
+].filter(Boolean);
+
+const tokenMatchesParty = (token, party) =>
+  samePartyToken(token, party.id) ||
+  samePartyToken(token, party.name) ||
+  samePartyToken(token, party.shortName);
+
 const markGovernmentParties = (parties, government) => {
   const tokens = governmentPartyTokens(government);
   if (!tokens.length) return parties;
+  const rulingTokens = rulingPartyTokens(government);
+  const coalitionTokens = coalitionPartyTokens(government);
   return parties.map((party) => {
-    const governing = tokens.some((token) => samePartyToken(token, party.id) || samePartyToken(token, party.name) || samePartyToken(token, party.shortName));
+    const governing = tokens.some((token) => tokenMatchesParty(token, party));
     if (!governing) return party;
     return {
       ...party,
-      ruling: party.ruling || asList(government?.rulingParties, 12).some((token) => samePartyToken(token, party.id) || samePartyToken(token, party.name) || samePartyToken(token, party.shortName)) || samePartyToken(government?.rulingParty, party.id) || samePartyToken(government?.rulingParty, party.name),
-      coalition: party.coalition || asList(government?.coalition, 12).some((token) => samePartyToken(token, party.id) || samePartyToken(token, party.name) || samePartyToken(token, party.shortName)),
+      ruling: party.ruling || rulingTokens.some((token) => tokenMatchesParty(token, party)),
+      coalition: party.coalition || coalitionTokens.some((token) => tokenMatchesParty(token, party)),
     };
   });
+};
+
+export const buildGovernmentPartyPresentation = (publicPoliticalProfile) => {
+  const government = publicPoliticalProfile?.government || {};
+  const parties = (Array.isArray(publicPoliticalProfile?.parties) ? publicPoliticalProfile.parties : [])
+    .map(publicPartyRow)
+    .filter(Boolean);
+  const tokens = governmentPartyTokens(government);
+  const names = [];
+  const ids = [];
+  const seen = new Set();
+
+  for (const token of tokens) {
+    const party = parties.find((candidate) => tokenMatchesParty(token, candidate));
+    const id = clean(party?.id || token);
+    const name = clean(party?.name || token);
+    const key = samePartyToken(id, name) ? id.toLocaleLowerCase() : `${id.toLocaleLowerCase()}:${name.toLocaleLowerCase()}`;
+    if (!name || seen.has(key)) continue;
+    seen.add(key);
+    ids.push(id);
+    names.push(name);
+  }
+
+  return {
+    ids,
+    names,
+    label: names.length > 1 ? "Governing coalition" : (names.length === 1 ? "Government" : ""),
+  };
 };
 
 // Build a bounded, presentation-only party landscape from an already public

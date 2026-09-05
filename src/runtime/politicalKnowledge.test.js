@@ -27,6 +27,7 @@ const makeWorld = () => ({
           headOfState: "Vladimir Putin",
           headOfGovernment: "Dmitry Medvedev",
           rulingParties: ["United Russia"],
+          coalitionName: "Test Coalition",
           approval: 78,
           stability: 74,
         },
@@ -76,6 +77,7 @@ test("public political view exposes public political facts but never raw hidden 
   assert.equal(view?.government?.form, "Federal semi-presidential republic");
   assert.equal(view?.government?.headOfState, "Vladimir Putin");
   assert.equal(view?.government?.headOfGovernment, "Dmitry Medvedev");
+  assert.equal(view?.government?.coalitionName, "Test Coalition");
   assert.equal(view?.parties?.[0]?.support?.percent, 53);
   assert.equal(view?.parties?.[0]?.shortName, "UR");
   assert.equal(view?.parties?.[0]?.leader, "Dmitry Medvedev");

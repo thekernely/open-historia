@@ -59,6 +59,9 @@ const baseStyle = {
 const LazyAdvisorPanel = lazy(() =>
   import("./advisor").then((module) => ({ default: module.AdvisorPanel })),
 );
+const LazyCountryPanel = lazy(() =>
+  import("./country").then((module) => ({ default: module.CountryPanel })),
+);
 const LazyCheatsPanel = lazy(() =>
   import("./cheats").then((module) => ({ default: module.CheatsPanel })),
 );
@@ -176,6 +179,7 @@ const Main = ({
   const [isDebugConsoleOpen, setIsDebugConsoleOpen] = useState(false);
   const [shouldLoadDebugConsole, setShouldLoadDebugConsole] = useState(false);
   const [isAdvisorOpen, setIsAdvisorOpen] = useState(false);
+  const [isCountryOpen, setIsCountryOpen] = useState(false);
   const [advisorWidth, setAdvisorWidth] = useState(readAdvisorWidth);
   // A starter message queued for the advisor's input box — set when something
   // OUTSIDE the advisor panel (the Actions panel's "Help brainstorm actions"
@@ -185,6 +189,7 @@ const Main = ({
   const [isForcesOpen, setIsForcesOpen] = useState(false);
   const [activeBottomPanel, setActiveBottomPanel] = useState(null);
   const [shouldLoadAdvisor, setShouldLoadAdvisor] = useState(false);
+  const [shouldLoadCountry, setShouldLoadCountry] = useState(false);
   const [isFullscreenEnabled, setIsFullscreenEnabled] = useState(false);
   const [showWebGLWarning, setShowWebGLWarning] = useState(false);
 
@@ -230,10 +235,11 @@ const Main = ({
       isSettingsOpen && "settings",
       isCheatsOpen && "cheats",
       isAdvisorOpen && "advisor",
+      isCountryOpen && "country",
       isForcesOpen && "forces",
     ].filter(Boolean);
     logDebugEvent("ui", `Open panels: ${open.length ? open.join(", ") : "(none)"}`, undefined, { verbose: true });
-  }, [activeBottomPanel, isSettingsOpen, isCheatsOpen, isAdvisorOpen, isForcesOpen]);
+  }, [activeBottomPanel, isSettingsOpen, isCheatsOpen, isAdvisorOpen, isCountryOpen, isForcesOpen]);
 
   // Idle diplomacy drip: each real-world minute the game is open (and has a
   // running game), there is a small chance a polity messages the player's
@@ -272,6 +278,10 @@ const Main = ({
   useEffect(() => {
     if (isAdvisorOpen) setShouldLoadAdvisor(true);
   }, [isAdvisorOpen]);
+
+  useEffect(() => {
+    if (isCountryOpen) setShouldLoadCountry(true);
+  }, [isCountryOpen]);
 
   useEffect(() => {
     localStorage.setItem("Fullscreen", JSON.stringify(isFullscreenEnabled));
@@ -337,8 +347,25 @@ const Main = ({
   }, []);
 
   const openAdvisor = useCallback((seedPrompt) => {
+    setIsCountryOpen(false);
     setIsAdvisorOpen(true);
     if (typeof seedPrompt === "string" && seedPrompt) setPendingAdvisorPrompt(seedPrompt);
+  }, []);
+
+  const toggleAdvisor = useCallback(() => {
+    setIsAdvisorOpen((current) => {
+      const next = !current;
+      if (next) setIsCountryOpen(false);
+      return next;
+    });
+  }, []);
+
+  const toggleCountry = useCallback(() => {
+    setIsCountryOpen((current) => {
+      const next = !current;
+      if (next) setIsAdvisorOpen(false);
+      return next;
+    });
   }, []);
 
   // Called on every pointermove while the user drags the advisor's edge.
@@ -357,7 +384,8 @@ const Main = ({
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
-  const rightShift = isAdvisorOpen ? `calc(${advisorWidth}px + 0.5rem)` : "0.5rem";
+  const rightPanelOpen = isAdvisorOpen || isCountryOpen;
+  const rightShift = rightPanelOpen ? `calc(${advisorWidth}px + 0.5rem)` : "0.5rem";
   const toggleBottomPanel = useCallback((panelName) => {
     setActiveBottomPanel((currentPanel) => (
       currentPanel === panelName ? null : panelName
@@ -382,7 +410,11 @@ const Main = ({
         onTogglePanel={toggleBottomPanel}
         mapRef={mapRef}
       />
-      <Other rightShift={rightShift} />
+      <Other
+        rightShift={rightShift}
+        isCountryOpen={isCountryOpen}
+        onToggle={toggleCountry}
+      />
       <Search mapRef={mapRef} />
       <ForcesPanel
         mapRef={mapRef}
@@ -393,8 +425,18 @@ const Main = ({
       <AdvisorButton
         isAdvisorOpen={isAdvisorOpen}
         rightShift={rightShift}
-        onToggle={() => setIsAdvisorOpen(!isAdvisorOpen)}
+        onToggle={toggleAdvisor}
       />
+      <Suspense fallback={null}>
+        {shouldLoadCountry && (
+          <LazyCountryPanel
+            isCountryOpen={isCountryOpen}
+            onClose={() => setIsCountryOpen(false)}
+            width={advisorWidth}
+            onResize={handleAdvisorResize}
+          />
+        )}
+      </Suspense>
       <Suspense fallback={null}>
         {shouldLoadAdvisor && (
           <LazyAdvisorPanel

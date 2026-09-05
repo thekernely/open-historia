@@ -1,0 +1,303 @@
+/*! Open Historia — canonical Political Actor mutation operations */
+
+import {
+  ensurePoliticalProfile,
+  getPoliticalProfile,
+  getPoliticalProfileKey,
+  normalizePoliticalActorRecord,
+  normalizePoliticalActors,
+  normalizePoliticalParty,
+  resolvePoliticalParty,
+} from "./politicalActors.js";
+
+export const POLITICAL_ACTOR_OPS = Object.freeze({
+  CREATE_PARTY: "create-party",
+  UPDATE_PARTY: "update-party",
+  SET_PARTY_SUPPORT: "set-party-support",
+  SET_PARTY_LEADER: "set-party-leader",
+  SET_GOVERNMENT: "set-government",
+  FORM_COALITION: "form-coalition",
+  LEAVE_COALITION: "leave-coalition",
+  REPLACE_LEADER: "replace-leader",
+  SET_STRATEGY: "set-strategy",
+  SET_TRAITS: "set-traits",
+  SET_PERCEPTIONS: "set-perceptions",
+});
+
+const clean = (value) => String(value ?? "").replace(/\s+/g, " ").trim();
+
+const cloneValue = (value) => {
+  if (value == null || typeof value !== "object") return value;
+  if (typeof structuredClone === "function") return structuredClone(value);
+  return JSON.parse(JSON.stringify(value));
+};
+
+const asArray = (value) => Array.isArray(value) ? value : [];
+
+const clampPercent = (value) => {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return null;
+  return Math.max(0, Math.min(100, Math.round(number * 10) / 10));
+};
+
+const actorContext = (world, polityKey, { create = false } = {}) => {
+  if (!world || typeof world !== "object") return null;
+  if (!world.politicalActors || typeof world.politicalActors !== "object") {
+    world.politicalActors = normalizePoliticalActors({});
+  } else if (Number(world.politicalActors.schemaVersion) !== 2 || !world.politicalActors.byPolity) {
+    world.politicalActors = normalizePoliticalActors(world.politicalActors);
+  }
+
+  let actor = getPoliticalProfile(world, polityKey);
+  if (!actor && create) actor = ensurePoliticalProfile(world, polityKey);
+  if (!actor) return null;
+  return {
+    actor,
+    key: getPoliticalProfileKey(world, polityKey) || clean(polityKey),
+  };
+};
+
+const commitActor = (world, key, actor) => {
+  const normalized = normalizePoliticalActorRecord(actor, key);
+  world.politicalActors.byPolity[key] = normalized;
+  return normalized;
+};
+
+const requireParty = (actor, partyToken) => {
+  const party = resolvePoliticalParty(actor, partyToken);
+  if (!party) return { error: `Unknown party: ${clean(partyToken) || "(blank)"}` };
+  return { party };
+};
+
+const normalizePartyIdList = (actor, input) => {
+  const out = [];
+  const seen = new Set();
+  for (const token of asArray(input)) {
+    const party = resolvePoliticalParty(actor, token);
+    if (!party) return { error: `Unknown party: ${clean(token) || "(blank)"}`, ids: [] };
+    if (seen.has(party.id)) continue;
+    seen.add(party.id);
+    out.push(party.id);
+  }
+  return { ids: out, error: "" };
+};
+
+const updateGovernmentMembership = (actor, rulingIds, coalitionIds, { coalitionName } = {}) => {
+  const government = {
+    ...(actor.government && typeof actor.government === "object" ? actor.government : {}),
+    rulingPartyIds: [...rulingIds],
+    coalitionPartyIds: [...coalitionIds],
+  };
+  // Stable ids are the mutation authority. Display-name arrays are re-derived by
+  // normalization so an old government name cannot silently keep a departed party.
+  delete government.rulingParties;
+  delete government.coalition;
+  delete government.rulingParty;
+  actor.government = government;
+  if (coalitionName !== undefined) {
+    const text = clean(coalitionName);
+    if (text) actor.government.coalitionName = text;
+    else delete actor.government.coalitionName;
+  }
+  return actor;
+};
+
+const result = ({ applied = false, op = "", actor = null, error = "", detail = "" } = {}) => ({
+  applied,
+  op,
+  ...(actor ? { actor } : {}),
+  ...(error ? { error } : {}),
+  ...(detail ? { detail } : {}),
+});
+
+export const applyPoliticalActorOperation = (world, operation) => {
+  const op = clean(operation?.op);
+  const polityKey = clean(operation?.polityKey || operation?.polity || operation?.country);
+  if (!op) return result({ error: "Political Actor operation is missing op." });
+  if (!polityKey) return result({ op, error: "Political Actor operation is missing polityKey." });
+
+  const context = actorContext(world, polityKey, {
+    create: op === POLITICAL_ACTOR_OPS.CREATE_PARTY || op === POLITICAL_ACTOR_OPS.SET_GOVERNMENT,
+  });
+  if (!context) return result({ op, error: `No Political Actor exists for ${polityKey}.` });
+
+  const { key } = context;
+  const actor = cloneValue(context.actor);
+
+  if (op === POLITICAL_ACTOR_OPS.CREATE_PARTY) {
+    const party = normalizePoliticalParty(operation.party);
+    if (!party) return result({ op, error: "create-party requires a party with a name or id." });
+    if (resolvePoliticalParty(actor, party.id) || resolvePoliticalParty(actor, party.name)) {
+      return result({ op, error: `Party already exists: ${party.name}.` });
+    }
+    actor.parties = [...asArray(actor.parties), party];
+    return result({ applied: true, op, actor: commitActor(world, key, actor) });
+  }
+
+  if (op === POLITICAL_ACTOR_OPS.UPDATE_PARTY) {
+    const found = requireParty(actor, operation.partyId || operation.party);
+    if (found.error) return result({ op, error: found.error });
+    const existing = found.party;
+    const patch = operation.patch && typeof operation.patch === "object" && !Array.isArray(operation.patch)
+      ? cloneValue(operation.patch)
+      : {};
+    delete patch.id;
+
+    if (clean(patch.name) && clean(patch.name) !== clean(existing.name)) {
+      patch.aliases = [
+        ...asArray(existing.aliases),
+        existing.name,
+        ...asArray(patch.aliases),
+      ];
+    } else if (Array.isArray(patch.aliases)) {
+      patch.aliases = [...asArray(existing.aliases), ...patch.aliases];
+    }
+
+    const nextParty = normalizePoliticalParty({ ...existing, ...patch, id: existing.id });
+    actor.parties = asArray(actor.parties).map((party) => party.id === existing.id ? nextParty : party);
+    return result({ applied: true, op, actor: commitActor(world, key, actor) });
+  }
+
+  if (op === POLITICAL_ACTOR_OPS.SET_PARTY_SUPPORT) {
+    const found = requireParty(actor, operation.partyId || operation.party);
+    if (found.error) return result({ op, error: found.error });
+    const percent = clampPercent(operation.percent);
+    if (percent == null) return result({ op, error: "set-party-support requires a numeric percent." });
+    found.party.support = { percent };
+    return result({ applied: true, op, actor: commitActor(world, key, actor) });
+  }
+
+  if (op === POLITICAL_ACTOR_OPS.SET_PARTY_LEADER) {
+    const found = requireParty(actor, operation.partyId || operation.party);
+    if (found.error) return result({ op, error: found.error });
+    const leader = operation.leader;
+    if (!(typeof leader === "string" || (leader && typeof leader === "object" && !Array.isArray(leader)))) {
+      return result({ op, error: "set-party-leader requires a leader name/object." });
+    }
+    found.party.leader = cloneValue(leader);
+    return result({ applied: true, op, actor: commitActor(world, key, actor) });
+  }
+
+  if (op === POLITICAL_ACTOR_OPS.FORM_COALITION) {
+    const ruling = normalizePartyIdList(actor, operation.rulingPartyIds || operation.rulingParties || []);
+    if (ruling.error) return result({ op, error: ruling.error });
+    const coalition = normalizePartyIdList(actor, operation.coalitionPartyIds || operation.coalitionParties || []);
+    if (coalition.error) return result({ op, error: coalition.error });
+    if (!ruling.ids.length && !coalition.ids.length) {
+      return result({ op, error: "form-coalition requires at least one governing party." });
+    }
+    const coalitionIds = coalition.ids.filter((id) => !ruling.ids.includes(id));
+    updateGovernmentMembership(actor, ruling.ids, coalitionIds, {
+      coalitionName: operation.coalitionName,
+    });
+    return result({ applied: true, op, actor: commitActor(world, key, actor) });
+  }
+
+  if (op === POLITICAL_ACTOR_OPS.LEAVE_COALITION) {
+    const found = requireParty(actor, operation.partyId || operation.party);
+    if (found.error) return result({ op, error: found.error });
+    const id = found.party.id;
+    const government = actor.government && typeof actor.government === "object" ? actor.government : {};
+    const rulingIds = asArray(government.rulingPartyIds).filter((partyId) => partyId !== id);
+    const coalitionIds = asArray(government.coalitionPartyIds).filter((partyId) => partyId !== id);
+    updateGovernmentMembership(actor, rulingIds, coalitionIds);
+    return result({ applied: true, op, actor: commitActor(world, key, actor) });
+  }
+
+  if (op === POLITICAL_ACTOR_OPS.SET_GOVERNMENT) {
+    const patch = operation.patch && typeof operation.patch === "object" && !Array.isArray(operation.patch)
+      ? cloneValue(operation.patch)
+      : {};
+    actor.government = {
+      ...(actor.government && typeof actor.government === "object" ? actor.government : {}),
+      ...patch,
+    };
+
+    const hasPartyRefs = [
+      "rulingPartyIds",
+      "rulingParties",
+      "coalitionPartyIds",
+      "coalition",
+    ].some((field) => field in patch);
+
+    if (hasPartyRefs) {
+      const ruling = normalizePartyIdList(actor, patch.rulingPartyIds || patch.rulingParties || []);
+      if (ruling.error) return result({ op, error: ruling.error });
+      const coalition = normalizePartyIdList(actor, patch.coalitionPartyIds || patch.coalition || []);
+      if (coalition.error) return result({ op, error: coalition.error });
+      updateGovernmentMembership(
+        actor,
+        ruling.ids,
+        coalition.ids.filter((id) => !ruling.ids.includes(id)),
+        { coalitionName: patch.coalitionName },
+      );
+    }
+
+    return result({ applied: true, op, actor: commitActor(world, key, actor) });
+  }
+
+  if (op === POLITICAL_ACTOR_OPS.REPLACE_LEADER) {
+    const office = clean(operation.office);
+    if (office !== "headOfState" && office !== "headOfGovernment") {
+      return result({ op, error: "replace-leader office must be headOfState or headOfGovernment." });
+    }
+    const leader = operation.leader;
+    if (!(typeof leader === "string" || (leader && typeof leader === "object" && !Array.isArray(leader)))) {
+      return result({ op, error: "replace-leader requires a leader name/object." });
+    }
+    actor.government = {
+      ...(actor.government && typeof actor.government === "object" ? actor.government : {}),
+      [office]: cloneValue(leader),
+    };
+    if (office === "headOfState") actor.leader = cloneValue(leader);
+    return result({ applied: true, op, actor: commitActor(world, key, actor) });
+  }
+
+  if (op === POLITICAL_ACTOR_OPS.SET_STRATEGY) {
+    const patch = operation.patch && typeof operation.patch === "object" && !Array.isArray(operation.patch)
+      ? operation.patch
+      : {};
+    for (const field of ["goals", "fears", "ambitions", "domesticPressures"]) {
+      if (field in patch) actor[field] = cloneValue(patch[field]);
+    }
+    return result({ applied: true, op, actor: commitActor(world, key, actor) });
+  }
+
+  if (op === POLITICAL_ACTOR_OPS.SET_TRAITS) {
+    if (!operation.traits || typeof operation.traits !== "object" || Array.isArray(operation.traits)) {
+      return result({ op, error: "set-traits requires a traits object." });
+    }
+    actor.traits = {
+      ...(actor.traits && typeof actor.traits === "object" ? actor.traits : {}),
+      ...cloneValue(operation.traits),
+    };
+    return result({ applied: true, op, actor: commitActor(world, key, actor) });
+  }
+
+  if (op === POLITICAL_ACTOR_OPS.SET_PERCEPTIONS) {
+    if (!operation.perceptions || typeof operation.perceptions !== "object" || Array.isArray(operation.perceptions)) {
+      return result({ op, error: "set-perceptions requires a perceptions object." });
+    }
+    actor.perceptions = {
+      ...(actor.perceptions && typeof actor.perceptions === "object" ? actor.perceptions : {}),
+      ...cloneValue(operation.perceptions),
+    };
+    return result({ applied: true, op, actor: commitActor(world, key, actor) });
+  }
+
+  return result({ op, error: `Unsupported Political Actor operation: ${op}.` });
+};
+
+export const applyPoliticalActorOperations = (world, operations, { stopOnError = true } = {}) => {
+  const results = [];
+  for (const operation of asArray(operations)) {
+    const entry = applyPoliticalActorOperation(world, operation);
+    results.push(entry);
+    if (entry.error && stopOnError) break;
+  }
+  return {
+    applied: results.filter((entry) => entry.applied).length,
+    failed: results.filter((entry) => entry.error).length,
+    results,
+  };
+};

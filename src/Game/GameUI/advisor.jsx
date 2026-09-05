@@ -11,7 +11,6 @@ import { applyProjectOpsToWorld, normalizeActionEntry, readActionsState, readWor
 import { extractFencedJson, looksLikeProjectOps } from "./advisorBlocks.js";
 import { buildMessageDrafts, splitAtBlockquotes } from "./advisorDrafts.js";
 import Markdown, { MarkdownStyleInjector } from "./markdown.jsx";
-import StatsPane from "./stats.jsx";
 
 Chart.register(...registerables);
 
@@ -618,27 +617,6 @@ const loadMessages = async () => {
     } catch { return []; }
 };
 
-const TabButton = ({ icon, label, active, onClick }) => (
-    <button
-    onClick={onClick}
-    style={{
-        alignItems: "center",
-        background: "none",
-        border: "none",
-        borderBottom: active ? "2px solid #3b82f6" : "2px solid transparent",
-        color: active ? "white" : "rgba(255,255,255,0.55)",
-        cursor: "pointer",
-        display: "flex",
-        fontFamily: "sans-serif",
-        fontSize: "0.88rem",
-        fontWeight: active ? 700 : 500,
-        gap: "0.4rem",
-        padding: "0.9rem 0.85rem",
-    }}
-    >
-    <span style={{ fontSize: "1rem" }}>{icon}</span> {label}
-    </button>
-);
 
 // An advisor reply's prose, with each drafted letter's Send button rendered
 // immediately under the letter it would send.
@@ -833,7 +811,6 @@ const AdvisorPanel = ({ isAdvisorOpen, mapRef, onClose, width, onResize, onOpenA
     }, []);
     const [hasOpened, setHasOpened] = useState(isAdvisorOpen);
     const [hasBootstrapped, setHasBootstrapped] = useState(false);
-    const [activeTab, setActiveTab] = useState("advisor");
     const inputRef = useRef(null);
     const [isResizing, setIsResizing] = useState(false);
     const [handleHover, setHandleHover] = useState(false);
@@ -1209,20 +1186,18 @@ const AdvisorPanel = ({ isAdvisorOpen, mapRef, onClose, width, onResize, onOpenA
                 }} />
             </div>
         )}
-        {/* Header: tabs to flip between the advisor chat and national stats. */}
-        <div style={{ alignItems: "center", borderBottom: "1px solid rgba(255,255,255,0.1)", display: "flex", padding: "0 0.75rem 0 0.35rem" }}>
-        <TabButton icon="🧭" label="Advisor" active={activeTab === "advisor"} onClick={() => setActiveTab("advisor")} />
-        <TabButton icon="📊" label="Stats" active={activeTab === "stats"} onClick={() => setActiveTab("stats")} />
+        {/* Advisor is now its own first-class drawer; Country has a separate launcher/panel. */}
+        <div style={{ alignItems: "center", borderBottom: "1px solid rgba(255,255,255,0.1)", display: "flex", minHeight: "2.65rem", padding: "0 0.75rem 0 0.9rem" }}>
+        <div style={{ alignItems: "center", display: "flex", gap: "0.45rem", color: "rgba(255,255,255,0.82)", fontSize: "0.78rem", fontWeight: 850 }}>
+            <span aria-hidden="true">🧭</span>
+            <span>Advisor</span>
+        </div>
         <div style={{ flex: 1 }} />
-        {activeTab === "advisor" && (
-            <button
-            onClick={async () => { setMessages([]); startChat(); await saveMessages([]); }}
-            title="Clear chat"
-            style={{ background: "none", border: "none", color: "rgba(255,255,255,0.4)", cursor: "pointer", fontSize: "1.35rem", lineHeight: 1, padding: 0, display: "flex", alignItems: "center" }}
-            >🗑</button>
-        )}
-        {/* On phones the panel slides over the 🧭 launcher, making it
-            untappable — this ✕ is the way out. */}
+        <button
+        onClick={async () => { setMessages([]); startChat(); await saveMessages([]); }}
+        title="Clear chat"
+        style={{ background: "none", border: "none", color: "rgba(255,255,255,0.4)", cursor: "pointer", fontSize: "1.25rem", lineHeight: 1, padding: 0, display: "flex", alignItems: "center" }}
+        >🗑</button>
         {onClose && (
             <button
             onClick={onClose}
@@ -1232,12 +1207,7 @@ const AdvisorPanel = ({ isAdvisorOpen, mapRef, onClose, width, onResize, onOpenA
         )}
         </div>
 
-        {/* National stats pane — kept mounted so flipping tabs is instant. */}
-        <div style={{ display: activeTab === "stats" ? "flex" : "none", flex: 1, flexDirection: "column", minHeight: 0 }}>
-        <StatsPane active={isAdvisorOpen && activeTab === "stats"} />
-        </div>
-
-        <div style={{ display: activeTab === "advisor" ? "flex" : "none", flex: 1, flexDirection: "column", minHeight: 0 }}>
+        <div style={{ display: "flex", flex: 1, flexDirection: "column", minHeight: 0 }}>
         {/* Messages — memoized as its own component so typing below (state that
             lives in AdvisorPanel) doesn't re-render the whole history on every
             keystroke. See AdvisorMessageRow's comment for why that mattered. */}

@@ -506,11 +506,14 @@ const statsSubtabStyle = (selected) => ({
     cursor: "pointer",
     display: "flex",
     flex: 1,
+    flexDirection: "column",
     fontSize: "0.72rem",
     fontWeight: 800,
+    gap: "0.15rem",
     justifyContent: "center",
-    minHeight: "2.45rem",
-    padding: "0.45rem 0.55rem",
+    lineHeight: 1.05,
+    minHeight: "2.75rem",
+    padding: "0.38rem 0.5rem",
     transition: "background-color 0.15s, border-color 0.15s, color 0.15s",
 });
 
@@ -1173,7 +1176,7 @@ const StatsPaneBody = ({ active }) => {
     const [worldSnapshot, setWorldSnapshot] = useState(null);
     const worldSnapshotRef = useRef(null);
     const statsLoadRef = useRef({ sequence: 0, controller: null });
-    const [statsView, setStatsView] = useState("diplomacy");
+    const [statsView, setStatsView] = useState("politics");
     const [advancedOpen, setAdvancedOpen] = useState(false);
     const [trackingOpen, setTrackingOpen] = useState(false);
     const [trackingSettings, setTrackingSettings] = useState({ intervalMonths: 0, trackedPolities: [] });
@@ -1764,12 +1767,34 @@ const StatsPaneBody = ({ active }) => {
 
         {!targetCountry && (
             <p style={{ color: "rgba(255,255,255,0.5)", fontSize: "0.85rem" }}>
-            No active game. Start one to see national statistics.
+            No active game. Start one to inspect a country.
             </p>
         )}
 
         {targetCountry && (
             <>
+            {/* First-class Country navigation. Politics, Diplomacy and Economy are siblings. */}
+            <div style={{ display: "flex", gap: "0.42rem", marginBottom: "0.82rem" }}>
+            <button
+            type="button"
+            aria-pressed={statsView === "politics"}
+            onClick={() => setStatsView("politics")}
+            style={statsSubtabStyle(statsView === "politics")}
+            ><span aria-hidden="true">🏛</span><span>Politics</span></button>
+            <button
+            type="button"
+            aria-pressed={statsView === "diplomacy"}
+            onClick={() => setStatsView("diplomacy")}
+            style={statsSubtabStyle(statsView === "diplomacy")}
+            ><span aria-hidden="true">🤝</span><span>Diplomacy</span></button>
+            <button
+            type="button"
+            aria-pressed={statsView === "economy"}
+            onClick={() => setStatsView("economy")}
+            style={statsSubtabStyle(statsView === "economy")}
+            ><span aria-hidden="true">📈</span><span>Economy</span></button>
+            </div>
+
             {/* Country header */}
             <div style={{ alignItems: "flex-start", display: "flex", gap: "0.7rem" }}>
             <div style={{ alignItems: "center", backgroundColor: "rgba(59,130,246,0.16)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: "10px", color: "#93c5fd", display: "flex", flexShrink: 0, fontSize: "0.95rem", fontWeight: 800, height: "2.6rem", justifyContent: "center", overflow: "hidden", width: "2.6rem" }}>
@@ -1821,27 +1846,14 @@ const StatsPaneBody = ({ active }) => {
             )}
             </div>
 
-            <PoliticalOverview
-                profile={publicPoliticalProfile}
-                fallbackGovernment={headerSheet?.government || ""}
-                fallbackLeader={headerSheet?.leader || ""}
-                intelligence={currentPoliticalKnowledge?.intelligence || null}
-            />
-
-            <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.9rem" }}>
-            <button
-            type="button"
-            aria-pressed={statsView === "diplomacy"}
-            onClick={() => setStatsView("diplomacy")}
-            style={statsSubtabStyle(statsView === "diplomacy")}
-            >🤝 Diplomacy</button>
-            <button
-            type="button"
-            aria-pressed={statsView === "economy"}
-            onClick={() => setStatsView("economy")}
-            style={statsSubtabStyle(statsView === "economy")}
-            >📈 Economy</button>
-            </div>
+            {statsView === "politics" && (
+                <PoliticalOverview
+                    profile={publicPoliticalProfile}
+                    fallbackGovernment={headerSheet?.government || ""}
+                    fallbackLeader={headerSheet?.leader || ""}
+                    intelligence={currentPoliticalKnowledge?.intelligence || null}
+                />
+            )}
 
             {statsView === "economy" && state.status === "loading" && (
                 <p style={{ color: "rgba(255,255,255,0.5)", fontSize: "0.82rem", marginTop: "1rem" }}>

@@ -83,6 +83,8 @@ const publicParty = (party) => {
 
 const publicGovernment = (government) => {
   if (!government || typeof government !== "object" || Array.isArray(government)) return {};
+  const rulingPartyIds = cleanStringArray(government.rulingPartyIds, 12);
+  const coalitionPartyIds = cleanStringArray(government.coalitionPartyIds, 12);
   const rulingParties = cleanStringArray(government.rulingParties, 12);
   const coalition = cleanStringArray(government.coalition, 12);
   const headOfState = publicOfficeholder(government.headOfState || government.headOfStateId);
@@ -93,6 +95,9 @@ const publicGovernment = (government) => {
     ...(clean(government.ideology) ? { ideology: clean(government.ideology) } : {}),
     ...(headOfState ? { headOfState } : {}),
     ...(headOfGovernment ? { headOfGovernment } : {}),
+    ...(clean(government.coalitionName) ? { coalitionName: clean(government.coalitionName) } : {}),
+    ...(rulingPartyIds.length ? { rulingPartyIds } : {}),
+    ...(coalitionPartyIds.length ? { coalitionPartyIds } : {}),
     ...(rulingParties.length ? { rulingParties } : {}),
     ...(coalition.length ? { coalition } : {}),
   };

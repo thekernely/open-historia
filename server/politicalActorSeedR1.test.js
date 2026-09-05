@@ -84,13 +84,94 @@ test("Fault Lines migration fills missing actors/tags without overwriting author
       },
     },
   });
+  assert.equal(world.politicalActors.schemaVersion, 2);
   assert.equal(world.politicalActors.byPolity.Ukraine.leader, "Custom Current Leader");
   assert.equal(world.politicalActors.byPolity["Russian Federation"].leader, "Vladimir Putin");
+  assert.equal(world.politicalActors.byPolity["Russian Federation"].parties[0].support.percent, 56);
   assert.equal(world.politicalActors.byPolity["Republic of Poland"].government.headOfGovernment, "Donald Tusk");
+  assert.deepEqual(world.politicalActors.byPolity["Republic of Poland"].government.rulingPartyIds, ["civic-platform"]);
+  assert.deepEqual(world.politicalActors.byPolity["Republic of Poland"].government.rulingParties, ["Platforma Obywatelska"]);
+  assert.deepEqual(world.politicalActors.byPolity["Republic of Poland"].government.coalitionPartyIds, ["polish-peoples-party"]);
+  assert.deepEqual(world.politicalActors.byPolity["Republic of Poland"].government.coalition, ["Polskie Stronnictwo Ludowe"]);
+  assert.equal(world.politicalActors.byPolity.Ukraine.government.coalitionName, "Європейський вибір");
+  assert.deepEqual(world.politicalActors.byPolity.Ukraine.government.rulingPartyIds, ["batkivshchyna"]);
+  assert.deepEqual(world.politicalActors.byPolity.Ukraine.government.coalitionPartyIds, ["udar", "svoboda", "economic-development-ukraine", "sovereign-european-ukraine"]);
+  assert.deepEqual(world.politicalActors.byPolity.Ukraine.government.coalition, ["УДАР", "Свобода", "Економічний розвиток", "Суверенна європейська Україна"]);
+  assert.equal(world.politicalActors.byPolity["Russian Federation"].government.coalition, undefined);
+  assert.ok(world.politicalActors.byPolity.Ukraine.parties.some((party) => party.id === "solidarity-ukraine"));
+  assert.ok(world.politicalActors.byPolity.Ukraine.parties.some((party) => party.id === "economic-development-ukraine"));
+  assert.ok(world.politicalActors.byPolity.Ukraine.parties.some((party) => party.id === "sovereign-european-ukraine"));
 
   const tags = mergeTagsSeed({ Ukraine: ["custom-tag"] });
   assert.deepEqual(tags.Ukraine, ["custom-tag"]);
   assert.ok(tags["Russian Federation"].includes("great-power"));
+});
+
+test("Fault Lines seed enriches sparse legacy party arrays without overwriting authored campaign values", () => {
+  const world = mergePoliticalActorsSeed({
+    politicalActors: {
+      schemaVersion: 1,
+      byPolity: {
+        "Russian Federation": {
+          polityKey: "Russian Federation",
+          parties: [
+            {
+              id: "united-russia",
+              name: "United Russia",
+              support: { percent: 53 },
+              publicDescription: "Custom authored description",
+            },
+          ],
+        },
+        "Republic of Poland": {
+          polityKey: "Republic of Poland",
+          parties: [
+            { id: "civic-platform", name: "Civic Platform", support: { percent: 41 } },
+            { id: "law-and-justice", name: "Law and Justice", support: { percent: 30 } },
+          ],
+        },
+      },
+    },
+  });
+
+  const russia = world.politicalActors.byPolity["Russian Federation"];
+  const unitedRussia = russia.parties.find((party) => party.id === "united-russia");
+  assert.equal(unitedRussia.support.percent, 56, "the exact old Port002B placeholder is upgraded");
+  assert.equal(unitedRussia.name, "Единая Россия", "the exact old seed display name upgrades to the canonical local name");
+  assert.equal(unitedRussia.publicDescription, "Custom authored description", "authored party detail is preserved");
+  assert.ok(russia.parties.some((party) => party.id === "communist-party-russian-federation"));
+  assert.ok(russia.parties.some((party) => party.id === "ldpr"));
+
+  const poland = world.politicalActors.byPolity["Republic of Poland"];
+  const civicPlatform = poland.parties.find((party) => party.id === "civic-platform");
+  const lawAndJustice = poland.parties.find((party) => party.id === "law-and-justice");
+  assert.equal(civicPlatform.support.percent, 41, "a non-legacy authored support value is never replaced");
+  assert.equal(lawAndJustice.support.percent, 36.1, "the exact old Port002B placeholder is upgraded");
+  assert.equal(civicPlatform.name, "Platforma Obywatelska");
+  assert.equal(lawAndJustice.name, "Prawo i Sprawiedliwość");
+  assert.ok(poland.parties.some((party) => party.id === "democratic-left-alliance"));
+  assert.ok(poland.parties.some((party) => party.id === "polish-peoples-party"));
+  assert.equal(poland.parties.find((party) => party.id === "polish-peoples-party").coalition, true);
+});
+
+test("Fault Lines March 2014 party snapshots are sufficiently mapped for the player-facing landscape", () => {
+  const world = mergePoliticalActorsSeed({});
+  const mapped = (polity) => world.politicalActors.byPolity[polity].parties
+    .reduce((sum, party) => sum + (Number(party?.support?.percent) || 0), 0);
+
+  assert.ok(mapped("Russian Federation") >= 90);
+  assert.ok(mapped("Republic of Poland") >= 99);
+  assert.ok(mapped("Ukraine") >= 94);
+
+  const batkivshchyna = world.politicalActors.byPolity.Ukraine.parties.find((party) => party.id === "batkivshchyna");
+  assert.equal(batkivshchyna?.leader, "Yulia Tymoshenko");
+  assert.equal(batkivshchyna?.name, "Батьківщина");
+  assert.equal(batkivshchyna?.shortName, "Батьківщина");
+  assert.ok(batkivshchyna?.aliases?.includes("Fatherland"));
+  assert.equal(
+    world.politicalActors.byPolity["Republic of Poland"].parties.find((party) => party.id === "civic-platform")?.ruling,
+    true,
+  );
 });
 
 test("Fault Lines migration patches Round-Zero game and its linked scenario but skips progressed games", () => {
