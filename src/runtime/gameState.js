@@ -8,7 +8,8 @@ import { dedupeEventLog } from "./eventDedup.js";
 import { normalizeEventTags } from "./eventTags.js";
 import { buildOwnerAliasMap, createOwnerResolver, toCountryName } from "./ownerNames.js";
 import { mergeCountryStatPatch, normalizeCountryStatSheet } from "./countryStats.js";
-import { resolvePolityIdentity } from "./polityIdentity.js";
+import { buildPolityIdentityIndex, resolvePolityIdentity } from "./polityIdentity.js";
+import { applyPoliticalActorMetadataPatch, normalizePoliticalActors } from "./politicalActors.js";
 import {
   DEFAULT_PATROL_RADIUS_KM,
   daysBetweenDates,
@@ -492,8 +493,9 @@ const normalizeReactionMap = (value) => {
 
         const emoji = normalizeOptionalString(reaction.emoji);
         const code = normalizeOptionalString(reaction.code);
+        const polityKey = normalizeOptionalString(reaction.polityKey || reaction.identityKey);
 
-        if (!emoji && !code) {
+        if (!emoji && !code && !polityKey) {
           return [name, null];
         }
 
@@ -502,6 +504,7 @@ const normalizeReactionMap = (value) => {
           {
             ...(code ? { code } : {}),
             ...(emoji ? { emoji } : {}),
+            ...(polityKey ? { polityKey } : {}),
           },
         ];
       })
@@ -517,6 +520,7 @@ const normalizeChatMessage = (message, index = 0) => {
     return {
       code: "",
       id: generateId(`message-${index}`),
+      polityKey: "",
       reactions: {},
       role: "system",
       speaker: "",
@@ -538,6 +542,7 @@ const normalizeChatMessage = (message, index = 0) => {
   return {
     code: normalizeOptionalString(message.code),
     id: normalizeOptionalString(message.id) || generateId(`message-${index}`),
+    polityKey: normalizeOptionalString(message.polityKey || message.identityKey),
     reactions: normalizeReactionMap(message.reactions),
     role: normalizeOptionalString(message.role || message.sender) || "system",
     speaker: normalizeOptionalString(message.speaker || message.senderName),
@@ -562,6 +567,7 @@ const normalizeChatCountry = (entry) => {
     return {
       code: "",
       name,
+      polityKey: "",
     };
   }
 
@@ -571,14 +577,16 @@ const normalizeChatCountry = (entry) => {
 
   const name = normalizeOptionalString(entry.name || entry.label || entry.country);
   const code = normalizeOptionalString(entry.code || entry.id);
+  const polityKey = normalizeOptionalString(entry.polityKey || entry.identityKey);
 
-  if (!name && !code) {
+  if (!name && !code && !polityKey) {
     return null;
   }
 
   return {
     code,
-    name: name || code,
+    name: name || polityKey || code,
+    polityKey,
   };
 };
 
@@ -609,6 +617,533 @@ export const normalizeChats = (chats) =>
   normalizeArray(chats)
     .map((entry, index) => normalizeChatEntry(entry, index))
     .filter(Boolean);
+
+const yieldChatRead = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+const createChatReadBudget = (milliseconds = 5) => {
+  let startedAt =
+    typeof performance !== "undefined" && performance.now
+      ? performance.now()
+      : Date.now();
+
+  return async () => {
+    const now =
+      typeof performance !== "undefined" && performance.now
+        ? performance.now()
+        : Date.now();
+    if (now - startedAt < milliseconds) return;
+    await yieldChatRead();
+    startedAt =
+      typeof performance !== "undefined" && performance.now
+        ? performance.now()
+        : Date.now();
+  };
+};
+
+const normalizeChatEntryCooperatively = async (entry, index = 0) => {
+  if (!entry || typeof entry !== "object") return null;
+
+  const countries = normalizeArray(entry.countries || entry.participants)
+    .map((country) => normalizeChatCountry(country))
+    .filter(Boolean);
+  if (countries.length === 0) return null;
+
+  const rawMessages = normalizeArray(entry.messages);
+  const messages = [];
+  const yieldBudget = createChatReadBudget(5);
+  for (let messageIndex = 0; messageIndex < rawMessages.length; messageIndex += 1) {
+    const message = normalizeChatMessage(rawMessages[messageIndex], messageIndex);
+    if (message) messages.push(message);
+
+    // Yield by elapsed CPU time, not message count. One diplomatic novel can cost
+    // much more than two dozen one-line messages.
+    await yieldBudget();
+  }
+
+  return {
+    countries,
+    id: normalizeOptionalString(entry.id) || generateId(`chat-${index}`),
+    linkedEventId: normalizeOptionalString(entry.linkedEventId || entry.eventId),
+    messages,
+    source: normalizeOptionalString(entry.source) || "manual",
+    status: normalizeOptionalString(entry.status) || "open",
+    title: normalizeOptionalString(entry.title),
+  };
+};
+
+const normalizeChatsCooperatively = async (chats) => {
+  const raw = normalizeArray(chats);
+  const out = [];
+  for (let index = 0; index < raw.length; index += 1) {
+    const chat = await normalizeChatEntryCooperatively(raw[index], index);
+    if (chat) out.push(chat);
+    if ((index + 1) % 4 === 0) await yieldChatRead();
+  }
+  return out;
+};
+
+// ---- Save-aware diplomatic identity -----------------------------------------
+//
+// Chat JSON is deliberately allowed to stay a simple transport/storage shape.
+// The semantic question — "which actor in THIS save does this participant mean?"
+// — belongs here, beside the polity lifecycle resolver, not in four UI call sites.
+//
+// A stable polityOverride key is the lineage identity. Display names may change,
+// but the key does not; old names/aliases can therefore follow the actor through
+// regime changes without teaching chat code anything about Germany, Rome, 1201,
+// 2026, or whatever cursed scenario the player loaded this time.
+const CHAT_MAP_CODE_PATTERN = /^[A-Z]{2,3}$/;
+
+const currentPolityDisplayName = (world, polityKey) => {
+  const record = world?.polityOverrides?.[polityKey];
+  return normalizeOptionalString(record?.name || record?.code || polityKey);
+};
+
+const resolveChatIdentityTokens = ({ code = "", name = "", polityKey = "" } = {}, world, identityIndex = null) => {
+  const strongTokens = [polityKey, name]
+    .map(normalizeOptionalString)
+    .filter(Boolean);
+  const compactMapCode = CHAT_MAP_CODE_PATTERN.test(normalizeOptionalString(code));
+  const weakCodeToken = normalizeOptionalString(code);
+  const resolutions = [];
+  let ambiguous = false;
+
+  const tryToken = (token) => {
+    if (!token) return;
+    const resolution = resolvePolityIdentity(token, world, {
+      allowUnknown: false,
+      requireActive: false,
+      allowCoreMatch: true,
+      allowStockBase: true,
+      identityIndex,
+    });
+    if (resolution.resolved) resolutions.push(resolution);
+    if (String(resolution.status || "").startsWith("ambiguous")) ambiguous = true;
+  };
+
+  for (const token of strongTokens) tryToken(token);
+
+  // `code` is unfortunately mixed legacy data: generated chats historically used
+  // full polity names here, while the UI used a 3-letter map code for flags. A
+  // short map code is useful as a FALLBACK but must not contradict a perfectly good
+  // lineage/name resolution (DEU must not split "German Republic" back into a
+  // second stock "Germany" actor after a rename).
+  if (resolutions.length === 0 || !compactMapCode) tryToken(weakCodeToken);
+
+  const unique = new Map();
+  for (const resolution of resolutions) {
+    unique.set(normalizeString(resolution.resolved).toLowerCase(), resolution);
+  }
+
+  if (unique.size !== 1) {
+    return {
+      ambiguous: ambiguous || unique.size > 1,
+      candidates: [...unique.values()].flatMap((entry) => entry.candidates || []),
+      resolved: "",
+      safe: false,
+      status: unique.size > 1 ? "conflicting-chat-identity" : (ambiguous ? "ambiguous-chat-identity" : "unresolved-chat-identity"),
+    };
+  }
+
+  const resolution = [...unique.values()][0];
+  return {
+    ...resolution,
+    safe: true,
+  };
+};
+
+export const resolveChatParticipantIdentity = (entry, world, identityIndex = null) => {
+  const participant = normalizeChatCountry(entry);
+  if (!participant) {
+    return {
+      participant: null,
+      polityKey: "",
+      safe: false,
+      status: "empty-chat-participant",
+    };
+  }
+
+  const resolution = resolveChatIdentityTokens(participant, world, identityIndex);
+  if (!resolution.safe) {
+    return {
+      participant,
+      polityKey: "",
+      safe: false,
+      status: resolution.status,
+      candidates: resolution.candidates || [],
+    };
+  }
+
+  const polityKey = resolution.resolved;
+  return {
+    participant: {
+      ...participant,
+      // Preserve a real map/GID code when one exists; Phase 5B can use the stable
+      // key for identity while the old UI keeps its flag lookup working meanwhile.
+      code: participant.code || polityKey,
+      name: currentPolityDisplayName(world, polityKey) || participant.name || polityKey,
+      polityKey,
+    },
+    polityKey,
+    safe: true,
+    status: resolution.status,
+  };
+};
+
+const reconcileReactionMapForWorld = (reactions, world, identityIndex = null) => {
+  const next = {};
+  for (const [name, reaction] of Object.entries(normalizeReactionMap(reactions))) {
+    const resolved = resolveChatParticipantIdentity({
+      code: reaction.code,
+      name,
+      polityKey: reaction.polityKey,
+    }, world, identityIndex);
+    const nextName = resolved.safe ? resolved.participant.name : name;
+    if (!nextName) continue;
+
+    // If the same actor appears under an old and a current alias, one reaction slot
+    // is enough. Prefer the later entry's emoji/code while preserving its lineage.
+    next[nextName] = {
+      ...reaction,
+      ...(resolved.safe ? {
+        code: reaction.code || resolved.participant.code || resolved.polityKey,
+        polityKey: resolved.polityKey,
+      } : {}),
+    };
+  }
+  return next;
+};
+
+const reconcileChatMessageForWorld = (message, world, identityIndex = null) => {
+  const normalized = normalizeChatMessage(message);
+  if (!normalized) return null;
+
+  const resolved = resolveChatParticipantIdentity({
+    code: normalized.code,
+    name: normalized.speaker,
+    polityKey: normalized.polityKey,
+  }, world, identityIndex);
+
+  return {
+    ...normalized,
+    ...(resolved.safe ? {
+      code: normalized.code || resolved.participant.code || resolved.polityKey,
+      polityKey: resolved.polityKey,
+      speaker: resolved.participant.name,
+    } : {}),
+    reactions: reconcileReactionMapForWorld(normalized.reactions, world, identityIndex),
+  };
+};
+
+export const reconcileChatForWorld = (entry, world, index = 0, identityIndex = null) => {
+  const chat = normalizeChatEntry(entry, index);
+  if (!chat) return null;
+
+  const countries = [];
+  const seenSafeKeys = new Set();
+  for (const country of chat.countries) {
+    const resolved = resolveChatParticipantIdentity(country, world, identityIndex);
+    if (!resolved.participant) continue;
+
+    if (resolved.safe) {
+      const key = normalizeString(resolved.polityKey).toLowerCase();
+      if (seenSafeKeys.has(key)) continue; // same actor entered twice via aliases
+      seenSafeKeys.add(key);
+    }
+    countries.push(resolved.participant);
+  }
+  if (countries.length === 0) return null;
+
+  return {
+    ...chat,
+    countries,
+    messages: chat.messages
+      .map((message) => reconcileChatMessageForWorld(message, world, identityIndex))
+      .filter(Boolean),
+  };
+};
+
+export const chatParticipantSetKey = (entry, world, identityIndex = null) => {
+  // Current Continuum saves persist stable polityKey on chat participants. Computing
+  // a participant-set key must never reconcile every MESSAGE in the thread: the old
+  // implementation did exactly that and rebuilt the full polity identity index many
+  // times while merely asking "which countries are in this chat?".
+  const rawCountries = normalizeArray(entry?.countries || entry?.participants);
+  if (rawCountries.length) {
+    const directKeys = rawCountries
+      .map((country) => normalizeString(country?.polityKey).toLowerCase())
+      .filter(Boolean);
+    if (directKeys.length === rawCountries.length) {
+      return [...new Set(directKeys)].sort().join("\u001f");
+    }
+  }
+
+  const index = identityIndex || buildPolityIdentityIndex(world);
+  const chat = reconcileChatForWorld(entry, world, 0, index);
+  if (!chat || chat.countries.length === 0) return "";
+
+  const keys = [];
+  for (const country of chat.countries) {
+    const resolved = resolveChatParticipantIdentity(country, world, index);
+    if (!resolved.safe || !resolved.polityKey) return "";
+    keys.push(normalizeString(resolved.polityKey).toLowerCase());
+  }
+
+  return [...new Set(keys)].sort().join("\u001f");
+};
+
+const chatMessageFingerprint = (message) => {
+  const normalized = normalizeChatMessage(message);
+  if (!normalized) return "";
+  const reactions = Object.entries(normalized.reactions || {})
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([name, reaction]) => `${name}:${reaction?.emoji || ""}:${reaction?.polityKey || reaction?.code || ""}`)
+    .join("|");
+  return [
+    normalized.polityKey || normalized.speaker,
+    normalized.role,
+    normalized.text,
+    normalized.time,
+    reactions,
+  ].map((value) => normalizeString(value).toLowerCase()).join("\u001e");
+};
+
+const mergeChatMessages = (primaryMessages, incomingMessages) => {
+  const merged = normalizeArray(primaryMessages).map((entry) => normalizeChatMessage(entry)).filter(Boolean);
+  const ids = new Set(merged.map((message) => normalizeString(message.id)).filter(Boolean));
+  const fingerprints = new Set(merged.map(chatMessageFingerprint).filter(Boolean));
+
+  for (const message of normalizeArray(incomingMessages).map((entry) => normalizeChatMessage(entry)).filter(Boolean)) {
+    const id = normalizeString(message.id);
+    const fingerprint = chatMessageFingerprint(message);
+    const duplicate = (id && ids.has(id)) || (fingerprint && fingerprints.has(fingerprint));
+
+    if (duplicate) {
+      // A stale structural copy can race a richer copy of the same reply. Never let
+      // reconciliation throw away the hidden continuity memory merely because the
+      // visible message already exists.
+      const matchIndex = merged.findIndex((existing) => {
+        const existingId = normalizeString(existing.id);
+        if (id && existingId === id) return true;
+        return fingerprint && chatMessageFingerprint(existing) === fingerprint;
+      });
+
+      if (
+        matchIndex >= 0 &&
+        !normalizeOptionalString(merged[matchIndex].memorySummary) &&
+        normalizeOptionalString(message.memorySummary)
+      ) {
+        merged[matchIndex] = {
+          ...merged[matchIndex],
+          memorySummary: message.memorySummary,
+        };
+      }
+      continue;
+    }
+
+    merged.push(message);
+    if (id) ids.add(id);
+    if (fingerprint) fingerprints.add(fingerprint);
+  }
+
+  return merged;
+};
+
+const mergeChatRecords = (primary, incoming, world, identityIndex = null) => {
+  const left = reconcileChatForWorld(primary, world, 0, identityIndex);
+  const right = reconcileChatForWorld(incoming, world, 0, identityIndex);
+  if (!left) return right;
+  if (!right) return left;
+
+  return reconcileChatForWorld({
+    ...right,
+    ...left,
+    // The established thread owns its id/title/status. Incoming material contributes
+    // history and missing metadata, never a surprise identity replacement.
+    id: left.id || right.id,
+    linkedEventId: left.linkedEventId || right.linkedEventId,
+    messages: mergeChatMessages(left.messages, right.messages),
+    source: left.source || right.source,
+    status: left.status || right.status || "open",
+    title: left.title || right.title,
+  }, world, 0, identityIndex);
+};
+
+export const reconcileChatsForWorld = (chats, world, identityIndex = null) => {
+  const index = identityIndex || buildPolityIdentityIndex(world);
+  const reconciled = normalizeArray(chats)
+    .map((entry, entryIndex) => reconcileChatForWorld(entry, world, entryIndex, index))
+    .filter(Boolean);
+
+  const output = [];
+  const openByParticipants = new Map();
+
+  for (const chat of reconciled) {
+    // Closed chats are history. Never fold them into a current negotiation merely
+    // because the same countries are talking again twenty years later.
+    if (normalizeString(chat.status).toLowerCase() === "closed") {
+      output.push(chat);
+      continue;
+    }
+
+    const key = chatParticipantSetKey(chat, world, index);
+    if (!key) {
+      // Ambiguous/unresolved actors are intentionally NOT merged. This is the civil-
+      // war safety wall: uncertainty produces two threads, not one invented polity.
+      output.push(chat);
+      continue;
+    }
+
+    const existingIndex = openByParticipants.get(key);
+    if (existingIndex == null) {
+      openByParticipants.set(key, output.length);
+      output.push(chat);
+      continue;
+    }
+
+    output[existingIndex] = mergeChatRecords(output[existingIndex], chat, world, index);
+  }
+
+  return output;
+};
+
+// The player is implicit in every diplomatic thread. Older generated chats sometimes
+// stored the player as an ordinary participant as well, producing self-chats such as
+// "United Kingdom, German Empire" while the campaign player was that same German
+// lineage. Strip the player ONLY when its save-aware lineage resolves unambiguously,
+// then reconcile again so [Britain, player] and [Britain] collapse into one thread.
+// If the player identity is ambiguous/unresolved, preserve the data rather than guess.
+export const reconcileChatsForPlayer = (chats, world, playerCountry = "", identityIndex = null) => {
+  const index = identityIndex || buildPolityIdentityIndex(world);
+  const base = reconcileChatsForWorld(chats, world, index);
+  const playerIdentity = resolveChatParticipantIdentity(
+    typeof playerCountry === "object" ? playerCountry : { name: playerCountry },
+    world,
+    index,
+  );
+
+  if (!playerIdentity.safe || !playerIdentity.polityKey) return base;
+
+  const playerKey = normalizeString(playerIdentity.polityKey).toLowerCase();
+  const stripped = base
+    .map((chat) => {
+      const countries = normalizeArray(chat.countries).filter((country) => {
+        const resolved = resolveChatParticipantIdentity(country, world, index);
+        if (!resolved.safe || !resolved.polityKey) return true;
+        return normalizeString(resolved.polityKey).toLowerCase() !== playerKey;
+      });
+
+      if (countries.length === 0) return null;
+      return { ...chat, countries };
+    })
+    .filter(Boolean);
+
+  return reconcileChatsForWorld(stripped, world, index);
+};
+
+// R2.33 — fast current-save path.
+//
+// Modern Continuum threads already carry stable polityKey on every participant.
+// The full legacy reconciler resolves every participant/message repeatedly and may
+// merge the archive multiple times. On mature saves that can take seconds.
+//
+// Prove the archive is safe for the cheap path. Any legacy/ambiguous/duplicate case
+// falls straight back to the old semantic reconciler.
+export const reconcileStableChatsForPlayer = (chats, world, playerCountry = "", identityIndex = null) => {
+  const rows = normalizeArray(chats);
+  const index = identityIndex || buildPolityIdentityIndex(world);
+  const playerIdentity = resolveChatParticipantIdentity(
+    typeof playerCountry === "object" ? playerCountry : { name: playerCountry },
+    world,
+    index,
+  );
+
+  if (!playerIdentity.safe || !playerIdentity.polityKey) {
+    return reconcileChatsForPlayer(rows, world, playerCountry, index);
+  }
+
+  const playerKey = normalizeString(playerIdentity.polityKey).toLowerCase();
+  const output = [];
+  const openThreadKeys = new Set();
+
+  for (const chat of rows) {
+    const rawCountries = normalizeArray(chat?.countries);
+    if (!rawCountries.length) continue;
+
+    const countries = [];
+    const localKeys = new Set();
+
+    for (const country of rawCountries) {
+      const key = normalizeString(country?.polityKey).toLowerCase();
+      if (!key) return reconcileChatsForPlayer(rows, world, playerCountry, index);
+      if (key === playerKey || localKeys.has(key)) continue;
+      localKeys.add(key);
+      countries.push(country);
+    }
+
+    if (!countries.length) continue;
+
+    if (normalizeString(chat?.status).toLowerCase() !== "closed") {
+      const threadKey = [...localKeys].sort().join("\\u001f");
+      if (!threadKey || openThreadKeys.has(threadKey)) {
+        return reconcileChatsForPlayer(rows, world, playerCountry, index);
+      }
+      openThreadKeys.add(threadKey);
+    }
+
+    output.push(
+      countries.length === rawCountries.length
+        ? chat
+        : { ...chat, countries },
+    );
+  }
+
+  return output;
+};
+
+// Merge newly generated/outreach chats onto the LIVE stored list. Existing storage
+// wins identity/id/order; a new unmatched thread is prepended. This is intentionally
+// separate from normalizeChats so structural parsing never starts making historical
+// claims about which two actors are "really" the same country.
+export const mergeIncomingChats = (existingChats, incomingChats, world, { playerCountry = "" } = {}) => {
+  const identityIndex = buildPolityIdentityIndex(world);
+  const reconcile = (list) => playerCountry
+    ? reconcileStableChatsForPlayer(list, world, playerCountry, identityIndex)
+    : reconcileChatsForWorld(list, world, identityIndex);
+  const base = reconcile(existingChats);
+  const incoming = reconcile(incomingChats);
+
+  // Pre-index current open threads once. The old findIndex + participant-key loop
+  // recomputed semantic identity across the entire archive for every incoming chat.
+  const openByKey = new Map();
+  for (let index = 0; index < base.length; index += 1) {
+    const candidate = base[index];
+    if (normalizeString(candidate?.status).toLowerCase() === "closed") continue;
+    const key = chatParticipantSetKey(candidate, world, identityIndex);
+    if (key && !openByKey.has(key)) openByKey.set(key, index);
+  }
+
+  for (let index = incoming.length - 1; index >= 0; index -= 1) {
+    const chat = incoming[index];
+    const status = normalizeString(chat.status).toLowerCase();
+    const key = status === "closed" ? "" : chatParticipantSetKey(chat, world, identityIndex);
+    const existingIndex = key && openByKey.has(key) ? openByKey.get(key) : -1;
+
+    if (existingIndex >= 0) {
+      base[existingIndex] = mergeChatRecords(base[existingIndex], chat, world, identityIndex);
+    } else {
+      base.unshift(chat);
+      // unshift shifts every prior numeric index by one. Incoming count is tiny
+      // (<=3 per turn), so update the compact lookup rather than rescanning chats.
+      for (const [knownKey, knownIndex] of openByKey.entries()) {
+        openByKey.set(knownKey, knownIndex + 1);
+      }
+      if (key) openByKey.set(key, 0);
+    }
+  }
+
+  return reconcile(base);
+};
 
 const normalizeRegionTransfer = (entry) => {
   if (!entry || typeof entry !== "object") {
@@ -3285,6 +3820,7 @@ export const normalizeWorldState = (world) => {
     ...nextWorld,
     countryTags,
     countryStats,
+    politicalActors: normalizePoliticalActors(nextWorld.politicalActors),
     actionSuggestions: normalizeActionSuggestions(nextWorld.actionSuggestions),
     activeCatalyst: normalizeCatalyst(nextWorld.activeCatalyst),
     consolidatedHistory: normalizeConsolidatedHistory(nextWorld.consolidatedHistory),
@@ -3515,8 +4051,22 @@ export const readWorldStateView = async ({ force = false } = {}) => {
   return normalized;
 };
 
-export const readWorldState = async ({ force = false } = {}) =>
-  normalizeWorldState(await readJson(JSON_URLS.world, { defaultValue: WORLD_DEFAULTS, force }));
+export const readWorldState = async ({ force = false } = {}) => {
+  const raw = await readJson(JSON_URLS.world, {
+    defaultValue: WORLD_DEFAULTS,
+    force,
+    clone: false,
+  });
+
+  // Return a fresh canonical working object. Existing writers intentionally mutate
+  // their working copy before writeWorldState(); the raw runtime cache must stay
+  // read-only to other callers.
+  const startedAt = typeof performance !== "undefined" ? performance.now() : Date.now();
+  const normalized = normalizeWorldState(raw);
+  const elapsed = (typeof performance !== "undefined" ? performance.now() : Date.now()) - startedAt;
+  reportPerfOperation("normalize world state", elapsed, { warnAt: 40 });
+  return normalized;
+};
 
 // Same-tab cache agreement after a country Stats commit.
 //
@@ -3585,16 +4135,36 @@ export const primeCountryStatsWorkerCommit = async ({
 };
 
 export const writeWorldState = async (world, options = {}) => {
+  // Domain-specific writers may suppress the broad world-updated broadcast and
+  // emit a narrower event of their own, but they still pass through this single
+  // canonical persistence seam.
+  const startedAt = typeof performance !== "undefined" ? performance.now() : Date.now();
   const normalized = normalizeWorldState(world);
-  // Edited/AI-written polity names, aliases and notes get translated (and
-  // saved to the server language pack) the moment they're written, not when
-  // they first happen to be rendered somewhere.
+  const elapsed = (typeof performance !== "undefined" ? performance.now() : Date.now()) - startedAt;
+  reportPerfOperation("normalize world before write", elapsed, { warnAt: 40 });
+
+  // Edited/AI-written polity names, aliases and notes get translated (and saved
+  // to the server language pack) at the write boundary.
   enqueueContentStrings(normalized.polityOverrides);
-  return writeJson(JSON_URLS.world, normalized, { pretty: true, ...options });
+  const saved = await writeJson(JSON_URLS.world, normalized, {
+    pretty: false,
+    cloneResult: false,
+    ...options,
+  });
+
+  // `normalized` is a fresh object owned by this function; retain it as the
+  // read-only view so panels do not immediately normalize the whole save again.
+  worldViewRaw = saved;
+  worldViewNormalized = normalized;
+  return saved;
 };
 
 export const readGameData = async ({ force = false } = {}) =>
-  normalizeGameData(await readJson(JSON_URLS.game, { defaultValue: GAME_DEFAULTS, force }));
+  normalizeGameData(await readJson(JSON_URLS.game, {
+    defaultValue: GAME_DEFAULTS,
+    force,
+    clone: false,
+  }));
 
 // Every game.json write re-stamps the player's unit-system choice rather than
 // trusting whatever the caller is holding, because none of these callers holds a
@@ -3614,7 +4184,7 @@ export const writeGameData = async (game, options = {}) => {
   return writeJson(
     JSON_URLS.game,
     chosenBetaUnits === null ? next : { ...next, betaUnits: chosenBetaUnits },
-    { pretty: true, ...options },
+    { pretty: false, ...options },
   );
 };
 
@@ -3622,7 +4192,7 @@ export const readActionsState = async ({ force = false } = {}) =>
   normalizeActions(await readJson(JSON_URLS.actions, { defaultValue: [], force }));
 
 export const writeActionsState = async (actions, options = {}) =>
-  writeJson(JSON_URLS.actions, normalizeActions(actions), { pretty: true, ...options });
+  writeJson(JSON_URLS.actions, normalizeActions(actions), { pretty: false, ...options });
 
 export const readEventsState = async ({ force = false } = {}) =>
   normalizeEvents(await readJson(JSON_URLS.events, { defaultValue: [], force }));
@@ -3633,7 +4203,7 @@ export const writeEventsState = async (events, options = {}) => {
   const normalized = dedupeEventLog(normalizeEvents(events));
   // New/edited event text follows the UI language immediately (see above).
   enqueueContentStrings(normalized);
-  return writeJson(JSON_URLS.events, normalized, { pretty: true, ...options });
+  return writeJson(JSON_URLS.events, normalized, { pretty: false, ...options });
 };
 
 // Spy intercepts live in their own asset rather than in world.json: they are
@@ -3644,14 +4214,94 @@ export const readInterceptsState = async ({ force = false } = {}) => {
   return raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
 };
 
-export const writeInterceptsState = async (intercepts, options = {}) =>
-  writeJson(JSON_URLS.intercepts, intercepts && typeof intercepts === "object" ? intercepts : {}, { pretty: true, ...options });
+export const writeInterceptsState = async (intercepts, options = {}) => {
+  const result = await writeJson(
+    JSON_URLS.intercepts,
+    intercepts && typeof intercepts === "object" ? intercepts : {},
+    { pretty: false, ...options },
+  );
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("oh:spy-intercepts-updated"));
+  }
+  return result;
+};
 
-export const readChatsState = async ({ force = false } = {}) =>
-  normalizeChats(await readJson(JSON_URLS.chat, { defaultValue: [], force }));
+let chatViewRaw = null;
+let chatViewNormalized = null;
+let chatViewPromise = null;
 
-export const writeChatsState = async (chats, options = {}) =>
-  writeJson(JSON_URLS.chat, normalizeChats(chats), { pretty: true, ...options });
+export const readChatsStateView = async ({ force = false } = {}) => {
+  const raw = await readJson(JSON_URLS.chat, {
+    defaultValue: [],
+    force,
+    clone: false,
+  });
+
+  if (!force && raw === chatViewRaw && chatViewNormalized) {
+    return chatViewNormalized;
+  }
+  if (!force && raw === chatViewRaw && chatViewPromise) {
+    return chatViewPromise;
+  }
+
+  chatViewRaw = raw;
+  chatViewPromise = normalizeChatsCooperatively(raw)
+    .then((normalized) => {
+      if (chatViewRaw === raw) chatViewNormalized = normalized;
+      return normalized;
+    })
+    .finally(() => {
+      if (chatViewRaw === raw) chatViewPromise = null;
+    });
+
+  return chatViewPromise;
+};
+
+export const readChatsState = async ({ force = false, world = null, playerCountry = "" } = {}) => {
+  // Structural normalization already creates fresh transport objects, so cloning
+  // the complete diplomatic archive before normalization only doubles synchronous
+  // work and memory.
+  const raw = await readJson(JSON_URLS.chat, {
+    defaultValue: [],
+    force,
+    clone: false,
+  });
+  const chats = await normalizeChatsCooperatively(raw);
+  if (!world) return chats;
+  return playerCountry
+    ? reconcileStableChatsForPlayer(chats, world, playerCountry)
+    : reconcileChatsForWorld(chats, world);
+};
+
+// Serialize every chat writer at the persistence choke point. A player-message
+// save followed immediately by an NPC reply must not be able to complete out of
+// order and let the older request overwrite the newer history.
+let chatWriteQueue = Promise.resolve();
+
+export const writeChatsState = (chats, {
+  world = null,
+  playerCountry = "",
+  skipSnapshotClone = false,
+  ...options
+} = {}) => {
+  const normalized = world
+    ? (playerCountry
+      ? reconcileStableChatsForPlayer(chats, world, playerCountry)
+      : reconcileChatsForWorld(chats, world))
+    : normalizeChats(chats);
+  const snapshot = skipSnapshotClone ? normalized : cloneValue(normalized);
+
+  const write = async () => {
+    const saved = await writeJson(JSON_URLS.chat, snapshot, { pretty: false, ...options });
+    chatViewRaw = saved;
+    chatViewNormalized = normalized;
+    chatViewPromise = null;
+    return saved;
+  };
+  const pending = chatWriteQueue.then(write, write);
+  chatWriteQueue = pending.then(() => undefined, () => undefined);
+  return pending;
+};
 
 export const readCountryStatsBundle = async ({ force = false } = {}) => {
   const [actions, events, game, world] = await Promise.all([
@@ -3675,7 +4325,10 @@ export const readCountryStatsBundle = async ({ force = false } = {}) => {
 export const readGameStateBundle = async ({ force = false } = {}) => {
   const [actions, chats, events, game, world] = await Promise.all([
     readActionsState({ force }),
-    readChatsState({ force }),
+    // Local canonical chat writes keep this archive current in memory. Do not
+    // re-fetch and rebuild the complete diplomatic history merely because a turn
+    // starts.
+    readChatsState({ force: false }),
     readEventsState({ force }),
     readGameData({ force }),
     readWorldState({ force }),
@@ -3683,7 +4336,7 @@ export const readGameStateBundle = async ({ force = false } = {}) => {
 
   return {
     actions,
-    chats,
+    chats: reconcileStableChatsForPlayer(chats, world, game.country),
     events,
     game,
     world,
@@ -3980,6 +4633,13 @@ const applyPolityAndTerritoryImpacts = ({
       const merged = applyCountryStatPatchToWorld(world, code, change.stats, {
         continuity: eventId ? { accountedEventIds: [eventId] } : null,
       });
+
+      // Political Actors are the live political-profile authority. Event schemas
+      // still express explicit leader/government changes through stats, so mirror
+      // only those semantic event mutations here. Normal Stats generation never
+      // comes through this path and therefore cannot overwrite actor identity.
+      applyPoliticalActorMetadataPatch(world, code, change.stats);
+
       const rep = Number(merged?.indices?.internationalReputation);
       if (Number.isFinite(rep)) {
         world.internationalReputation[code] = Math.max(0, Math.min(100, Math.round(rep)));

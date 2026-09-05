@@ -2238,7 +2238,7 @@ const normalizeRuntimeWorld = (assetKey, data) => {
 // be a legacy code or a polity legitimately named ROM, and "Russia" may be a name
 // or a custom polity that happens to read like one.
 // ---------------------------------------------------------------------------
-const ownerSchemaChecked = new Set();
+const ownerSchemaChecked = new Map();
 
 const migrateOwnerRecordAtPaths = (label, paths) => {
   const world = readJsonFile(paths.world, null);
@@ -2307,8 +2307,10 @@ const migrateOwnerRecordAtPaths = (label, paths) => {
 
 const ensureScenarioOwnerSchema = (scenarioId) => {
   const key = `scenario:${scenarioId}`;
-  if (ownerSchemaChecked.has(key)) return;
-  ownerSchemaChecked.add(key);
+  const markerPath = getScenarioJsonPath(scenarioId, "world");
+  const marker = fs.existsSync(markerPath) ? fs.statSync(markerPath).mtimeMs : 0;
+  if (ownerSchemaChecked.get(key) === marker) return;
+  ownerSchemaChecked.set(key, marker);
   try {
     // Match the runtime's geometry fallback while deriving identity provenance.
     // A historical scenario often recolours/re-owns the built-in GADM regions
@@ -2341,8 +2343,10 @@ const ensureScenarioOwnerSchema = (scenarioId) => {
 
 const ensureGameOwnerSchema = (gameId) => {
   const key = `game:${gameId}`;
-  if (ownerSchemaChecked.has(key)) return;
-  ownerSchemaChecked.add(key);
+  const markerPath = getGameJsonPath(gameId, "world");
+  const marker = fs.existsSync(markerPath) ? fs.statSync(markerPath).mtimeMs : 0;
+  if (ownerSchemaChecked.get(key) === marker) return;
+  ownerSchemaChecked.set(key, marker);
   try {
     // A game MUST resolve owners with its scenario's context, not its own.
     //
