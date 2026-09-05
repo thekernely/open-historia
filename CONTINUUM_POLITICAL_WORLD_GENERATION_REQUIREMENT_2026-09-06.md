@@ -76,3 +76,22 @@ Anything could happen - but it should make sense that it happened.
 Phase006 may generate missing structured political inputs such as leader traits, perceptions, party/power-bloc response profiles, government structure, and strategic state when allowed by the authority hierarchy.
 
 It must not treat current `behavioralDisposition` as AI-authored political truth when the native disposition engine can derive it. Behavioral disposition is runtime/campaign-derived state produced from structured canonical inputs and current pressure. Generation supplies the organism; native simulation calculates its current decision-facing condition.
+
+## Phase006A executable contract
+
+Phase006A materializes this requirement in `src/runtime/politicalWorldGeneration.js`.
+
+The native contract owns:
+- deterministic relevance depth classification;
+- completeness/needs assessment;
+- bounded relevance-ranked generation batches;
+- exact polity/date/depth proposal envelopes;
+- strict stable IDs for generated parties and power blocs;
+- regime-aware rejection of fake non-electoral party polling;
+- rejection of AI-authored `behavioralDisposition` and `politicalPressures`;
+- scenario-date boundary checks for supplied historical/reference dates;
+- missing-only merges that preserve authored values;
+- explicit reviewed opt-in before a generated proposal may expand an already-authored party/power-bloc roster;
+- applied-path provenance returned for later persistence/review.
+
+Phase006A does NOT call an AI, mutate the world, run the political clock, or generate events. Phase006B may build AI requests on top of this contract; Phase006C may expose review/apply UX. Those later phases must not bypass the native validator/application seam.
