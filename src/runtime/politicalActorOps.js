@@ -7,7 +7,10 @@ import {
   normalizePoliticalActorRecord,
   normalizePoliticalActors,
   normalizePoliticalParty,
+  normalizePoliticalPowerBloc,
+  POLITICAL_ACTORS_SCHEMA_VERSION,
   resolvePoliticalParty,
+  resolvePoliticalPowerBloc,
 } from "./politicalActors.js";
 
 export const POLITICAL_ACTOR_OPS = Object.freeze({
@@ -15,6 +18,10 @@ export const POLITICAL_ACTOR_OPS = Object.freeze({
   UPDATE_PARTY: "update-party",
   SET_PARTY_SUPPORT: "set-party-support",
   SET_PARTY_LEADER: "set-party-leader",
+  CREATE_POWER_BLOC: "create-power-bloc",
+  UPDATE_POWER_BLOC: "update-power-bloc",
+  SET_POWER_BLOC_INFLUENCE: "set-power-bloc-influence",
+  SET_POLITICAL_SYSTEM: "set-political-system",
   SET_GOVERNMENT: "set-government",
   FORM_COALITION: "form-coalition",
   LEAVE_COALITION: "leave-coalition",
@@ -44,7 +51,7 @@ const actorContext = (world, polityKey, { create = false } = {}) => {
   if (!world || typeof world !== "object") return null;
   if (!world.politicalActors || typeof world.politicalActors !== "object") {
     world.politicalActors = normalizePoliticalActors({});
-  } else if (Number(world.politicalActors.schemaVersion) !== 2 || !world.politicalActors.byPolity) {
+  } else if (Number(world.politicalActors.schemaVersion) !== POLITICAL_ACTORS_SCHEMA_VERSION || !world.politicalActors.byPolity) {
     world.politicalActors = normalizePoliticalActors(world.politicalActors);
   }
 
@@ -67,6 +74,12 @@ const requireParty = (actor, partyToken) => {
   const party = resolvePoliticalParty(actor, partyToken);
   if (!party) return { error: `Unknown party: ${clean(partyToken) || "(blank)"}` };
   return { party };
+};
+
+const requirePowerBloc = (actor, blocToken) => {
+  const bloc = resolvePoliticalPowerBloc(actor, blocToken);
+  if (!bloc) return { error: `Unknown power bloc: ${clean(blocToken) || "(blank)"}` };
+  return { bloc };
 };
 
 const normalizePartyIdList = (actor, input) => {
@@ -117,7 +130,12 @@ export const applyPoliticalActorOperation = (world, operation) => {
   if (!polityKey) return result({ op, error: "Political Actor operation is missing polityKey." });
 
   const context = actorContext(world, polityKey, {
-    create: op === POLITICAL_ACTOR_OPS.CREATE_PARTY || op === POLITICAL_ACTOR_OPS.SET_GOVERNMENT,
+    create: [
+      POLITICAL_ACTOR_OPS.CREATE_PARTY,
+      POLITICAL_ACTOR_OPS.CREATE_POWER_BLOC,
+      POLITICAL_ACTOR_OPS.SET_POLITICAL_SYSTEM,
+      POLITICAL_ACTOR_OPS.SET_GOVERNMENT,
+    ].includes(op),
   });
   if (!context) return result({ op, error: `No Political Actor exists for ${polityKey}.` });
 
@@ -175,6 +193,81 @@ export const applyPoliticalActorOperation = (world, operation) => {
       return result({ op, error: "set-party-leader requires a leader name/object." });
     }
     found.party.leader = cloneValue(leader);
+    return result({ applied: true, op, actor: commitActor(world, key, actor) });
+  }
+
+  if (op === POLITICAL_ACTOR_OPS.CREATE_POWER_BLOC) {
+    const bloc = normalizePoliticalPowerBloc(operation.bloc || operation.powerBloc);
+    if (!bloc) return result({ op, error: "create-power-bloc requires a power bloc with a name or id." });
+    if (resolvePoliticalPowerBloc(actor, bloc.id) || resolvePoliticalPowerBloc(actor, bloc.name)) {
+      return result({ op, error: `Power bloc already exists: ${bloc.name}.` });
+    }
+    actor.powerBlocs = [...asArray(actor.powerBlocs), bloc];
+    return result({ applied: true, op, actor: commitActor(world, key, actor) });
+  }
+
+  if (op === POLITICAL_ACTOR_OPS.UPDATE_POWER_BLOC) {
+    const found = requirePowerBloc(actor, operation.blocId || operation.powerBlocId || operation.bloc || operation.powerBloc);
+    if (found.error) return result({ op, error: found.error });
+    const existing = found.bloc;
+    const patch = operation.patch && typeof operation.patch === "object" && !Array.isArray(operation.patch)
+      ? cloneValue(operation.patch)
+      : {};
+    delete patch.id;
+
+    if (clean(patch.name) && clean(patch.name) !== clean(existing.name)) {
+      patch.aliases = [
+        ...asArray(existing.aliases),
+        existing.name,
+        ...asArray(patch.aliases),
+      ];
+    } else if (Array.isArray(patch.aliases)) {
+      patch.aliases = [...asArray(existing.aliases), ...patch.aliases];
+    }
+
+    const nextBloc = normalizePoliticalPowerBloc({ ...existing, ...patch, id: existing.id });
+    actor.powerBlocs = asArray(actor.powerBlocs).map((bloc) => bloc.id === existing.id ? nextBloc : bloc);
+    return result({ applied: true, op, actor: commitActor(world, key, actor) });
+  }
+
+  if (op === POLITICAL_ACTOR_OPS.SET_POWER_BLOC_INFLUENCE) {
+    const found = requirePowerBloc(actor, operation.blocId || operation.powerBlocId || operation.bloc || operation.powerBloc);
+    if (found.error) return result({ op, error: found.error });
+
+    const hasPercent = Object.prototype.hasOwnProperty.call(operation, "percent");
+    const hasLabel = Object.prototype.hasOwnProperty.call(operation, "label");
+    if (!hasPercent && !hasLabel) {
+      return result({ op, error: "set-power-bloc-influence requires percent and/or label." });
+    }
+
+    const influence = {
+      ...(found.bloc.influence && typeof found.bloc.influence === "object" ? found.bloc.influence : {}),
+    };
+    if (hasPercent) {
+      const percent = clampPercent(operation.percent);
+      if (percent == null) return result({ op, error: "set-power-bloc-influence percent must be numeric." });
+      influence.percent = percent;
+    }
+    if (hasLabel) {
+      const label = clean(operation.label);
+      if (label) influence.label = label;
+      else delete influence.label;
+    }
+    found.bloc.influence = influence;
+    return result({ applied: true, op, actor: commitActor(world, key, actor) });
+  }
+
+  if (op === POLITICAL_ACTOR_OPS.SET_POLITICAL_SYSTEM) {
+    const patch = operation.patch && typeof operation.patch === "object" && !Array.isArray(operation.patch)
+      ? cloneValue(operation.patch)
+      : (operation.system && typeof operation.system === "object" && !Array.isArray(operation.system)
+        ? cloneValue(operation.system)
+        : {});
+    if (!Object.keys(patch).length) return result({ op, error: "set-political-system requires a patch/system object." });
+    actor.politicalSystem = {
+      ...(actor.politicalSystem && typeof actor.politicalSystem === "object" ? actor.politicalSystem : {}),
+      ...patch,
+    };
     return result({ applied: true, op, actor: commitActor(world, key, actor) });
   }
 

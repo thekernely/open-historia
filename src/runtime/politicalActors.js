@@ -1,8 +1,22 @@
 /*! Open Historia — political actor runtime domain */
 
 import { resolveStockCountryCode } from "./polityIdentity.js";
+import { normalizePoliticalPressureState } from "./politicalPressure.js";
 
-export const POLITICAL_ACTORS_SCHEMA_VERSION = 2;
+export const POLITICAL_ACTORS_SCHEMA_VERSION = 5;
+
+export const POLITICAL_REPRESENTATIONS = Object.freeze({
+    ELECTORAL: "electoral",
+    COURT_FACTIONS: "court_factions",
+    PARTY_STATE: "party_state",
+    ELITE_FACTIONS: "elite_factions",
+    MILITARY_FACTIONS: "military_factions",
+    REVOLUTIONARY_FACTIONS: "revolutionary_factions",
+    COLONIAL: "colonial",
+    NONE: "none",
+});
+
+const POLITICAL_REPRESENTATION_SET = new Set(Object.values(POLITICAL_REPRESENTATIONS));
 
 const clean = (value) => String(value ?? "").replace(/\s+/g, " ").trim();
 
@@ -16,6 +30,64 @@ const clampPercent = (value) => {
     const number = Number(value);
     if (!Number.isFinite(number)) return null;
     return Math.max(0, Math.min(100, Math.round(number * 10) / 10));
+};
+
+const clampSignedPercent = (value) => {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return null;
+    return Math.max(-100, Math.min(100, Math.round(number * 10) / 10));
+};
+
+const POLITICAL_RESPONSE_ISSUE_KEY_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+
+const normalizePoliticalResponseIssueKey = (value) => {
+    const key = clean(value).toLocaleLowerCase().replace(/[\s.]+/g, "_");
+    return POLITICAL_RESPONSE_ISSUE_KEY_PATTERN.test(key) ? key : "";
+};
+
+export const normalizePoliticalResponseIssue = (value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const out = {};
+
+    const position = clampSignedPercent(value.position ?? value.stance);
+    if (position != null) out.position = position;
+
+    const sensitivity = clampPercent(value.sensitivity ?? value.issueSensitivity);
+    if (sensitivity != null) out.sensitivity = sensitivity;
+
+    const strainResponse = clampSignedPercent(value.strainResponse ?? value.strainAffinity);
+    if (strainResponse != null) out.strainResponse = strainResponse;
+
+    return Object.keys(out).length ? out : null;
+};
+
+// Hidden canonical response metadata used by the native background political
+// engine. It is deliberately separate from public ideology/priority prose: the
+// simulator must not re-interpret arbitrary text every tick to rediscover an
+// actor's issue position. Public/intelligence projections whitelist fields and
+// therefore do not expose this profile to normal Country UI consumers.
+export const normalizePoliticalResponseProfile = (value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const out = {};
+
+    for (const key of ["organization", "credibility", "inertia", "resilience"]) {
+        const number = clampPercent(value[key]);
+        if (number != null) out[key] = number;
+    }
+
+    const sourceIssues = value.issues && typeof value.issues === "object" && !Array.isArray(value.issues)
+        ? value.issues
+        : {};
+    const issues = {};
+    for (const [rawKey, rawIssue] of Object.entries(sourceIssues).slice(0, 24)) {
+        const key = normalizePoliticalResponseIssueKey(rawKey);
+        if (!key) continue;
+        const issue = normalizePoliticalResponseIssue(rawIssue);
+        if (issue) issues[key] = issue;
+    }
+    if (Object.keys(issues).length) out.issues = issues;
+
+    return Object.keys(out).length ? out : null;
 };
 
 const cleanStringArray = (value, limit = 32) => {
@@ -117,6 +189,22 @@ const derivePartyId = (party, index = 0) => {
     return `party-${stableTextHash(seed)}`;
 };
 
+const derivePoliticalEntityId = (value, index = 0, prefix = "bloc") => {
+    const explicit = clean(value?.id);
+    if (explicit) return explicit;
+    for (const candidate of [
+        value?.shortName,
+        value?.abbreviation,
+        value?.name,
+        ...(Array.isArray(value?.aliases) ? value.aliases : []),
+    ]) {
+        const slug = asciiPartySlug(candidate);
+        if (slug) return slug;
+    }
+    const seed = clean(value?.name || value?.shortName || value?.abbreviation) || `${prefix}-${index + 1}`;
+    return `${prefix}-${stableTextHash(seed)}`;
+};
+
 export const normalizePoliticalParty = (value, { index = 0 } = {}) => {
     if (!value || typeof value !== "object" || Array.isArray(value)) return null;
     const name = clean(value.name || value.shortName || value.abbreviation || value.id);
@@ -143,6 +231,11 @@ export const normalizePoliticalParty = (value, { index = 0 } = {}) => {
     if (support != null) out.support = { percent: support };
     else delete out.support;
 
+    const politicalResponse = normalizePoliticalResponseProfile(value.politicalResponse || value.responseProfile);
+    if (politicalResponse) out.politicalResponse = politicalResponse;
+    else delete out.politicalResponse;
+    delete out.responseProfile;
+
     const ideology = clean(value.ideology);
     if (ideology) out.ideology = ideology;
     else delete out.ideology;
@@ -167,6 +260,138 @@ export const normalizePoliticalParty = (value, { index = 0 } = {}) => {
     else delete out.ruling;
     if (value.coalition === true) out.coalition = true;
     else delete out.coalition;
+
+    return out;
+};
+
+export const normalizePoliticalPowerBloc = (value, { index = 0 } = {}) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const name = clean(value.name || value.shortName || value.abbreviation || value.id);
+    if (!name) return null;
+
+    const out = cloneActorValue(value);
+    out.id = derivePoliticalEntityId(value, index, "bloc");
+    out.name = name;
+
+    const shortName = clean(value.shortName || value.abbreviation);
+    if (shortName) out.shortName = shortName;
+    else delete out.shortName;
+    delete out.abbreviation;
+
+    const aliases = cleanStringArray(value.aliases, 24)
+        .filter((alias) => partyTokenKey(alias) !== partyTokenKey(name));
+    if (aliases.length) out.aliases = aliases;
+    else delete out.aliases;
+
+    const sourceInfluence = value?.influence && typeof value.influence === "object" && !Array.isArray(value.influence)
+        ? value.influence
+        : {};
+    const percentSource = sourceInfluence.percent ?? (typeof value.influence === "number" ? value.influence : undefined);
+    const percent = percentSource === undefined || percentSource === null ? null : clampPercent(percentSource);
+    const influenceLabel = clean(sourceInfluence.label || value.influenceLabel);
+    if (percent != null || influenceLabel) {
+        out.influence = {
+            ...(percent != null ? { percent } : {}),
+            ...(influenceLabel ? { label: influenceLabel } : {}),
+        };
+    } else {
+        delete out.influence;
+    }
+    delete out.influenceLabel;
+
+    const politicalResponse = normalizePoliticalResponseProfile(value.politicalResponse || value.responseProfile);
+    if (politicalResponse) out.politicalResponse = politicalResponse;
+    else delete out.politicalResponse;
+    delete out.responseProfile;
+
+    for (const key of ["kind", "ideology", "status", "publicDescription", "color", "internalStrategy", "internalPressure", "privateGoal"]) {
+        const text = clean(value[key]);
+        if (text) out[key] = text;
+        else delete out[key];
+    }
+
+    const leader = normalizeOfficeholder(value.leader);
+    if (leader) out.leader = leader;
+    else delete out.leader;
+
+    for (const key of ["goals", "publicPriorities", "publicForeignPolicy"]) {
+        const list = cleanStringArray(value[key], 16);
+        if (list.length) out[key] = list;
+        else delete out[key];
+    }
+
+    return out;
+};
+
+const powerBlocTokens = (bloc) => [
+    bloc?.id,
+    bloc?.name,
+    bloc?.shortName,
+    ...(Array.isArray(bloc?.aliases) ? bloc.aliases : []),
+].map(clean).filter(Boolean);
+
+export const resolvePoliticalPowerBloc = (actorOrWorld, polityOrToken, maybeToken) => {
+    const actor = maybeToken === undefined
+        ? actorOrWorld
+        : getPoliticalProfile(actorOrWorld, polityOrToken);
+    const token = maybeToken === undefined ? polityOrToken : maybeToken;
+    if (!actor || !Array.isArray(actor.powerBlocs)) return null;
+    const target = partyTokenKey(token);
+    if (!target) return null;
+    return actor.powerBlocs.find((bloc) =>
+        powerBlocTokens(bloc).some((candidate) => partyTokenKey(candidate) === target),
+    ) || null;
+};
+
+const inferPoliticalSystemType = (governmentForm) => {
+    const form = clean(governmentForm).toLocaleLowerCase();
+    if (!form) return "unspecified";
+    if (/absolute monarchy|absolute monarch/.test(form)) return "absolute_monarchy";
+    if (/constitutional monarchy|constitutional monarch/.test(form)) return "constitutional_monarchy";
+    if (/semi[- ]presidential republic/.test(form)) return "semi_presidential_republic";
+    if (/parliamentary republic/.test(form)) return "parliamentary_republic";
+    if (/presidential republic/.test(form)) return "presidential_republic";
+    if (/one[- ]party|single[- ]party|party[- ]state/.test(form)) return "one_party_state";
+    if (/military junta|military regime/.test(form)) return "military_regime";
+    if (/personalist/.test(form)) return "personalist_regime";
+    if (/revolutionary/.test(form)) return "revolutionary_government";
+    if (/colonial|colony|protectorate|mandate/.test(form)) return "colonial_administration";
+    return "unspecified";
+};
+
+const inferPoliticalRepresentation = ({ type = "", governmentForm = "", parties = [], powerBlocs = [] } = {}) => {
+    const joined = `${clean(type)} ${clean(governmentForm)}`.toLocaleLowerCase();
+    if (/absolute_monarchy|absolute monarchy|emirate|sultanate/.test(joined)) return POLITICAL_REPRESENTATIONS.COURT_FACTIONS;
+    if (/one_party_state|one[- ]party|single[- ]party|party[- ]state/.test(joined)) return POLITICAL_REPRESENTATIONS.PARTY_STATE;
+    if (/military_regime|military junta|military regime/.test(joined)) return POLITICAL_REPRESENTATIONS.MILITARY_FACTIONS;
+    if (/revolutionary_government|revolutionary/.test(joined)) return POLITICAL_REPRESENTATIONS.REVOLUTIONARY_FACTIONS;
+    if (/personalist_regime|personalist/.test(joined)) return POLITICAL_REPRESENTATIONS.ELITE_FACTIONS;
+    if (/colonial_administration|colonial|colony|protectorate|mandate/.test(joined)) return POLITICAL_REPRESENTATIONS.COLONIAL;
+    if (Array.isArray(parties) && parties.length) return POLITICAL_REPRESENTATIONS.ELECTORAL;
+    if (Array.isArray(powerBlocs) && powerBlocs.length) return POLITICAL_REPRESENTATIONS.ELITE_FACTIONS;
+    return POLITICAL_REPRESENTATIONS.NONE;
+};
+
+export const normalizePoliticalSystem = (value, { government = {}, parties = [], powerBlocs = [] } = {}) => {
+    const source = typeof value === "string"
+        ? { type: value }
+        : (value && typeof value === "object" && !Array.isArray(value) ? value : {});
+    const out = cloneActorValue(source);
+
+    const explicitType = clean(source.type).toLocaleLowerCase().replace(/[ -]+/g, "_");
+    const type = explicitType || inferPoliticalSystemType(government?.form);
+    out.type = type || "unspecified";
+
+    const explicitRepresentation = clean(source.representation).toLocaleLowerCase().replace(/[ -]+/g, "_");
+    out.representation = POLITICAL_REPRESENTATION_SET.has(explicitRepresentation)
+        ? explicitRepresentation
+        : inferPoliticalRepresentation({ type: out.type, governmentForm: government?.form, parties, powerBlocs });
+
+    for (const key of ["label", "notes"]) {
+        const text = clean(source[key]);
+        if (text) out[key] = text;
+        else delete out[key];
+    }
 
     return out;
 };
@@ -345,8 +570,28 @@ export const normalizePoliticalActorRecord = (value, fallbackPolityKey = "") => 
         else delete party.coalition;
     }
 
+    const powerBlocs = [];
+    const seenBlocIds = new Set();
+    for (const [index, rawBloc] of (Array.isArray(value.powerBlocs) ? value.powerBlocs : []).entries()) {
+        const bloc = normalizePoliticalPowerBloc(rawBloc, { index });
+        if (!bloc) continue;
+        let id = bloc.id;
+        if (seenBlocIds.has(id)) {
+            id = `${id}-${stableTextHash(`${bloc.name}:${index}`)}`;
+            bloc.id = id;
+        }
+        seenBlocIds.add(id);
+        powerBlocs.push(bloc);
+    }
+
     out.government = government;
     out.parties = parties;
+    out.powerBlocs = powerBlocs;
+    out.politicalSystem = normalizePoliticalSystem(value.politicalSystem, {
+        government,
+        parties,
+        powerBlocs,
+    });
 
     const leader = normalizeOfficeholder(value.leader || government.headOfState);
     if (leader) out.leader = leader;
@@ -364,6 +609,13 @@ export const normalizePoliticalActorRecord = (value, fallbackPolityKey = "") => 
         });
         if (Object.keys(record).length) out[key] = record;
         else delete out[key];
+    }
+
+    const politicalPressures = normalizePoliticalPressureState(value.politicalPressures);
+    if (Object.keys(politicalPressures.issues).length || politicalPressures.updatedAt) {
+        out.politicalPressures = politicalPressures;
+    } else {
+        delete out.politicalPressures;
     }
 
     const name = clean(value.name);

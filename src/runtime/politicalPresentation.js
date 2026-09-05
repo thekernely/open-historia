@@ -199,3 +199,202 @@ export const buildPoliticalPartyLandscape = (
     totalKnownSupport: Math.round(Math.min(100, knownSupport) * 10) / 10,
   };
 };
+
+const POLITICAL_LANDSCAPE_META = Object.freeze({
+  electoral: {
+    mode: "party",
+    title: "Political landscape",
+    subtitle: "Click a party to inspect public information",
+    metricLabel: "support",
+    mappedLabel: "support mapped",
+    centerLabel: "Political",
+    centerSubLabel: "landscape",
+  },
+  court_factions: {
+    mode: "power",
+    title: "Power structure",
+    subtitle: "Court, dynastic, institutional and elite influence",
+    metricLabel: "influence",
+    mappedLabel: "influence mapped",
+    centerLabel: "Power",
+    centerSubLabel: "structure",
+  },
+  party_state: {
+    mode: "power",
+    title: "Power structure",
+    subtitle: "Influence inside the ruling party and state apparatus",
+    metricLabel: "influence",
+    mappedLabel: "influence mapped",
+    centerLabel: "Power",
+    centerSubLabel: "structure",
+  },
+  elite_factions: {
+    mode: "power",
+    title: "Power structure",
+    subtitle: "Elite blocs and institutions shaping the regime",
+    metricLabel: "influence",
+    mappedLabel: "influence mapped",
+    centerLabel: "Power",
+    centerSubLabel: "structure",
+  },
+  military_factions: {
+    mode: "power",
+    title: "Power structure",
+    subtitle: "Military, security and civilian blocs shaping the regime",
+    metricLabel: "influence",
+    mappedLabel: "influence mapped",
+    centerLabel: "Power",
+    centerSubLabel: "structure",
+  },
+  revolutionary_factions: {
+    mode: "power",
+    title: "Political landscape",
+    subtitle: "Movements, councils and factions competing for influence",
+    metricLabel: "influence",
+    mappedLabel: "influence mapped",
+    centerLabel: "Political",
+    centerSubLabel: "landscape",
+  },
+  colonial: {
+    mode: "power",
+    title: "Power structure",
+    subtitle: "Administration, local elites and political movements",
+    metricLabel: "influence",
+    mappedLabel: "influence mapped",
+    centerLabel: "Power",
+    centerSubLabel: "structure",
+  },
+  none: {
+    mode: "none",
+    title: "Political landscape",
+    subtitle: "No public political power structure is currently mapped",
+    metricLabel: "influence",
+    mappedLabel: "influence mapped",
+    centerLabel: "Political",
+    centerSubLabel: "landscape",
+  },
+});
+
+export const getPoliticalLandscapeMeta = (publicPoliticalProfile) => {
+  const representation = clean(publicPoliticalProfile?.politicalSystem?.representation) ||
+    (Array.isArray(publicPoliticalProfile?.parties) && publicPoliticalProfile.parties.length ? "electoral" : "none");
+  const meta = POLITICAL_LANDSCAPE_META[representation] || POLITICAL_LANDSCAPE_META.elite_factions;
+  return { representation, ...meta };
+};
+
+const publicPowerBlocRow = (bloc, index) => {
+  if (!bloc || typeof bloc !== "object" || Array.isArray(bloc)) return null;
+  const name = clean(bloc.name);
+  if (!name) return null;
+  const influence = clampSupport(bloc?.influence?.percent);
+  const influenceLabel = clean(bloc?.influence?.label);
+  return {
+    id: clean(bloc.id || name) || `bloc-${index}`,
+    name,
+    shortName: clean(bloc.shortName || bloc.abbreviation),
+    kind: clean(bloc.kind),
+    status: clean(bloc.status),
+    influence,
+    influenceLabel,
+    displayValue: influence != null
+      ? (Number.isInteger(influence) ? `${influence}%` : `${influence.toFixed(1)}%`)
+      : influenceLabel,
+    ideology: asList(bloc.ideology, 5),
+    goals: asList(bloc.goals, 6),
+    publicPriorities: asList(bloc.publicPriorities, 6),
+    publicForeignPolicy: asList(bloc.publicForeignPolicy, 6),
+    publicDescription: clean(bloc.publicDescription),
+    leader: officeholderName(bloc.leader),
+    color: clean(bloc.color),
+    sourceIndex: index,
+  };
+};
+
+export const buildPoliticalPowerStructure = (publicPoliticalProfile) => {
+  const rows = (Array.isArray(publicPoliticalProfile?.powerBlocs) ? publicPoliticalProfile.powerBlocs : [])
+    .map(publicPowerBlocRow)
+    .filter(Boolean)
+    .sort((left, right) => {
+      const leftKnown = Number.isFinite(left.influence);
+      const rightKnown = Number.isFinite(right.influence);
+      if (leftKnown && rightKnown && left.influence !== right.influence) return right.influence - left.influence;
+      if (leftKnown !== rightKnown) return leftKnown ? -1 : 1;
+      const rank = { dominant: 5, very_strong: 4, strong: 3, moderate: 2, weak: 1, marginal: 0 };
+      const labelKey = (value) => clean(value).toLocaleLowerCase().replace(/[ -]+/g, "_");
+      const leftRank = rank[labelKey(left.influenceLabel)] ?? -1;
+      const rightRank = rank[labelKey(right.influenceLabel)] ?? -1;
+      if (leftRank !== rightRank) return rightRank - leftRank;
+      return left.sourceIndex - right.sourceIndex;
+    });
+
+  const visibleRows = rows.map(({ sourceIndex, ...bloc }) => bloc);
+  const numeric = visibleRows.filter((bloc) => Number.isFinite(bloc.influence) && bloc.influence >= 0);
+  const knownInfluence = numeric.reduce((sum, bloc) => sum + bloc.influence, 0);
+  const remainder = numeric.length ? Math.max(0, Math.round((100 - knownInfluence) * 10) / 10) : 0;
+  const slices = numeric.map((bloc) => ({ ...bloc, isOther: false }));
+  if (remainder > 0.05) {
+    slices.push({
+      id: "__other_power__",
+      name: "Other",
+      shortName: "Other",
+      influence: remainder,
+      influenceLabel: "",
+      displayValue: Number.isInteger(remainder) ? `${remainder}%` : `${remainder.toFixed(1)}%`,
+      ideology: [],
+      goals: [],
+      publicPriorities: [],
+      publicForeignPolicy: [],
+      publicDescription: "Includes political influence not individually represented in the current public profile.",
+      leader: "",
+      color: "",
+      isOther: true,
+    });
+  }
+
+  const chartTotal = slices.reduce((sum, bloc) => sum + (bloc.influence || 0), 0) || 1;
+  const boundedSlices = slices.map((bloc) => ({
+    ...bloc,
+    chartPercent: Math.max(0, (bloc.influence / chartTotal) * 100),
+  }));
+  const entries = [...visibleRows];
+  const other = boundedSlices.find((bloc) => bloc.isOther);
+  if (other) entries.push(other);
+
+  return {
+    blocs: visibleRows,
+    entries,
+    slices: boundedSlices,
+    totalKnownInfluence: Math.round(Math.min(100, knownInfluence) * 10) / 10,
+    hasQuantitativeInfluence: numeric.length > 0,
+  };
+};
+
+export const buildPoliticalLandscape = (publicPoliticalProfile, options = {}) => {
+  const meta = getPoliticalLandscapeMeta(publicPoliticalProfile);
+  if (meta.mode === "party") {
+    const landscape = buildPoliticalPartyLandscape(publicPoliticalProfile, options);
+    return {
+      ...meta,
+      ...landscape,
+      entries: landscape.slices.length ? landscape.slices : landscape.parties,
+      totalKnownPercent: landscape.totalKnownSupport,
+      hasQuantitativeValues: landscape.slices.length > 0,
+    };
+  }
+  if (meta.mode === "power") {
+    const landscape = buildPoliticalPowerStructure(publicPoliticalProfile);
+    return {
+      ...meta,
+      ...landscape,
+      totalKnownPercent: landscape.totalKnownInfluence,
+      hasQuantitativeValues: landscape.hasQuantitativeInfluence,
+    };
+  }
+  return {
+    ...meta,
+    entries: [],
+    slices: [],
+    totalKnownPercent: 0,
+    hasQuantitativeValues: false,
+  };
+};

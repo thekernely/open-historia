@@ -5,9 +5,10 @@ import {
   POLITICAL_ACTORS_SCHEMA_VERSION,
   normalizePoliticalActors,
   resolvePoliticalParty,
+  resolvePoliticalPowerBloc,
 } from "./politicalActors.js";
 
-test("Political Actors v2 upgrades legacy party-name government references to stable party ids", () => {
+test("Political Actors upgrades legacy party-name government references to stable party ids", () => {
   const normalized = normalizePoliticalActors({
     schemaVersion: 1,
     byPolity: {
@@ -51,7 +52,7 @@ test("Political Actors v2 upgrades legacy party-name government references to st
   });
 
   assert.equal(normalized.schemaVersion, POLITICAL_ACTORS_SCHEMA_VERSION);
-  assert.equal(normalized.schemaVersion, 2);
+  assert.equal(normalized.schemaVersion, 5);
 
   const actor = normalized.byPolity.Ukraine;
   assert.deepEqual(actor.government.rulingPartyIds, ["batkivshchyna"]);
@@ -90,7 +91,7 @@ test("party identity resolves ids, local names, short names, and aliases to one 
   assert.equal(resolvePoliticalParty(world, "Ukraine", "Fatherland"), canonical);
 });
 
-test("v2 normalization derives stable ids for legacy parties and bounds canonical numeric inputs", () => {
+test("normalization derives stable ids for legacy parties and bounds canonical numeric inputs", () => {
   const actor = normalizePoliticalActors({
     byPolity: {
       Testland: {
@@ -131,4 +132,66 @@ test("government ideology, national strategy, leadership traits, and perceptions
   assert.equal(actor.traits.opportunism, 72);
   assert.equal(actor.perceptions.Rival.trust, 18);
   assert.equal("ideology" in actor, false);
+});
+
+test("absolute monarchies infer a court-faction representation without inventing fake parties", () => {
+  const actor = normalizePoliticalActors({
+    byPolity: {
+      Kingdom: {
+        government: { form: "Absolute monarchy", headOfState: "King A" },
+        powerBlocs: [
+          { id: "court", name: "Royal Court", influence: { label: "Dominant" } },
+          { id: "army", name: "Military establishment", influence: { percent: 28 } },
+        ],
+      },
+    },
+  }).byPolity.Kingdom;
+
+  assert.equal(actor.politicalSystem.type, "absolute_monarchy");
+  assert.equal(actor.politicalSystem.representation, "court_factions");
+  assert.deepEqual(actor.parties, []);
+  assert.equal(actor.powerBlocs[0].influence.label, "Dominant");
+  assert.equal(actor.powerBlocs[1].influence.percent, 28);
+});
+
+test("power-bloc identity resolves stable ids, names, short names, and aliases without becoming party identity", () => {
+  const world = {
+    politicalActors: normalizePoliticalActors({
+      byPolity: {
+        Sultanate: {
+          politicalSystem: { type: "absolute_monarchy", representation: "court_factions" },
+          powerBlocs: [{
+            id: "royal-court",
+            name: "Royal Court",
+            shortName: "Court",
+            aliases: ["Palace"],
+          }],
+        },
+      },
+    }),
+  };
+
+  const canonical = resolvePoliticalPowerBloc(world, "Sultanate", "royal-court");
+  assert.ok(canonical);
+  assert.equal(resolvePoliticalPowerBloc(world, "Sultanate", "Royal Court"), canonical);
+  assert.equal(resolvePoliticalPowerBloc(world, "Sultanate", "Court"), canonical);
+  assert.equal(resolvePoliticalPowerBloc(world, "Sultanate", "Palace"), canonical);
+  assert.equal(resolvePoliticalParty(world, "Sultanate", "Royal Court"), null);
+});
+
+test("explicit political representation wins over inference and permits qualitative influence", () => {
+  const actor = normalizePoliticalActors({
+    byPolity: {
+      Republic: {
+        government: { form: "Republic" },
+        politicalSystem: { type: "personalist_regime", representation: "elite_factions" },
+        powerBlocs: [{ name: "Security apparatus", influence: { label: "Strong" } }],
+      },
+    },
+  }).byPolity.Republic;
+
+  assert.equal(actor.politicalSystem.type, "personalist_regime");
+  assert.equal(actor.politicalSystem.representation, "elite_factions");
+  assert.equal(actor.powerBlocs[0].influence.label, "Strong");
+  assert.equal("percent" in actor.powerBlocs[0].influence, false);
 });

@@ -1,7 +1,7 @@
 /*! Open Historia — player-facing political presentation tests */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildPoliticalPartyLandscape } from "./politicalPresentation.js";
+import { buildPoliticalLandscape, buildPoliticalPartyLandscape, buildPoliticalPowerStructure } from "./politicalPresentation.js";
 
 test("party landscape stays bounded and fills unlisted support as Other", () => {
   const out = buildPoliticalPartyLandscape({
@@ -58,4 +58,50 @@ test("presentation helper whitelists public party fields instead of leaking hidd
   assert.equal(party.publicPriorities[0], "Housing");
   assert.equal("secretAmbition" in party, false);
   assert.equal("internalRadicalization" in party, false);
+});
+
+test("court-faction systems render political influence rather than fake electoral support", () => {
+  const out = buildPoliticalLandscape({
+    politicalSystem: { type: "absolute_monarchy", representation: "court_factions" },
+    powerBlocs: [
+      { id: "court", name: "Royal Court", influence: { percent: 40 }, status: "Dominant" },
+      { id: "army", name: "Military establishment", influence: { percent: 25 } },
+      { id: "reformers", name: "Reformist ministers", influence: { label: "Moderate" } },
+    ],
+  });
+
+  assert.equal(out.mode, "power");
+  assert.equal(out.title, "Power structure");
+  assert.equal(out.metricLabel, "influence");
+  assert.equal(out.entries.find((entry) => entry.id === "court").displayValue, "40%");
+  assert.equal(out.entries.find((entry) => entry.id === "reformers").displayValue, "Moderate");
+  assert.equal(out.slices.find((entry) => entry.id === "__other_power__").influence, 35);
+});
+
+test("qualitative power structures stay useful without inventing percentages", () => {
+  const out = buildPoliticalPowerStructure({
+    powerBlocs: [
+      { id: "court", name: "Royal Court", influence: { label: "Dominant" } },
+      { id: "clergy", name: "Religious establishment", influence: { label: "Strong" } },
+    ],
+  });
+
+  assert.equal(out.hasQuantitativeInfluence, false);
+  assert.deepEqual(out.slices, []);
+  assert.deepEqual(out.entries.map((entry) => entry.displayValue), ["Dominant", "Strong"]);
+});
+
+test("electoral systems preserve the existing party landscape path", () => {
+  const out = buildPoliticalLandscape({
+    politicalSystem: { type: "parliamentary_republic", representation: "electoral" },
+    parties: [
+      { id: "a", name: "Party A", support: { percent: 60 } },
+      { id: "b", name: "Party B", support: { percent: 40 } },
+    ],
+  });
+
+  assert.equal(out.mode, "party");
+  assert.equal(out.metricLabel, "support");
+  assert.equal(out.totalKnownPercent, 100);
+  assert.deepEqual(out.slices.map((entry) => entry.id), ["a", "b"]);
 });

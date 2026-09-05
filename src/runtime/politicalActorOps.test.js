@@ -180,3 +180,69 @@ test("unknown parties are rejected rather than minting duplicate coalition ident
   assert.match(outcome.error, /Unknown party/);
   assert.deepEqual(world.politicalActors.byPolity.Poland.government.coalitionPartyIds, ["psl"]);
 });
+
+test("non-democratic political systems and power blocs use the canonical mutation doorway", () => {
+  const world = { politicalActors: normalizePoliticalActors({}) };
+  const batch = applyPoliticalActorOperations(world, [
+    {
+      op: POLITICAL_ACTOR_OPS.SET_POLITICAL_SYSTEM,
+      polityKey: "Kingdom",
+      patch: { type: "absolute_monarchy", representation: "court_factions" },
+    },
+    {
+      op: POLITICAL_ACTOR_OPS.SET_GOVERNMENT,
+      polityKey: "Kingdom",
+      patch: { form: "Absolute monarchy", headOfState: "King A" },
+    },
+    {
+      op: POLITICAL_ACTOR_OPS.CREATE_POWER_BLOC,
+      polityKey: "Kingdom",
+      bloc: { id: "court", name: "Royal Court", influence: { label: "Dominant" } },
+    },
+    {
+      op: POLITICAL_ACTOR_OPS.CREATE_POWER_BLOC,
+      polityKey: "Kingdom",
+      bloc: { id: "army", name: "Military establishment", influence: { percent: 24 } },
+    },
+    {
+      op: POLITICAL_ACTOR_OPS.SET_POWER_BLOC_INFLUENCE,
+      polityKey: "Kingdom",
+      blocId: "army",
+      percent: 31.5,
+      label: "Strong",
+    },
+  ]);
+
+  assert.equal(batch.failed, 0);
+  const actor = world.politicalActors.byPolity.Kingdom;
+  assert.equal(actor.politicalSystem.representation, "court_factions");
+  assert.deepEqual(actor.parties, []);
+  assert.equal(actor.powerBlocs.find((bloc) => bloc.id === "court").influence.label, "Dominant");
+  assert.equal(actor.powerBlocs.find((bloc) => bloc.id === "army").influence.percent, 31.5);
+  assert.equal(actor.powerBlocs.find((bloc) => bloc.id === "army").influence.label, "Strong");
+});
+
+test("renaming a power bloc preserves stable identity and keeps its former name as an alias", () => {
+  const world = makeWorld();
+  applyPoliticalActorOperation(world, {
+    op: POLITICAL_ACTOR_OPS.SET_POLITICAL_SYSTEM,
+    polityKey: "Poland",
+    patch: { type: "personalist_regime", representation: "elite_factions" },
+  });
+  applyPoliticalActorOperation(world, {
+    op: POLITICAL_ACTOR_OPS.CREATE_POWER_BLOC,
+    polityKey: "Poland",
+    bloc: { id: "security", name: "Security Directorate" },
+  });
+  const renamed = applyPoliticalActorOperation(world, {
+    op: POLITICAL_ACTOR_OPS.UPDATE_POWER_BLOC,
+    polityKey: "Poland",
+    blocId: "security",
+    patch: { name: "National Security Directorate" },
+  });
+
+  assert.equal(renamed.applied, true);
+  const bloc = world.politicalActors.byPolity.Poland.powerBlocs.find((entry) => entry.id === "security");
+  assert.equal(bloc.name, "National Security Directorate");
+  assert.ok(bloc.aliases.includes("Security Directorate"));
+});

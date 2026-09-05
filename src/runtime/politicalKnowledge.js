@@ -81,6 +81,48 @@ const publicParty = (party) => {
   };
 };
 
+const publicPowerBloc = (bloc) => {
+  if (!bloc || typeof bloc !== "object" || Array.isArray(bloc)) return null;
+  const name = clean(bloc.name);
+  if (!name) return null;
+  const influencePercent = Number(bloc?.influence?.percent);
+  const influenceLabel = clean(bloc?.influence?.label);
+  const goals = cleanStringArray(bloc.goals, 12);
+  const publicPriorities = cleanStringArray(bloc.publicPriorities, 12);
+  const publicForeignPolicy = cleanStringArray(bloc.publicForeignPolicy, 12);
+  const leader = publicOfficeholder(bloc.leader);
+
+  return {
+    ...(clean(bloc.id) ? { id: clean(bloc.id) } : {}),
+    name,
+    ...(clean(bloc.shortName || bloc.abbreviation) ? { shortName: clean(bloc.shortName || bloc.abbreviation) } : {}),
+    ...(clean(bloc.kind) ? { kind: clean(bloc.kind) } : {}),
+    ...(clean(bloc.ideology) ? { ideology: clean(bloc.ideology) } : {}),
+    ...(clean(bloc.status) ? { status: clean(bloc.status) } : {}),
+    ...((Number.isFinite(influencePercent) || influenceLabel)
+      ? { influence: {
+          ...(Number.isFinite(influencePercent) ? { percent: Math.max(0, Math.min(100, influencePercent)) } : {}),
+          ...(influenceLabel ? { label: influenceLabel } : {}),
+        } }
+      : {}),
+    ...(leader ? { leader } : {}),
+    ...(goals.length ? { goals } : {}),
+    ...(publicPriorities.length ? { publicPriorities } : {}),
+    ...(publicForeignPolicy.length ? { publicForeignPolicy } : {}),
+    ...(clean(bloc.publicDescription) ? { publicDescription: clean(bloc.publicDescription) } : {}),
+    ...(clean(bloc.color) ? { color: clean(bloc.color) } : {}),
+  };
+};
+
+const publicPoliticalSystem = (system) => {
+  if (!system || typeof system !== "object" || Array.isArray(system)) return {};
+  return {
+    ...(clean(system.type) ? { type: clean(system.type) } : {}),
+    ...(clean(system.representation) ? { representation: clean(system.representation) } : {}),
+    ...(clean(system.label) ? { label: clean(system.label) } : {}),
+  };
+};
+
 const publicGovernment = (government) => {
   if (!government || typeof government !== "object" || Array.isArray(government)) return {};
   const rulingPartyIds = cleanStringArray(government.rulingPartyIds, 12);
@@ -152,8 +194,13 @@ export const buildPublicPoliticalView = (world, polityKey) => {
   if (!actor || typeof actor !== "object" || Array.isArray(actor)) return null;
 
   const government = publicGovernment(actor.government);
+  const politicalSystem = publicPoliticalSystem(actor.politicalSystem);
   const parties = (Array.isArray(actor.parties) ? actor.parties : [])
     .map(publicParty)
+    .filter(Boolean)
+    .slice(0, 24);
+  const powerBlocs = (Array.isArray(actor.powerBlocs) ? actor.powerBlocs : [])
+    .map(publicPowerBloc)
     .filter(Boolean)
     .slice(0, 24);
   const goals = cleanStringArray(actor.goals, 16);
@@ -166,8 +213,10 @@ export const buildPublicPoliticalView = (world, polityKey) => {
     ...(polity ? { polityKey: polity } : {}),
     ...(name ? { name } : {}),
     ...(Object.keys(government).length ? { government } : {}),
+    ...(Object.keys(politicalSystem).length ? { politicalSystem } : {}),
     ...(leader ? { leader } : {}),
     ...(parties.length ? { parties } : {}),
+    ...(powerBlocs.length ? { powerBlocs } : {}),
     ...(goals.length ? { goals } : {}),
     ...(tags.length ? { tags } : {}),
   };
