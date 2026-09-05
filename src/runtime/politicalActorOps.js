@@ -12,6 +12,7 @@ import {
   resolvePoliticalParty,
   resolvePoliticalPowerBloc,
 } from "./politicalActors.js";
+import { normalizePoliticalPressureState } from "./politicalPressure.js";
 
 export const POLITICAL_ACTOR_OPS = Object.freeze({
   CREATE_PARTY: "create-party",
@@ -21,6 +22,7 @@ export const POLITICAL_ACTOR_OPS = Object.freeze({
   CREATE_POWER_BLOC: "create-power-bloc",
   UPDATE_POWER_BLOC: "update-power-bloc",
   SET_POWER_BLOC_INFLUENCE: "set-power-bloc-influence",
+  SET_POLITICAL_PRESSURES: "set-political-pressures",
   SET_POLITICAL_SYSTEM: "set-political-system",
   SET_GOVERNMENT: "set-government",
   FORM_COALITION: "form-coalition",
@@ -254,6 +256,13 @@ export const applyPoliticalActorOperation = (world, operation) => {
       else delete influence.label;
     }
     found.bloc.influence = influence;
+    return result({ applied: true, op, actor: commitActor(world, key, actor) });
+  }
+
+  if (op === POLITICAL_ACTOR_OPS.SET_POLITICAL_PRESSURES) {
+    const state = normalizePoliticalPressureState(operation.state || operation.pressures);
+    if (Object.keys(state.issues).length || state.updatedAt) actor.politicalPressures = state;
+    else delete actor.politicalPressures;
     return result({ applied: true, op, actor: commitActor(world, key, actor) });
   }
 

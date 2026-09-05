@@ -246,3 +246,22 @@ test("renaming a power bloc preserves stable identity and keeps its former name 
   assert.equal(bloc.name, "National Security Directorate");
   assert.ok(bloc.aliases.includes("Security Directorate"));
 });
+
+test("background pressure state commits through the Political Actor mutation seam", () => {
+  const world = makeWorld();
+  const outcome = applyPoliticalActorOperation(world, {
+    op: POLITICAL_ACTOR_OPS.SET_POLITICAL_PRESSURES,
+    polityKey: "Poland",
+    state: {
+      updatedAt: "2014-04-22",
+      issues: {
+        cost_of_living: { salience: 42.34, lean: 100, strain: 55.67, persistence: 0.82 },
+      },
+    },
+  });
+
+  assert.equal(outcome.applied, true);
+  assert.equal(world.politicalActors.byPolity.Poland.politicalPressures.updatedAt, "2014-04-22");
+  assert.equal(world.politicalActors.byPolity.Poland.politicalPressures.issues.cost_of_living.salience, 42.3);
+  assert.equal(world.politicalActors.byPolity.Poland.politicalPressures.issues.cost_of_living.strain, 55.7);
+});

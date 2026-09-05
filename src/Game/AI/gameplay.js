@@ -110,6 +110,7 @@ import { sortTimelineEventsChronologically } from "../../runtime/timelineOrder.j
 import { buildPolityIdentityIndex, resolvePolityIdentity } from "../../runtime/polityIdentity.js";
 import { getPoliticalProfile } from "../../runtime/politicalActors.js";
 import { normalizePoliticalIntelligenceAssessment } from "../../runtime/politicalKnowledge.js";
+import { advancePoliticalBackgroundSimulation } from "../../runtime/politicalBackground.js";
 import {
   applyWarUpdates,
   bindWarUpdatesToEvents,
@@ -5183,6 +5184,37 @@ const applySimulationResult = async ({
   } catch (error) {
     if (projects?.signal?.aborted) throw error;
     console.warn("[stats auto] unexpected scheduler failure; the completed turn is preserved.", error);
+  }
+
+  // Native political background simulation runs only after the turn's canonical
+  // wars/relations/world impacts and any due Stats refresh have settled. It does
+  // not generate news or call AI: structural world conditions feed the pressure
+  // ledger, then existing authored/generated political response profiles evolve
+  // party support or power-bloc influence through the canonical operations seam.
+  try {
+    const political = await advancePoliticalBackgroundSimulation({
+      world: nextWorld,
+      fromDate: baseGame.gameDate || baseGame.startDate || "",
+      toDate: nextGame.gameDate || nextGame.startDate || "",
+      round: nextGame.round || 0,
+      signal: projects?.signal,
+    });
+    nextWorld = political.world;
+    if (!political.skipped && (political.pressureChangedPolities || political.responseChangedEntities)) {
+      logDebugEvent(
+        "turn",
+        `Political background: ${political.pressureChangedPolities} pressure polity(s), ${political.responseChangedEntities} political response change(s).`,
+        {
+          responseTicks: political.plan?.responseTicks || 0,
+          structuralSignalPolities: political.structuralSignalPolities || 0,
+          droppedResponseTicks: political.plan?.droppedResponseTicks || 0,
+        },
+        { verbose: true },
+      );
+    }
+  } catch (error) {
+    if (projects?.signal?.aborted) throw error;
+    console.warn("[politics background] native political update failed; the completed turn is preserved.", error);
   }
 
   // Permanent compact Stats history: snapshots only the numeric sheets that

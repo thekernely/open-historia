@@ -10,6 +10,7 @@ import { buildOwnerAliasMap, createOwnerResolver, toCountryName } from "./ownerN
 import { mergeCountryStatPatch, normalizeCountryStatSheet } from "./countryStats.js";
 import { buildPolityIdentityIndex, resolvePolityIdentity } from "./polityIdentity.js";
 import { applyPoliticalActorMetadataPatch, normalizePoliticalActors, POLITICAL_ACTORS_SCHEMA_VERSION } from "./politicalActors.js";
+import { normalizePoliticalSimulationClock } from "./politicalClock.js";
 import {
   DEFAULT_PATROL_RADIUS_KM,
   daysBetweenDates,
@@ -62,6 +63,9 @@ export const WORLD_DEFAULTS = {
   // actor domain; player-facing UI and espionage must project from it rather than
   // exposing the raw record wholesale. See politicalActors.js / politicalKnowledge.js.
   politicalActors: { schemaVersion: POLITICAL_ACTORS_SCHEMA_VERSION, byPolity: {} },
+  // Background political scheduler metadata. Game time remains the canonical clock;
+  // this only remembers which span the native political engine successfully consumed.
+  politicalSimulation: normalizePoliticalSimulationClock({}),
   // Per-country tags the AI has changed: owner code -> string[]. The scenario's
   // tags.json holds the map-maker's STARTING tags; this holds every change since,
   // and wins where present (see resolveCountryTags). These remain a compatibility /
@@ -3827,6 +3831,7 @@ export const normalizeWorldState = (world) => {
     countryTags,
     countryStats,
     politicalActors: normalizePoliticalActors(nextWorld.politicalActors),
+    politicalSimulation: normalizePoliticalSimulationClock(nextWorld.politicalSimulation),
     actionSuggestions: normalizeActionSuggestions(nextWorld.actionSuggestions),
     activeCatalyst: normalizeCatalyst(nextWorld.activeCatalyst),
     consolidatedHistory: normalizeConsolidatedHistory(nextWorld.consolidatedHistory),
