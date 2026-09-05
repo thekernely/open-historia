@@ -6,13 +6,14 @@ import { isPolityLandless, readGameData, readWorldState, readWorldStateView, wri
 import { useLibraryState } from "../../runtime/library.js";
 import { useCountryDisplayName } from "../../runtime/polityNames.js";
 import { resolvePolityIdentity } from "../../runtime/polityIdentity.js";
-import { getPoliticalProfile } from "../../runtime/politicalActors.js";
+import { buildPlayerPoliticalKnowledgeView, buildPublicPoliticalView } from "../../runtime/politicalKnowledge.js";
 import { resolveCountryTags } from "../../runtime/countryTags.js";
 import { intelligenceOf } from "../../runtime/spycraft.js";
+import PoliticalOverview from "./PoliticalOverview.jsx";
 import { flagImageUrlFromGid } from "../../runtime/countryFlags.js";
 import COUNTRY_NAMES from "../../runtime/generated/countryNames.js";
 import { setRegionClickObserver } from "../Selection/Regions.jsx";
-import { generateCountryStatSheet } from "../AI/gameplay.js";
+import { generateCountryStatSheet, readOpenedIntercepts } from "../AI/gameplay.js";
 import { validateGameplayPayload } from "../AI/gameplaySchemas.js";
 import {
     appendCountryStatHistorySample,
@@ -1187,11 +1188,42 @@ const StatsPaneBody = ({ active }) => {
     // Political identity can therefore render immediately without generating Stats.
     const [customFlags, setCustomFlags] = useState({});
     const [baseTags, setBaseTags] = useState({});
+    const [politicalKnowledge, setPoliticalKnowledge] = useState({ target: "", view: null });
 
     useEffect(() => {
         worldSnapshotRef.current = worldSnapshot;
     }, [worldSnapshot]);
     const displayName = useCountryDisplayName(targetCountry);
+
+    // Political truth remains canonical in world.politicalActors, but the normal
+    // Country UI consumes the player-knowledge projection. Public facts paint
+    // immediately; espionage can add a bounded narrative assessment after the
+    // existing sealed intercept store is opened. No polling and no AI call here.
+    useEffect(() => {
+        if (!active || !worldSnapshot || !targetCountry) {
+            setPoliticalKnowledge({ target: "", view: null });
+            return undefined;
+        }
+        let cancelled = false;
+        const publicView = buildPublicPoliticalView(worldSnapshot, targetCountry);
+        setPoliticalKnowledge({ target: targetCountry, view: publicView ? { level: "public", public: publicView } : null });
+
+        readOpenedIntercepts()
+            .then((intercepts) => {
+                if (cancelled) return;
+                const view = buildPlayerPoliticalKnowledgeView(worldSnapshot, targetCountry, {
+                    viewerPolity: player.code,
+                    intercepts,
+                });
+                setPoliticalKnowledge({ target: targetCountry, view });
+            })
+            .catch(() => {
+                // Public political facts remain useful even if an old/corrupt save's
+                // sealed intercept store cannot be opened.
+            });
+
+        return () => { cancelled = true; };
+    }, [active, targetCountry, player.code, player.round, worldSnapshot]);
 
     const persistTrackingSettings = useCallback((next) => {
         const normalized = normalizeCountryStatsTracking(next, { playerCountry: player.code });
@@ -1665,40 +1697,18 @@ const StatsPaneBody = ({ active }) => {
         || worldSnapshot?.countryStats?.[targetCountry]
         || null;
 
-    // Political identity is independent of Stats. A seeded/current Political Actor
-    // must render even when this country has never generated an Economy sheet. Legacy
-    // Stats government/leader fields are compatibility fallbacks only.
-    const politicalProfile = useMemo(() => {
-        if (!worldSnapshot || !targetCountry) return null;
-        return getPoliticalProfile(worldSnapshot, targetCountry);
-    }, [worldSnapshot, targetCountry]);
-    const politicalKey = politicalProfile?.polityKey || resolvedTargetKey || targetCountry;
+    // Political identity is independent of Stats. The player-facing Country UI now
+    // reads the Political Knowledge projection rather than the raw canonical actor,
+    // so future hidden traits/perceptions cannot leak by accident. Stats remains a
+    // compatibility fallback only for public government/leader labels.
+    const currentPoliticalKnowledge = politicalKnowledge.target === targetCountry ? politicalKnowledge.view : null;
+    const publicPoliticalProfile = currentPoliticalKnowledge?.public
+        || (worldSnapshot && targetCountry ? buildPublicPoliticalView(worldSnapshot, targetCountry) : null);
+    const politicalKey = publicPoliticalProfile?.polityKey || resolvedTargetKey || targetCountry;
     const politicalTags = useMemo(
         () => resolveCountryTags(baseTags, worldSnapshot, politicalKey),
         [baseTags, worldSnapshot, politicalKey],
     );
-    const politicalGovernment = politicalProfile?.government?.form || headerSheet?.government || "";
-    const politicalLeaderRaw = politicalProfile?.government?.headOfState
-        || politicalProfile?.government?.headOfStateId
-        || politicalProfile?.leader
-        || politicalProfile?.leaders?.[0]?.name
-        || headerSheet?.leader
-        || "";
-    const politicalLeader = typeof politicalLeaderRaw === "object"
-        ? (politicalLeaderRaw.name || politicalLeaderRaw.id || "")
-        : politicalLeaderRaw;
-    const politicalHeadOfGovernmentRaw = politicalProfile?.government?.headOfGovernment
-        || politicalProfile?.government?.headOfGovernmentId
-        || "";
-    const politicalHeadOfGovernment = typeof politicalHeadOfGovernmentRaw === "object"
-        ? (politicalHeadOfGovernmentRaw.name || politicalHeadOfGovernmentRaw.id || "")
-        : politicalHeadOfGovernmentRaw;
-    const politicalParties = Array.isArray(politicalProfile?.parties)
-        ? politicalProfile.parties.slice(0, 5)
-        : [];
-    const politicalGoals = Array.isArray(politicalProfile?.goals)
-        ? politicalProfile.goals.filter((goal) => String(goal || "").trim()).slice(0, 4)
-        : [];
 
     const intelligence = targetCountry && worldSnapshot ? intelligenceOf(worldSnapshot, targetCountry) : null;
     const isPlayer = targetCountry && targetCountry.toUpperCase() === String(player.code).toUpperCase();
@@ -1800,35 +1810,6 @@ const StatsPaneBody = ({ active }) => {
                 ))}
                 </div>
             )}
-            {politicalGovernment && (
-                <div style={{ color: "rgba(255,255,255,0.45)", fontSize: "0.72rem", marginTop: "0.1rem" }}>
-                {politicalGovernment}
-                </div>
-            )}
-            {politicalLeader && (
-                <div style={{ color: "#fbbf24", fontSize: "0.72rem", marginTop: "0.1rem" }}>
-                Leader: {politicalLeader}
-                </div>
-            )}
-            {politicalHeadOfGovernment && politicalHeadOfGovernment !== politicalLeader && (
-                <div style={{ color: "rgba(255,255,255,0.58)", fontSize: "0.68rem", marginTop: "0.08rem" }}>
-                Head of government: {politicalHeadOfGovernment}
-                </div>
-            )}
-            {politicalParties.length > 0 && (
-                <div style={{ color: "rgba(255,255,255,0.58)", fontSize: "0.65rem", lineHeight: 1.45, marginTop: "0.22rem" }}>
-                    {politicalParties.map((party) => (
-                        <div key={party.id || party.name}>
-                            {party.name}{Number.isFinite(Number(party?.support?.percent)) ? ` — ${Number(party.support.percent)}%` : ""}
-                        </div>
-                    ))}
-                </div>
-            )}
-            {politicalGoals.length > 0 && (
-                <div style={{ color: "rgba(255,255,255,0.46)", fontSize: "0.64rem", lineHeight: 1.4, marginTop: "0.22rem" }}>
-                    <span style={{ fontWeight: 700 }}>Goals:</span> {politicalGoals.join(" · ")}
-                </div>
-            )}
             </div>
             {statsView === "economy" && state.status !== "loading" && (
                 <button
@@ -1839,6 +1820,13 @@ const StatsPaneBody = ({ active }) => {
                 >↻</button>
             )}
             </div>
+
+            <PoliticalOverview
+                profile={publicPoliticalProfile}
+                fallbackGovernment={headerSheet?.government || ""}
+                fallbackLeader={headerSheet?.leader || ""}
+                intelligence={currentPoliticalKnowledge?.intelligence || null}
+            />
 
             <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.9rem" }}>
             <button

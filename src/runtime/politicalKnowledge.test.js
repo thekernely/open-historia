@@ -36,9 +36,16 @@ const makeWorld = () => ({
             id: "united-russia",
             name: "United Russia",
             ideology: "National conservative",
+            shortName: "UR",
             support: { percent: 53 },
+            leader: "Dmitry Medvedev",
             goals: ["Preserve political dominance"],
+            publicPriorities: ["Economic stability"],
+            publicForeignPolicy: ["Preserve regional influence"],
+            publicDescription: "The governing party.",
+            color: "#2563eb",
             internalStrategy: "Do not leak this",
+            secretForeignPolicy: ["Do not leak this either"],
           },
         ],
         goals: ["Maintain regional influence", "Preserve strategic depth"],
@@ -70,6 +77,12 @@ test("public political view exposes public political facts but never raw hidden 
   assert.equal(view?.government?.headOfState, "Vladimir Putin");
   assert.equal(view?.government?.headOfGovernment, "Dmitry Medvedev");
   assert.equal(view?.parties?.[0]?.support?.percent, 53);
+  assert.equal(view?.parties?.[0]?.shortName, "UR");
+  assert.equal(view?.parties?.[0]?.leader, "Dmitry Medvedev");
+  assert.deepEqual(view?.parties?.[0]?.publicPriorities, ["Economic stability"]);
+  assert.deepEqual(view?.parties?.[0]?.publicForeignPolicy, ["Preserve regional influence"]);
+  assert.equal(view?.parties?.[0]?.publicDescription, "The governing party.");
+  assert.equal(view?.parties?.[0]?.color, "#2563eb");
   assert.deepEqual(view?.goals, ["Maintain regional influence", "Preserve strategic depth"]);
 
   assert.equal("approval" in (view?.government || {}), false);
@@ -81,6 +94,7 @@ test("public political view exposes public political facts but never raw hidden 
   assert.equal("domesticPressures" in (view || {}), false);
   assert.equal("behavioralDisposition" in (view || {}), false);
   assert.equal("internalStrategy" in (view?.parties?.[0] || {}), false);
+  assert.equal("secretForeignPolicy" in (view?.parties?.[0] || {}), false);
 });
 
 test("intelligence view adds only a narrative assessment, not canonical trait numbers", () => {

@@ -58,15 +58,24 @@ const publicParty = (party) => {
 
   const support = Number(party?.support?.percent);
   const goals = cleanStringArray(party.goals, 12);
+  const publicPriorities = cleanStringArray(party.publicPriorities, 12);
+  const publicForeignPolicy = cleanStringArray(party.publicForeignPolicy, 12);
+  const leader = publicOfficeholder(party.leader);
 
   return {
     ...(clean(party.id) ? { id: clean(party.id) } : {}),
     name,
+    ...(clean(party.shortName || party.abbreviation) ? { shortName: clean(party.shortName || party.abbreviation) } : {}),
     ...(clean(party.ideology) ? { ideology: clean(party.ideology) } : {}),
     ...(Number.isFinite(support)
       ? { support: { percent: Math.max(0, Math.min(100, support)) } }
       : {}),
+    ...(leader ? { leader } : {}),
     ...(goals.length ? { goals } : {}),
+    ...(publicPriorities.length ? { publicPriorities } : {}),
+    ...(publicForeignPolicy.length ? { publicForeignPolicy } : {}),
+    ...(clean(party.publicDescription) ? { publicDescription: clean(party.publicDescription) } : {}),
+    ...(clean(party.color) ? { color: clean(party.color) } : {}),
     ...(party.ruling === true ? { ruling: true } : {}),
     ...(party.coalition === true ? { coalition: true } : {}),
   };
