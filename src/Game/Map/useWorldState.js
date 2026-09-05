@@ -202,10 +202,33 @@ const onWorldUpdated = (event) => {
   if (!overrideState) publish();
 };
 
+// Active game/scenario switches change which world.json URL is canonical.
+// That is not a write, so oh:world-updated is never emitted. Reload the already
+// selected runtime asset and force publication so map layers cannot retain the
+// previous game's polity ownership.
+const onWorldEndpointChanged = async () => {
+  try {
+    const next = await readJson(JSON_URLS.world, {
+      defaultValue: {},
+      force: true,
+      clone: false,
+    });
+    sharedState = next && typeof next === "object" ? next : {};
+    bootstrapPromise = null;
+    publish({ force: true });
+    recordMapTrace("world-store:endpoint-change", {
+      markers: Array.isArray(sharedState.markers) ? sharedState.markers.length : 0,
+    });
+  } catch {
+    // Keep current state on transient endpoint failures.
+  }
+};
+
 const installListeners = () => {
   if (listenersInstalled || typeof window === "undefined") return;
   listenersInstalled = true;
   window.addEventListener("oh:world-updated", onWorldUpdated);
+  window.addEventListener("oh:world-endpoint-changed", onWorldEndpointChanged);
 };
 
 export function useWorldState() {

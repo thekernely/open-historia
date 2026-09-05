@@ -52,6 +52,7 @@ import {
 } from "./gameplaySchemas.js";
 import { toCountryName } from "../../runtime/ownerNames.js";
 import { buildPolityIdentityIndex, resolvePolityIdentity } from "../../runtime/polityIdentity.js";
+import { getPoliticalProfile } from "../../runtime/politicalActors.js";
 import { activeSpies, espionageBrief, normalizeIntercepts, normalizeSpies, resolveEspionage } from "../../runtime/spycraft.js";
 import { echoesExistingMessage, renderOpenChatsForPrompt } from "../../runtime/chatEcho.js";
 import { isSeal, newSeal, openExchange, sealExchange } from "../../runtime/spySeal.js";
@@ -5286,6 +5287,37 @@ const buildTargetDossier = async (bundle, code, normalizedWorld = null) => {
       }`,
     );
     if (polity.note) lines.push(`Notes: ${polity.note}`);
+  }
+
+  // Political Actors are authoritative political context when present. The Stats
+  // generator still has legacy government/leader fields in its output schema for
+  // compatibility, but it must copy current campaign reality rather than guess a
+  // same-date real-world cabinet. This is especially important for alternate
+  // history and for event-driven leadership changes.
+  const politicalProfile = code ? getPoliticalProfile(world, code) : null;
+  if (politicalProfile) {
+    const government = normalizeString(politicalProfile?.government?.form);
+    const rawLeader = politicalProfile?.government?.headOfState
+      || politicalProfile?.government?.headOfStateId
+      || politicalProfile?.leader
+      || politicalProfile?.leaders?.[0]?.name;
+    const leader = normalizeString(
+      rawLeader && typeof rawLeader === "object"
+        ? rawLeader.name || rawLeader.id
+        : rawLeader,
+    );
+    if (government) lines.push(`Current political system (canonical Political Actor): ${government}`);
+    if (leader) lines.push(`Current leader (canonical Political Actor): ${leader}`);
+    const parties = normalizeArray(politicalProfile?.parties)
+      .slice(0, 5)
+      .map((party) => {
+        const name = normalizeString(party?.name);
+        if (!name) return "";
+        const support = Number(party?.support?.percent);
+        return Number.isFinite(support) ? `${name} (${support}%)` : name;
+      })
+      .filter(Boolean);
+    if (parties.length) lines.push(`Current parties: ${parties.join(", ")}`);
   }
 
   const overrides = Object.entries(world.regionOwnershipOverrides ?? {});

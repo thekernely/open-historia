@@ -7,6 +7,7 @@ import { dedupeEventLog } from "./eventDedup.js";
 import { toCountryName } from "./ownerNames.js";
 import { buildPolityIdentityIndex, isStockPolityName, resolvePolityIdentity, resolveTerritorialPolityIdentity } from "./polityIdentity.js";
 import { distanceKm, engagementRangeKm, resolveClash } from "../Game/Map/unitCombat.js";
+import { applyPoliticalActorMetadataPatch, normalizePoliticalActors } from "./politicalActors.js";
 
 
 export const GAME_DEFAULTS = {
@@ -2494,6 +2495,7 @@ export const normalizeWorldState = (world) => {
       : 0,
     relations,
     agreements,
+    politicalActors: normalizePoliticalActors(nextWorld.politicalActors),
     wars: normalizeWorldWars(nextWorld.wars),
     storylines: normalizeWorldStorylines(nextWorld.storylines),
     units: normalizeUnits(nextWorld.units),
@@ -3000,6 +3002,13 @@ const applyPolityMetadataStores = (world, change, canonicalName, { eventId = "" 
           : null,
       },
     );
+
+    // Political Actors are now the live UI/political-profile source. Existing
+    // event schemas still express explicit leadership/government changes through
+    // polityChanges.stats, so mirror ONLY those semantic event mutations here.
+    // Ordinary Stats generation never comes through this path and therefore can
+    // no longer overwrite a seeded/current Political Actor profile.
+    applyPoliticalActorMetadataPatch(world, canonicalName, change.stats);
 
     const rep = Number(
       merged?.indices?.internationalReputation,

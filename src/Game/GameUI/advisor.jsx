@@ -5,7 +5,6 @@ import { Chart, registerables } from "chart.js";
 import { sendMessage, startChat, loadHistory } from "../AI/main.jsx";
 import { JSON_URLS, readJson, writeJson } from "../../runtime/assets.js";
 import { chatLanguageDiffersFromUi, isRtlLanguage, resolveChatLanguage } from "../../runtime/i18n.js";
-import StatsPane from "./stats.jsx";
 
 Chart.register(...registerables);
 
@@ -212,7 +211,6 @@ const AdvisorPanel = ({ isAdvisorOpen, onClose, width, onResize }) => {
     const messagesEndRef            = useRef(null);
     const [hasOpened, setHasOpened] = useState(isAdvisorOpen);
     const [hasBootstrapped, setHasBootstrapped] = useState(false);
-    const [activeTab, setActiveTab] = useState("advisor");
     const inputRef = useRef(null);
     const [isResizing, setIsResizing] = useState(false);
     const [handleHover, setHandleHover] = useState(false);
@@ -386,12 +384,10 @@ const AdvisorPanel = ({ isAdvisorOpen, onClose, width, onResize }) => {
                 }} />
             </div>
         )}
-        {/* Header: tabs to flip between the advisor chat and national stats. */}
+        {/* Advisor header: country information is a separate top-level panel. */}
         <div style={{ alignItems: "center", background: "rgba(255,255,255,0.018)", borderBottom: "1px solid rgba(255,255,255,0.08)", display: "flex", padding: "0.15rem 0.75rem 0.15rem 0.35rem" }}>
-        <TabButton icon="🧭" label="Advisor" active={activeTab === "advisor"} onClick={() => setActiveTab("advisor")} />
-        <TabButton icon="📊" label="Stats" active={activeTab === "stats"} onClick={() => setActiveTab("stats")} />
+        <TabButton icon="🧭" label="Advisor" active onClick={() => {}} />
         <div style={{ flex: 1 }} />
-        {activeTab === "advisor" && (
             <button
             onClick={async () => { setMessages([]); startChat(); await saveMessages([]); }}
             title="Clear chat"
@@ -409,12 +405,7 @@ const AdvisorPanel = ({ isAdvisorOpen, onClose, width, onResize }) => {
         )}
         </div>
 
-        {/* National stats pane — kept mounted so flipping tabs is instant. */}
-        <div style={{ display: activeTab === "stats" ? "flex" : "none", flex: 1, flexDirection: "column", minHeight: 0 }}>
-        <StatsPane active={isAdvisorOpen && activeTab === "stats"} />
-        </div>
-
-        <div style={{ display: activeTab === "advisor" ? "flex" : "none", flex: 1, flexDirection: "column", minHeight: 0 }}>
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
         {/* Messages */}
         <div style={{ padding: "0.75rem", flex: 1, minHeight: 0, overflowY: "auto", display: "flex", flexDirection: "column", gap: "1rem", scrollbarWidth: "none" }}>
         {messages.length === 0 && (

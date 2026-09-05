@@ -9,6 +9,7 @@ import { requestDiplomaticChat } from "../GameUI/chat.jsx";
 import GameFlagPicker from "../GameUI/GameFlagPicker.jsx";
 import { resolvePolityFlag } from "../../runtime/polityFlags.js";
 import { resolvePolityIdentity } from "../../runtime/polityIdentity.js";
+import { getPoliticalProfile } from "../../runtime/politicalActors.js";
 import { generateCountryStats } from "../AI/gameplay.js";
 
 // Bridge: the region popup's info button opens this panel from outside React.
@@ -88,6 +89,7 @@ const CountryInfoPanel = () => {
     const [polityKey, setPolityKey] = useState("");
     const [displayName, setDisplayName] = useState("");
     const [flagPickerOpen, setFlagPickerOpen] = useState(false);
+    const [politicalProfile, setPoliticalProfile] = useState(null);
 
     _openPanel = (next) => {
         setCountry(next);
@@ -132,6 +134,17 @@ const CountryInfoPanel = () => {
                 setAliases(polity?.aliases ?? []);
                 // The author's starting tags unless the AI has since rewritten them.
                 setTags(resolveCountryTags(baseTags, world, stableKey));
+                // Political actors resolve through the stable identity namespace.
+                // The selector returns the profile only; it does not change the UI model.
+                const resolvedPoliticalProfile = getPoliticalProfile(world, stableKey);
+                console.log("[POLITICAL DEBUG PANEL]", {
+                    stableKey,
+                    country,
+                    politicalActors: world?.politicalActors,
+                    actorKeys: Object.keys(world?.politicalActors?.byPolity || {}),
+                    resolvedPoliticalProfile,
+                });
+                setPoliticalProfile(resolvedPoliticalProfile);
 
                 const ownership = world.regionOwnershipOverrides ?? {};
                 const sovereignty = world.regionSovereigntyOverrides ?? {};
@@ -328,6 +341,19 @@ const CountryInfoPanel = () => {
                 </span>
             ))}
             </div>
+        )}
+
+        <div style={{ fontSize: "1rem", fontWeight: 800, marginTop: "0.8rem" }}>Political Profile</div>
+        {politicalProfile ? (
+            <div style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: "0.7rem" }}>
+                <div style={{ fontSize: "0.82rem", fontWeight: 700 }}>{politicalProfile.government?.form || "Government information unavailable"}</div>
+                {(politicalProfile.government?.headOfState || politicalProfile.government?.headOfStateId || politicalProfile.leader || politicalProfile.leaders?.[0]?.name) && <div style={{ color: "rgba(255,255,255,0.7)", fontSize: "0.78rem" }}>Leader: {politicalProfile.government?.headOfState || politicalProfile.government?.headOfStateId || politicalProfile.leader || politicalProfile.leaders?.[0]?.name}</div>}
+                {politicalProfile.parties?.length > 0 && <div style={{ marginTop: "0.4rem" }}>
+                    {politicalProfile.parties.slice(0,5).map((party)=><div key={party.id || party.name} style={{ fontSize:"0.76rem" }}>{party.name} {party.support?.percent ? `— ${party.support.percent}%` : ""}</div>)}
+                </div>}
+            </div>
+        ) : (
+            <div style={{ color:"rgba(255,255,255,0.45)", fontSize:"0.78rem" }}>No political actor profile initialized.</div>
         )}
 
         <div style={{ fontSize: "1rem", fontWeight: 800, marginTop: "0.5rem" }}>Details</div>

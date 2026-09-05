@@ -905,6 +905,9 @@ const setActiveGame = async (gameId) => {
   const manifest = await getGameManifest();
   await saveGameManifest({ activeGameId: id, order: [id, ...manifest.order.filter((e) => e !== id)] });
   await recordGamePlayed(id);
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("oh:world-endpoint-changed", { detail: { gameId: id } }));
+  }
   return getLibraryCatalog();
 };
 

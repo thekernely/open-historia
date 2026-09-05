@@ -61,6 +61,7 @@ const LazyAdvisorPanel = lazy(() =>
 const LazyCheatsPanel = lazy(() =>
   import("./cheats").then((module) => ({ default: module.CheatsPanel })),
 );
+const LazyCountryPanel = lazy(() => import("./country").then((module) => ({ default: module.default })));
 
 const checkWebGL = () => {
   try {
@@ -168,6 +169,7 @@ const Main = ({
   const [isCheatsOpen, setIsCheatsOpen] = useState(false);
   const [shouldLoadCheats, setShouldLoadCheats] = useState(false);
   const [isAdvisorOpen, setIsAdvisorOpen] = useState(false);
+  const [isCountryOpen, setIsCountryOpen] = useState(false);
   const [advisorWidth, setAdvisorWidth] = useState(readAdvisorWidth);
   const [isForcesOpen, setIsForcesOpen] = useState(false);
   const [activeBottomPanel, setActiveBottomPanel] = useState(null);
@@ -320,10 +322,16 @@ const Main = ({
 
   const openAdvisor = useCallback(() => {
     setActiveBottomPanel(null);
+    setIsCountryOpen(false);
     setIsAdvisorOpen(true);
+  }, []);
+  const toggleCountry = useCallback(() => {
+    setIsAdvisorOpen(false);
+    setIsCountryOpen((open) => !open);
   }, []);
   const closeAdvisor = useCallback(() => setIsAdvisorOpen(false), []);
   const toggleAdvisor = useCallback(() => {
+    setIsCountryOpen(false);
     setIsAdvisorOpen((open) => {
       const next = !open;
       if (next) setActiveBottomPanel(null);
@@ -396,6 +404,14 @@ const Main = ({
               />
             </React.Profiler>
             <div className="oh-dock-divider" />
+            <button
+              type="button"
+              className={`oh-dock-segment${isCountryOpen ? " oh-dock-segment-active" : ""}`}
+              onClick={toggleCountry}
+              title="Country"
+            >
+              ▣ Country
+            </button>
             <AdvisorButton
               embedded
               isAdvisorOpen={isAdvisorOpen}
@@ -415,6 +431,11 @@ const Main = ({
         open={isForcesOpen}
         onToggle={toggleForces}
       />
+      </React.Profiler>
+      <React.Profiler id="CountryPanel" onRender={reportReactRender}>
+      <Suspense fallback={null}>
+        <LazyCountryPanel open={isCountryOpen} onClose={() => setIsCountryOpen(false)} width={advisorWidth} />
+      </Suspense>
       </React.Profiler>
       <React.Profiler id="AdvisorPanel" onRender={reportReactRender}>
       <Suspense fallback={null}>

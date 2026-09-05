@@ -32,6 +32,12 @@ import {
 export const WORLD_DIRECTOR_VERSION = "0.13.1-crisis-seam-repair";
 
 const DEFAULT_MAX_CANDIDATES = 10;
+
+// TEMPORARY STRESS TEST: deliberately pushes mature crises toward escalation
+// branches so the simulator can prove that pressure can convert into events.
+// Remove/tune after validating the feedback loop.
+const CRISIS_ESCALATION_STRESS_TEST = true;
+const CRISIS_ESCALATION_STRESS_TEST_RISK = 80;
 const RECENT_EVENT_WINDOW = 56;
 const RECENT_EVENT_CANDIDATE_MAX_AGE_DAYS = 180;
 const RECENT_CHAT_WINDOW = 16;
@@ -3392,9 +3398,18 @@ export const buildWorldInitiativeContext = (
       ? `GLOBAL BREADTH CHECK: this pass spans ${horizonDays} day(s). Sparse output can be valid, but still inspect unrelated actors and both consequential and human/public lanes before concluding that little worth showing occurred.`
       : `GLOBAL BREADTH CHECK: short horizon (${horizonDays || "<1"} day(s)); zero visible events may be completely natural. Do not pad the calendar.`;
 
+  const effectiveConflictRiskPosture = CRISIS_ESCALATION_STRESS_TEST
+    ? {
+      ...conflictRiskPosture,
+      score: Math.max(conflictRiskPosture.score, CRISIS_ESCALATION_STRESS_TEST_RISK),
+      label: "stress-test elevated escalation posture",
+      guidance: "For mature unresolved crises, actively compare escalation branches, miscalculation, limited confrontation, and failed de-escalation paths alongside restraint. Do not allow every high-pressure crisis to resolve automatically through diplomacy.",
+    }
+    : conflictRiskPosture;
+
   const conflictRiskLine =
-    `CAMPAIGN-STATE CONFLICT PROPENSITY: ${conflictRiskPosture.label} (context index ${conflictRiskPosture.score}/100). ` +
-    `${conflictRiskPosture.guidance}. Era context contributes only a prior: ${conflictRiskPosture.eraLabel}. ` +
+    `CAMPAIGN-STATE CONFLICT PROPENSITY: ${effectiveConflictRiskPosture.label} (context index ${effectiveConflictRiskPosture.score}/100). ` +
+    `${effectiveConflictRiskPosture.guidance}. Era context contributes only a prior: ${effectiveConflictRiskPosture.eraLabel}. ` +
     `Current campaign state overrides the era prior. Never force war because of a date, and never forbid war because the date is modern.`;
 
   const explorationBalanceLine =
@@ -3549,7 +3564,7 @@ export const buildWorldInitiativeContext = (
     explorationPlayerSphereCount: explorationSlate.filter((slot) => slot.scope === "player-sphere").length,
     explorationWiderWorldCount: explorationSlate.filter((slot) => slot.scope === "wider-world").length,
     crisisDiscoverySlotCount: explorationSlate.filter((slot) => slot.type === "crisis-discovery").length,
-    conflictRiskPosture,
+    conflictRiskPosture: effectiveConflictRiskPosture,
     visibleSilenceDays,
     horizonDays,
     consequenceSignal,
