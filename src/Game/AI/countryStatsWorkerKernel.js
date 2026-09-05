@@ -3,6 +3,7 @@
  */
 import { toCountryName } from "../../runtime/ownerNames.js";
 import { resolvePolityIdentity } from "../../runtime/polityIdentity.js";
+import { getPoliticalProfile } from "../../runtime/politicalActors.js";
 import {
   COUNTRY_STATS_POPULATION_CALIBRATION_VERSION,
   isCompleteCountryStatSheet,
@@ -1181,6 +1182,45 @@ export const buildTargetDossierKernel = ({ bundle, code, scenarioCatalog = [], f
       }`,
     );
     if (polity.note) lines.push(`Notes: ${polity.note}`);
+  }
+
+  // Political Actors are authoritative political context when present. This is the
+  // normal worker path used by Stats generation, so it must carry the same political
+  // dossier as the cooperative main-thread fallback in gameplay.js.
+  const politicalProfile = code ? getPoliticalProfile(world, code) : null;
+  if (politicalProfile) {
+    const government = normalizeString(politicalProfile?.government?.form);
+    const rawLeader = politicalProfile?.government?.headOfState
+      || politicalProfile?.government?.headOfStateId
+      || politicalProfile?.leader
+      || politicalProfile?.leaders?.[0]?.name;
+    const leader = normalizeString(
+      rawLeader && typeof rawLeader === "object"
+        ? rawLeader.name || rawLeader.id
+        : rawLeader,
+    );
+    if (government) lines.push(`Current political system (canonical Political Actor): ${government}`);
+    if (leader) lines.push(`Current leader (canonical Political Actor): ${leader}`);
+    const headOfGovernment = normalizeString(
+      politicalProfile?.government?.headOfGovernment && typeof politicalProfile.government.headOfGovernment === "object"
+        ? politicalProfile.government.headOfGovernment.name || politicalProfile.government.headOfGovernment.id
+        : politicalProfile?.government?.headOfGovernment,
+    );
+    if (headOfGovernment && headOfGovernment !== leader) {
+      lines.push(`Current head of government (canonical Political Actor): ${headOfGovernment}`);
+    }
+    const parties = normalizeArray(politicalProfile?.parties)
+      .slice(0, 5)
+      .map((party) => {
+        const name = normalizeString(party?.name);
+        if (!name) return "";
+        const support = Number(party?.support?.percent);
+        return Number.isFinite(support) ? `${name} (${support}%)` : name;
+      })
+      .filter(Boolean);
+    if (parties.length) lines.push(`Current parties: ${parties.join(", ")}`);
+    const goals = normalizeArray(politicalProfile?.goals).map(normalizeString).filter(Boolean).slice(0, 6);
+    if (goals.length) lines.push(`Current political goals: ${goals.join("; ")}`);
   }
 
   const overrides = Object.entries(world.regionOwnershipOverrides ?? {});

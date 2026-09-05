@@ -1,11 +1,13 @@
 /*! Open Historia — national stats pane © 2026 Nicholas Krol, MIT (see src/Editor/LICENSE). */
 import React, { memo, startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { JSON_URLS, getNationFlags, readJson, reportPerfOperation } from "../../runtime/assets.js";
+import { JSON_URLS, getNationFlags, getNationTags, readJson, reportPerfOperation } from "../../runtime/assets.js";
 import { isPolityLandless, readGameData, readWorldState, readWorldStateView, writeWorldState } from "../../runtime/gameState.js";
 import { useLibraryState } from "../../runtime/library.js";
 import { useCountryDisplayName } from "../../runtime/polityNames.js";
 import { resolvePolityIdentity } from "../../runtime/polityIdentity.js";
+import { getPoliticalProfile } from "../../runtime/politicalActors.js";
+import { resolveCountryTags } from "../../runtime/countryTags.js";
 import { intelligenceOf } from "../../runtime/spycraft.js";
 import { flagImageUrlFromGid } from "../../runtime/countryFlags.js";
 import COUNTRY_NAMES from "../../runtime/generated/countryNames.js";
@@ -1181,9 +1183,10 @@ const StatsPaneBody = ({ active }) => {
     // still resolve to a real country, but they are not it — so their own row
     // must show the neutral initials, never that country's flag.
     const [playerLandless, setPlayerLandless] = useState(false);
-    // Author-set flags from the scenario (flags.json). Memoized in assets.js, so
-    // this is one fetch per scenario; {} for every scenario that sets none.
+    // Author-set flags/tags from the scenario are both memoized in assets.js.
+    // Political identity can therefore render immediately without generating Stats.
     const [customFlags, setCustomFlags] = useState({});
+    const [baseTags, setBaseTags] = useState({});
 
     useEffect(() => {
         worldSnapshotRef.current = worldSnapshot;
@@ -1254,9 +1257,14 @@ const StatsPaneBody = ({ active }) => {
     // Which game and which date are we in? Also seeds the target: your country.
     useEffect(() => {
         let cancelled = false;
-        getNationFlags()
-            .then((flags) => { if (!cancelled) setCustomFlags(flags || {}); })
-            .catch(() => {});
+        Promise.all([
+            getNationFlags().catch(() => ({})),
+            getNationTags().catch(() => ({})),
+        ]).then(([flags, tags]) => {
+            if (cancelled) return;
+            setCustomFlags(flags || {});
+            setBaseTags(tags || {});
+        });
         return () => { cancelled = true; };
     }, [activeGameId]);
 
@@ -1647,11 +1655,51 @@ const StatsPaneBody = ({ active }) => {
     }, [active, advancedOpen, targetCountry, player.date, player.round, state.sheet]);
 
     const sheet = state.sheet;
-    // Header identity can safely use the already-loaded canonical world's shallow
-    // stat metadata while Economy itself waits for the validated/migrated sheet.
-    // This preserves capital/government/leader text without triggering heavy Stats
-    // generation on the default Diplomacy tab.
-    const headerSheet = sheet || worldSnapshot?.countryStats?.[targetCountry] || null;
+    // Capital/continent remain Stats-owned compatibility metadata. Resolve the
+    // campaign identity once so a stock-map token can reuse a persisted sheet.
+    const resolvedTargetKey = targetCountry && worldSnapshot
+        ? (canonicalPolityKey(targetCountry, worldSnapshot) || targetCountry)
+        : targetCountry;
+    const headerSheet = sheet
+        || worldSnapshot?.countryStats?.[resolvedTargetKey]
+        || worldSnapshot?.countryStats?.[targetCountry]
+        || null;
+
+    // Political identity is independent of Stats. A seeded/current Political Actor
+    // must render even when this country has never generated an Economy sheet. Legacy
+    // Stats government/leader fields are compatibility fallbacks only.
+    const politicalProfile = useMemo(() => {
+        if (!worldSnapshot || !targetCountry) return null;
+        return getPoliticalProfile(worldSnapshot, targetCountry);
+    }, [worldSnapshot, targetCountry]);
+    const politicalKey = politicalProfile?.polityKey || resolvedTargetKey || targetCountry;
+    const politicalTags = useMemo(
+        () => resolveCountryTags(baseTags, worldSnapshot, politicalKey),
+        [baseTags, worldSnapshot, politicalKey],
+    );
+    const politicalGovernment = politicalProfile?.government?.form || headerSheet?.government || "";
+    const politicalLeaderRaw = politicalProfile?.government?.headOfState
+        || politicalProfile?.government?.headOfStateId
+        || politicalProfile?.leader
+        || politicalProfile?.leaders?.[0]?.name
+        || headerSheet?.leader
+        || "";
+    const politicalLeader = typeof politicalLeaderRaw === "object"
+        ? (politicalLeaderRaw.name || politicalLeaderRaw.id || "")
+        : politicalLeaderRaw;
+    const politicalHeadOfGovernmentRaw = politicalProfile?.government?.headOfGovernment
+        || politicalProfile?.government?.headOfGovernmentId
+        || "";
+    const politicalHeadOfGovernment = typeof politicalHeadOfGovernmentRaw === "object"
+        ? (politicalHeadOfGovernmentRaw.name || politicalHeadOfGovernmentRaw.id || "")
+        : politicalHeadOfGovernmentRaw;
+    const politicalParties = Array.isArray(politicalProfile?.parties)
+        ? politicalProfile.parties.slice(0, 5)
+        : [];
+    const politicalGoals = Array.isArray(politicalProfile?.goals)
+        ? politicalProfile.goals.filter((goal) => String(goal || "").trim()).slice(0, 4)
+        : [];
+
     const intelligence = targetCountry && worldSnapshot ? intelligenceOf(worldSnapshot, targetCountry) : null;
     const isPlayer = targetCountry && targetCountry.toUpperCase() === String(player.code).toUpperCase();
     // An author-set flag (scenario flags.json) wins over the code-derived one, so a
@@ -1735,22 +1783,51 @@ const StatsPaneBody = ({ active }) => {
                 </span>
             )}
             </div>
-            {headerSheet && (
-                <>
+            {headerSheet && [headerSheet.capital, headerSheet.continent].some(Boolean) && (
                 <div style={{ color: "rgba(255,255,255,0.7)", fontSize: "0.76rem", marginTop: "0.15rem" }}>
                 {[headerSheet.capital, headerSheet.continent].filter(Boolean).join(" · ")}
                 </div>
-                {headerSheet.government && (
-                    <div style={{ color: "rgba(255,255,255,0.45)", fontSize: "0.72rem", marginTop: "0.1rem" }}>
-                    {headerSheet.government}
-                    </div>
-                )}
-                {headerSheet.leader && (
-                    <div style={{ color: "#fbbf24", fontSize: "0.72rem", marginTop: "0.1rem" }}>
-                    Leader: {headerSheet.leader}
-                    </div>
-                )}
-                </>
+            )}
+            {politicalTags.length > 0 && (
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "0.25rem", marginTop: "0.28rem" }}>
+                {politicalTags.map((tag) => (
+                    <span
+                        key={tag}
+                        style={{ background: "rgba(124,58,237,0.22)", border: "1px solid rgba(124,58,237,0.5)", borderRadius: "999px", color: "rgba(255,255,255,0.76)", fontSize: "0.61rem", padding: "0.1rem 0.38rem" }}
+                    >
+                        {tag}
+                    </span>
+                ))}
+                </div>
+            )}
+            {politicalGovernment && (
+                <div style={{ color: "rgba(255,255,255,0.45)", fontSize: "0.72rem", marginTop: "0.1rem" }}>
+                {politicalGovernment}
+                </div>
+            )}
+            {politicalLeader && (
+                <div style={{ color: "#fbbf24", fontSize: "0.72rem", marginTop: "0.1rem" }}>
+                Leader: {politicalLeader}
+                </div>
+            )}
+            {politicalHeadOfGovernment && politicalHeadOfGovernment !== politicalLeader && (
+                <div style={{ color: "rgba(255,255,255,0.58)", fontSize: "0.68rem", marginTop: "0.08rem" }}>
+                Head of government: {politicalHeadOfGovernment}
+                </div>
+            )}
+            {politicalParties.length > 0 && (
+                <div style={{ color: "rgba(255,255,255,0.58)", fontSize: "0.65rem", lineHeight: 1.45, marginTop: "0.22rem" }}>
+                    {politicalParties.map((party) => (
+                        <div key={party.id || party.name}>
+                            {party.name}{Number.isFinite(Number(party?.support?.percent)) ? ` — ${Number(party.support.percent)}%` : ""}
+                        </div>
+                    ))}
+                </div>
+            )}
+            {politicalGoals.length > 0 && (
+                <div style={{ color: "rgba(255,255,255,0.46)", fontSize: "0.64rem", lineHeight: 1.4, marginTop: "0.22rem" }}>
+                    <span style={{ fontWeight: 700 }}>Goals:</span> {politicalGoals.join(" · ")}
+                </div>
             )}
             </div>
             {statsView === "economy" && state.status !== "loading" && (
