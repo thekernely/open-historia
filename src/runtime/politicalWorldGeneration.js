@@ -223,11 +223,20 @@ const hasResponseProfiles = (actor, representation) => {
     ? actor?.parties
     : actor?.powerBlocs;
   if (!Array.isArray(entities) || !entities.length) return representation === POLITICAL_REPRESENTATIONS.NONE;
-  return entities.some((entity) => hasKeys(entity?.politicalResponse));
+
+  // RICH/FULL generation asks for reusable hidden response metadata for every
+  // represented entity, including deliberately-unpolled coalition members.
+  // That does NOT invent polling; it merely means a later support/influence
+  // value can become dynamic without another semantic AI pass.
+  return entities.every((entity) => hasKeys(entity?.politicalResponse));
 };
 
-const hasStrategicContext = (actor) => [actor?.goals, actor?.fears, actor?.ambitions]
-  .some((value) => Array.isArray(value) && value.length > 0);
+const hasStrategicContext = (actor) => {
+  const hasNationalStrategy = [actor?.goals, actor?.fears, actor?.ambitions]
+    .some((value) => Array.isArray(value) && value.length > 0);
+  const hasGovernmentIdeology = hasText(actor?.government?.ideology);
+  return hasNationalStrategy && hasGovernmentIdeology;
+};
 
 const hasDomesticContext = (actor) => (
   (Array.isArray(actor?.domesticPressures) && actor.domesticPressures.length > 0) ||
@@ -244,22 +253,27 @@ export const assessPoliticalGenerationNeeds = (actorInput, depthInput = POLITICA
   const politicalSystem = actor?.politicalSystem;
   const type = clean(politicalSystem?.type).toLocaleLowerCase();
   const explicitRepresentation = clean(politicalSystem?.representation).toLocaleLowerCase();
-  if (!type || type === "unspecified" || !REPRESENTATION_SET.has(explicitRepresentation)) {
-    needs.push(POLITICAL_GENERATION_NEEDS.POLITICAL_SYSTEM);
-  }
-  if (!hasGoverningStructure(actor) && representation !== POLITICAL_REPRESENTATIONS.NONE) {
+  const systemUnknown = !type || type === "unspecified" || !REPRESENTATION_SET.has(explicitRepresentation);
+  if (systemUnknown) needs.push(POLITICAL_GENERATION_NEEDS.POLITICAL_SYSTEM);
+
+  // When representation itself is unknown, downstream completeness cannot be
+  // inferred from the current actor yet. Request the depth-appropriate shape in
+  // the SAME bounded proposal; once the model selects the regime, a native
+  // post-validation completeness pass decides which of these needs actually
+  // apply (for example representation=none needs no party/bloc roster).
+  if (systemUnknown || (!hasGoverningStructure(actor) && representation !== POLITICAL_REPRESENTATIONS.NONE)) {
     needs.push(POLITICAL_GENERATION_NEEDS.GOVERNING_STRUCTURE);
   }
 
   if (depth === POLITICAL_GENERATION_DEPTHS.MINIMAL) return needs;
 
-  if (!hasRepresentationEntities(actor, representation)) {
+  if (systemUnknown || !hasRepresentationEntities(actor, representation)) {
     needs.push(POLITICAL_GENERATION_NEEDS.REPRESENTATION_ENTITIES);
   }
   if (depth === POLITICAL_GENERATION_DEPTHS.STANDARD) return needs;
 
   if (!hasKeys(actor?.traits)) needs.push(POLITICAL_GENERATION_NEEDS.LEADERSHIP_TRAITS);
-  if (!hasResponseProfiles(actor, representation)) needs.push(POLITICAL_GENERATION_NEEDS.RESPONSE_PROFILES);
+  if (systemUnknown || !hasResponseProfiles(actor, representation)) needs.push(POLITICAL_GENERATION_NEEDS.RESPONSE_PROFILES);
   if (!hasStrategicContext(actor)) needs.push(POLITICAL_GENERATION_NEEDS.STRATEGIC_CONTEXT);
   if (depth === POLITICAL_GENERATION_DEPTHS.RICH) return needs;
 

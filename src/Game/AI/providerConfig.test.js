@@ -105,3 +105,10 @@ test("recent models: newest first, no duplicates, capped at ten", () => {
   assert.equal(recent[0], "model-11");
   assert.deepEqual(config.getRecentModels("gemini"), []);
 });
+
+test("Political World generation is independently routable to a dedicated model", () => {
+  assert.ok(config.AI_TASK_ROUTING.some((entry) => entry.key === "politicalWorldGeneration"));
+  config.setProviderField("gemini", "model", "default-model");
+  config.setProviderField("gemini", "model_politicalWorldGeneration", "politics-model");
+  assert.equal(config.getModelForTask("gemini", "politicalWorldGeneration"), "politics-model");
+});

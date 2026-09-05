@@ -230,3 +230,30 @@ test("scenario-date contract rejects impossible calendar dates", () => {
   const leap = buildPoliticalGenerationPlan({ scenarioDate: "2068-02-29", polities: ["Republic X"] });
   assert.equal(leap.scenarioDate, "2068-02-29");
 });
+
+test("an unknown political system requests the full depth-appropriate shape instead of pretending representation=none is settled", () => {
+  const rich = assessPoliticalGenerationNeeds(null, "rich");
+  assert.deepEqual(rich, [
+    POLITICAL_GENERATION_NEEDS.POLITICAL_SYSTEM,
+    POLITICAL_GENERATION_NEEDS.GOVERNING_STRUCTURE,
+    POLITICAL_GENERATION_NEEDS.REPRESENTATION_ENTITIES,
+    POLITICAL_GENERATION_NEEDS.LEADERSHIP_TRAITS,
+    POLITICAL_GENERATION_NEEDS.RESPONSE_PROFILES,
+    POLITICAL_GENERATION_NEEDS.STRATEGIC_CONTEXT,
+  ]);
+});
+
+test("rich generation requires response profiles for every represented entity without inventing polling", () => {
+  const needs = assessPoliticalGenerationNeeds({
+    polityKey: "Republic X",
+    politicalSystem: { type: "parliamentary_republic", representation: "electoral" },
+    government: { form: "Parliamentary republic", ideology: "Pluralist", headOfGovernment: "A" },
+    parties: [
+      { id: "a", name: "A", support: { percent: 45 }, politicalResponse: { organization: 60 } },
+      { id: "b", name: "B" },
+    ],
+    traits: { riskTolerance: 50 },
+    goals: ["Maintain order"],
+  }, "rich");
+  assert.ok(needs.includes(POLITICAL_GENERATION_NEEDS.RESPONSE_PROFILES));
+});

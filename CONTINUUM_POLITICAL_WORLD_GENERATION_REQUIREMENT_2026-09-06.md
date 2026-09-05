@@ -95,3 +95,24 @@ The native contract owns:
 - applied-path provenance returned for later persistence/review.
 
 Phase006A does NOT call an AI, mutate the world, run the political clock, or generate events. Phase006B may build AI requests on top of this contract; Phase006C may expose review/apply UX. Those later phases must not bypass the native validator/application seam.
+
+## Phase006B bounded AI generation seam
+
+Phase006B materializes the AI proposal stage in `src/Game/AI/politicalWorldGeneratorCore.js` and `src/Game/AI/politicalWorldGenerator.js`.
+
+The AI does not own the canonical proposal envelope. Native code supplies the exact requested polity key, scenario date, generation depth, `generated` provenance source, and generation timestamp. The model supplies only a bounded missing-state `actorPatch`, confidence, and optional historical reference dates. Every returned patch is then passed through the Phase006A validator before it can reach later review/apply UX.
+
+Phase006B requirements:
+- use the Phase006A relevance-ranked bounded batches (maximum 12 polities per request);
+- send only bounded scenario context, polity-specific context, requested needs, and existing non-derived political state;
+- never send `behavioralDisposition` or `politicalPressures` back to the generator as fields it should author;
+- accept no unrequested polity and no generated top-level field outside the requested need set;
+- retry invalid or omitted polities at most once, without regenerating already-valid proposals;
+- preserve valid partial batch results when another polity fails validation;
+- never mutate world/scenario state in the generation layer; Phase006C owns review/apply and persistence;
+- expose a dedicated `politicalWorldGeneration` AI task key so users may select an appropriate model independently from normal turns.
+- after the AI chooses a previously-unknown representation, re-run native completeness against the resulting actor so `representation=none`, electoral parties, court factions, etc. are judged by the regime that was actually proposed rather than by the pre-generation placeholder;
+- RICH/FULL completeness requires reusable hidden response profiles for every represented party/power bloc, including deliberately-unpolled coalition members, without inventing polling for them;
+- government ideology remains part of strategic political completeness even when government form/leadership was already authored.
+
+Phase006B is still scenario creation/upgrade infrastructure, not a runtime political tick and not a World Director behavior source.

@@ -196,6 +196,7 @@ export const AI_TASK_ROUTING = [
     { key: "eventConsolidator", label: "Event consolidator", hint: "Small/mid-tier: pure summarization", group: "Simulation" },
     { key: "projects", label: "Projects & operations", hint: "Mid-tier model", group: "Simulation" },
     { key: "pregameHistory", label: "Pre-game history", hint: "Mid-tier model", group: "Simulation" },
+    { key: "politicalWorldGeneration", label: "Political world generation", hint: "Mid/high-tier: bounded scenario political seeding", group: "Simulation" },
     { key: "gameMaster", label: "Game Master", hint: "High-tier model (direct world edits)", group: "Player" },
     { key: "actions", label: "Action suggestions", hint: "Small/mid-tier: short suggestions", group: "Player" },
     { key: "descriptionToAction", label: "Action parsing", hint: "Small model: text to a structured command", group: "Player" },
