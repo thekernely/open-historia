@@ -9,7 +9,7 @@ import { normalizeEventTags } from "./eventTags.js";
 import { buildOwnerAliasMap, createOwnerResolver, toCountryName } from "./ownerNames.js";
 import { mergeCountryStatPatch, normalizeCountryStatSheet } from "./countryStats.js";
 import { buildPolityIdentityIndex, resolvePolityIdentity } from "./polityIdentity.js";
-import { applyPoliticalActorMetadataPatch, normalizePoliticalActors } from "./politicalActors.js";
+import { applyPoliticalActorMetadataPatch, normalizePoliticalActors, POLITICAL_ACTORS_SCHEMA_VERSION } from "./politicalActors.js";
 import {
   DEFAULT_PATROL_RADIUS_KM,
   daysBetweenDates,
@@ -58,9 +58,15 @@ export const WORLD_DEFAULTS = {
   // and thereafter changed ONLY by the AI (polityChanges.stats), so a country's stats
   // stop regenerating/drifting every date change.
   countryStats: {},
+  // Canonical political reality. This is the authoritative current political
+  // actor domain; player-facing UI and espionage must project from it rather than
+  // exposing the raw record wholesale. See politicalActors.js / politicalKnowledge.js.
+  politicalActors: { schemaVersion: POLITICAL_ACTORS_SCHEMA_VERSION, byPolity: {} },
   // Per-country tags the AI has changed: owner code -> string[]. The scenario's
   // tags.json holds the map-maker's STARTING tags; this holds every change since,
-  // and wins where present (see resolveCountryTags).
+  // and wins where present (see resolveCountryTags). These remain a compatibility /
+  // descriptive layer while structured Political Actors progressively take ownership
+  // of political semantics such as government, leaders, parties and later behavior.
   countryTags: {},
   // AI renames of STOCK map cities (which live in PMTiles, not world.markers):
   // lowercased original city name -> new display name. world.markers cities are

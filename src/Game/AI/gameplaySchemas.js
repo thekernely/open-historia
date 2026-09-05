@@ -2411,9 +2411,41 @@ export const COUNTRY_STAT_SHEET_SCHEMA = {
   additionalProperties: false,
 };
 
-// What a deployed spy reports: the target's diplomatic traffic with THIRD parties.
-// Redaction happens on the player's side, by their intelligence stat — the model
-// writes the whole exchange, the game decides how much of it the player can read.
+// The spy's political assessment is deliberately prose-only. Confidence and
+// access level are NOT authored by the model: native spycraft derives those from
+// the two intelligence services and the source's known integrity. This prevents
+// raw Political Actor trait weights / disposition numbers from crossing into the
+// player-facing information layer.
+const spyPoliticalAssessmentSchema = {
+  type: "object",
+  description:
+    "A narrative intelligence assessment of hidden political decision drivers inside the target. "
+    + "Translate evidence into prose; never output raw simulation trait numbers, internal field names, or exact hidden scores.",
+  properties: {
+    summary: nonEmptyTextSchema("One concise overall assessment of the target leadership's current political decision posture."),
+    findings: {
+      type: "array",
+      minItems: 1,
+      maxItems: 6,
+      description: "Specific assessed political findings supported by the available collection.",
+      items: {
+        type: "object",
+        properties: {
+          topic: nonEmptyTextSchema("Short player-readable topic, e.g. Leadership risk appetite, Elite pressure, Alliance perception."),
+          assessment: nonEmptyTextSchema("Narrative assessment only. No raw hidden numeric values or simulation field names."),
+        },
+        required: ["topic", "assessment"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["summary", "findings"],
+  additionalProperties: false,
+};
+
+// What a deployed spy reports: the target's diplomatic traffic with THIRD parties
+// plus, when collection supports it, a bounded political assessment. Redaction and
+// confidence are native game logic; the model never decides the player's access.
 const SPY_INTERCEPT_SCHEMA = {
   type: "object",
   description: "Intercepted diplomatic exchanges between the target polity and other polities.",
@@ -2447,6 +2479,7 @@ const SPY_INTERCEPT_SCHEMA = {
         additionalProperties: false,
       },
     },
+    politicalAssessment: spyPoliticalAssessmentSchema,
   },
   required: ["exchanges"],
   additionalProperties: false,
@@ -2595,7 +2628,7 @@ export const PREGAME_HISTORY_TOOL = makeTool(
 
 export const SPY_INTERCEPT_TOOL = makeTool(
   "submit_spy_intercept",
-  "Submit the diplomatic exchanges a planted spy intercepted between the target polity and others.",
+  "Submit intercepted third-party diplomacy and, when supported, a prose-only political assessment of the target. Native code owns confidence and access.",
   SPY_INTERCEPT_SCHEMA,
 );
 

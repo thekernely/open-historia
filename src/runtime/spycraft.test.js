@@ -5,10 +5,10 @@ import test from "node:test";
 import {
   DEFAULT_INTELLIGENCE, MAX_ACTIVE_SPIES, MAX_FOREIGN_SPIES,
   activeSpies, applySpyOps, deploySpy, detectionChance, espionageBrief, expelSpy, foreignAgentBrief, foreignDeployChance,
-  foreignSpies, intelligenceOf, normalizeIntercepts, normalizeSpies, recallSpy, redactExchange, redactText,
+  foreignSpies, intelligenceOf, normalizeIntercepts, normalizeSpies, politicalIntelligenceAccess, recallSpy, redactExchange, redactText,
   resolveEspionage, setCoverStory, signalClarity, suspicionChance, turnChance, turnSpy,
 } from "./spycraft.js";
-import { isSeal, newSeal, openExchange, openText, sealExchange, sealText } from "./spySeal.js";
+import { isSeal, newSeal, newSpyReportId, openExchange, openPoliticalAssessment, openText, sealExchange, sealPoliticalAssessment, sealText } from "./spySeal.js";
 
 const P = "France";
 
@@ -17,6 +17,51 @@ test("intelligence defaults to ordinary, clamps, and rounds", () => {
   assert.equal(intelligenceOf({ intelligence: { France: 77.6 } }, P), 78);
   assert.equal(intelligenceOf({ intelligence: { France: 140 } }, P), 100);
   assert.equal(intelligenceOf({ intelligence: { France: "nonsense" } }, P), DEFAULT_INTELLIGENCE);
+});
+
+
+test("political intelligence access reuses service-vs-service clarity and never reveals a turned source", () => {
+  const base = {
+    intelligence: { France: 90, Germany: 40 },
+    spies: [{ id: "f-g", owner: P, target: "Germany", status: "active", suspected: false }],
+  };
+  const strong = politicalIntelligenceAccess(base, "Germany", { viewerPolity: P });
+  assert.equal(strong.level, "classified");
+  assert.equal(strong.confidence, "High");
+  assert.equal(strong.spyId, "f-g");
+  assert.equal("turned" in strong, false);
+  assert.equal("status" in strong, false);
+
+  const turned = politicalIntelligenceAccess({ ...base, spies: [{ ...base.spies[0], status: "turned" }] }, "Germany", { viewerPolity: P });
+  assert.deepEqual(turned, strong, "a secretly turned source must look like the same live source to player-facing access code");
+
+  const suspected = politicalIntelligenceAccess({ ...base, spies: [{ ...base.spies[0], status: "turned", suspected: true }] }, "Germany", { viewerPolity: P });
+  assert.equal(suspected.level, "assessed");
+  assert.equal(suspected.confidence, "Low");
+  assert.equal(suspected.sourceIntegrity, "suspected");
+
+  const none = politicalIntelligenceAccess({ intelligence: base.intelligence, spies: [] }, "Germany", { viewerPolity: P });
+  assert.equal(none.level, "public");
+  assert.equal(none.hasLiveSource, false);
+});
+
+test("political assessments use the same spy seal and never sit in intercept storage as plaintext", async () => {
+  const seal = newSeal();
+  const reportId = newSpyReportId();
+  assert.match(reportId, /^spy-report-[0-9a-f]{24}$/);
+  const assessment = {
+    summary: "Leadership appears willing to accept controlled escalation risk.",
+    confidence: "High",
+    source: "HUMINT reporting",
+    findings: [{ topic: "Alliance perception", text: "Senior leaders appear to doubt NATO cohesion." }],
+  };
+  const sealed = await sealPoliticalAssessment(seal, reportId, assessment);
+  const stored = JSON.stringify(sealed);
+  for (const word of ["Leadership", "escalation", "NATO", "cohesion"]) {
+    assert.ok(!stored.includes(word), `${word} must not appear in the stored assessment envelope`);
+  }
+  assert.deepEqual(await openPoliticalAssessment(seal, reportId, sealed), assessment);
+  assert.equal((await openPoliticalAssessment(newSeal(), reportId, sealed)).summary, "[unreadable]");
 });
 
 test("deploying a spy: limits, duplicates, self, and ownership", () => {
@@ -205,7 +250,7 @@ test("intercepts at rest are sealed: the file holds ciphertext, not words", asyn
 
 test("normalizeIntercepts accepts sealed and plain messages and drops empty envelopes", () => {
   const out = normalizeIntercepts({
-    Germany: { round: 4, planted: true, exchanges: [
+    Germany: { reportId: "spy-report-test", spyId: "f-g", round: 4, planted: true, politicalAssessment: { cipher: "BBBB" }, exchanges: [
       { counterpart: "Italy", messages: [{ speaker: "Germany", cipher: "AAAA" }] },
       { counterpart: "", messages: [{ speaker: "x", text: "orphan" }] },
       { counterpart: "Japan", messages: [] },
@@ -216,6 +261,9 @@ test("normalizeIntercepts accepts sealed and plain messages and drops empty enve
   assert.deepEqual(Object.keys(out), ["Germany"]);
   assert.equal(out.Germany.exchanges.length, 1);
   assert.equal(out.Germany.planted, true);
+  assert.equal(out.Germany.reportId, "spy-report-test");
+  assert.equal(out.Germany.spyId, "f-g");
+  assert.equal(out.Germany.politicalAssessment.cipher, "BBBB");
   assert.equal(out.Germany.exchanges[0].messages[0].cipher, "AAAA");
   assert.deepEqual(normalizeIntercepts(null), {});
 });

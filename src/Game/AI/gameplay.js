@@ -48,10 +48,10 @@ import {
   isProjectOpen,
   spyProvenanceOps,
 } from "../../runtime/projects.js";
-import { activeSpies, applySpyOps, espionageBrief, intelligenceOf, normalizeIntercepts, normalizeSpies, resolveEspionage } from "../../runtime/spycraft.js";
+import { activeSpies, applySpyOps, espionageBrief, intelligenceOf, normalizeIntercepts, normalizeSpies, politicalIntelligenceAccess, redactText, resolveEspionage } from "../../runtime/spycraft.js";
 import { buildSpyOrdersDirective } from "./spyOrdersDirective.js";
 import { echoesExistingMessage, renderOpenChatsForPrompt } from "../../runtime/chatEcho.js";
-import { isSeal, newSeal, openExchange, sealExchange } from "../../runtime/spySeal.js";
+import { isSeal, newSeal, newSpyReportId, openExchange, openPoliticalAssessment, sealExchange, sealPoliticalAssessment } from "../../runtime/spySeal.js";
 import {
   buildActionHistoryText,
   buildChatSummaryText,
@@ -109,6 +109,7 @@ import { allocateCanonicalTurnEventIds, remapLedgerEventIds } from "../../runtim
 import { sortTimelineEventsChronologically } from "../../runtime/timelineOrder.js";
 import { buildPolityIdentityIndex, resolvePolityIdentity } from "../../runtime/polityIdentity.js";
 import { getPoliticalProfile } from "../../runtime/politicalActors.js";
+import { normalizePoliticalIntelligenceAssessment } from "../../runtime/politicalKnowledge.js";
 import {
   applyWarUpdates,
   bindWarUpdatesToEvents,
@@ -4930,11 +4931,19 @@ const applySimulationResult = async ({
   // Secret discoveries and turns stay secret and move nothing.
   const espionageRelationUpdates = [];
   espionage.events.forEach((event, espionageIndex) => {
-    const entry = normalizeEventEntry({ ...event, id: "espionage-" + nextGame.round + "-" + freshEvents.length }, freshEvents.length);
+    const notice = espionage.notices?.[espionageIndex] || null;
+    const entry = normalizeEventEntry({
+      ...event,
+      id: "espionage-" + nextGame.round + "-" + freshEvents.length,
+      importance: notice?.kind === "suspected" ? "minor" : "major",
+      kind: "diplomacy",
+      notable: true,
+      playerRelated: true,
+      source: "espionage",
+    }, freshEvents.length);
     if (!entry) return;
     freshEvents.push(entry);
     espionageEventIds.push(entry.id);
-    const notice = espionage.notices?.[espionageIndex] || null;
     const spy = notice?.kind === "exposed" && notice.spyId
       ? espionage.spies.find((candidate) => candidate?.id === notice.spyId)
       : null;
@@ -8421,6 +8430,84 @@ const ensureSpySeal = async () => {
   return spySeal;
 };
 
+const qualitativePoliticalBand = (value) => {
+  if (value == null || typeof value === "boolean" || Array.isArray(value)) return "";
+  const text = normalizeString(value);
+  if (!text) return "";
+  const numeric = typeof value === "number" || /^-?\d+(?:\.\d+)?$/.test(text) ? Number(value) : NaN;
+  if (!Number.isFinite(numeric)) return text;
+  if (numeric >= 80) return "very high";
+  if (numeric >= 65) return "high";
+  if (numeric >= 45) return "moderate";
+  if (numeric >= 25) return "low";
+  return "very low";
+};
+
+const politicalMetricLabel = (value) => String(value ?? "")
+  .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+  .replace(/[_-]+/g, " ")
+  .replace(/\s+/g, " ")
+  .trim()
+  .toLocaleLowerCase();
+
+// Convert hidden canonical Political Actor state into QUALITATIVE simulator-only
+// source material before the spy model sees it. Exact numbers never cross this
+// seam. Existing spycraft redaction then decides how much of even this qualitative
+// truth the source could plausibly collect.
+const buildCollectedPoliticalSignals = (world, polity, { clarity = 0, seed = "" } = {}) => {
+  const actor = getPoliticalProfile(world, polity);
+  if (!actor || typeof actor !== "object" || Array.isArray(actor)) return "";
+  const lines = [];
+  const addRecord = (label, value, limit = 10) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return;
+    const rows = Object.entries(value)
+      .slice(0, limit)
+      .map(([key, raw]) => {
+        if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+          const nested = Object.entries(raw).slice(0, 8)
+            .map(([nestedKey, nestedValue]) => `${politicalMetricLabel(nestedKey)} ${qualitativePoliticalBand(nestedValue)}`)
+            .filter(Boolean)
+            .join(", ");
+          return nested ? `${key}: ${nested}` : "";
+        }
+        const described = qualitativePoliticalBand(raw);
+        return described ? `${politicalMetricLabel(key)} ${described}` : "";
+      })
+      .filter(Boolean);
+    if (rows.length) lines.push(`${label}: ${rows.join("; ")}`);
+  };
+  const addList = (label, value, limit = 10) => {
+    const rows = normalizeArray(value).map(normalizeString).filter(Boolean).slice(0, limit);
+    if (rows.length) lines.push(`${label}: ${rows.join("; ")}`);
+  };
+
+  const government = actor.government && typeof actor.government === "object" ? actor.government : {};
+  const internalGovernment = {};
+  if (government.approval !== undefined) internalGovernment.approval = government.approval;
+  if (government.stability !== undefined) internalGovernment.stability = government.stability;
+  addRecord("Internal government condition", internalGovernment);
+  addRecord("Leadership tendencies", actor.traits);
+  addList("Internal fears", actor.fears);
+  addList("Latent ambitions", actor.ambitions);
+  addRecord("Perceptions", actor.perceptions, 8);
+  addList("Domestic pressures", actor.domesticPressures);
+  addRecord("Current behavioral disposition", actor.behavioralDisposition);
+
+  const partySignals = normalizeArray(actor.parties)
+    .map((party) => {
+      const name = normalizeString(party?.name);
+      const internal = normalizeString(party?.internalStrategy || party?.internalPressure || party?.privateGoal);
+      return name && internal ? `${name}: ${internal}` : "";
+    })
+    .filter(Boolean)
+    .slice(0, 6);
+  if (partySignals.length) lines.push(`Party-internal signals: ${partySignals.join("; ")}`);
+
+  const truth = lines.join("\n").slice(0, 5000);
+  if (!truth) return "";
+  return redactText(truth, clarity, `${seed}:political-signals`);
+};
+
 export const gatherIntelligence = async (target, { signal } = {}) => {
   const name = normalizeString(target);
   if (!name) throw new Error("No target polity.");
@@ -8431,11 +8518,27 @@ export const gatherIntelligence = async (target, { signal } = {}) => {
   // A turned agent still "reports" — what the target wants believed. The same
   // task writes the lie; the player is not told which kind they are reading.
   const disinformation = spy.status === "turned"
-    ? "IMPORTANT: this agent has been TURNED by " + name + " and now works for them. Everything reported must be DISINFORMATION designed by " + name + " to mislead " + player + ": plausible, specific, consistent with public facts, and wrong about the things that matter — intentions, timing, alignments. Never hint that it is false."
+    ? "IMPORTANT: this agent has been TURNED by " + name + " and now works for them. Everything reported must be DISINFORMATION designed by " + name + " to mislead " + player + ": plausible, specific, consistent with public facts, and wrong about the things that matter — intentions, timing, alignments, leadership pressures and political perceptions. Never hint that it is false."
     : "";
   const variables = { ...(await buildTemplateVariables(bundle)), targetPolity: name, disinformation };
   const dossier = await buildTargetDossier(bundle, name);
   const era = normalizeString(bundle.world?.simulationRules).slice(0, 700);
+  const access = politicalIntelligenceAccess(bundle.world, name, { viewerPolity: player });
+  const reportId = newSpyReportId();
+  const collectedPoliticalSignals = buildCollectedPoliticalSignals(bundle.world, name, {
+    clarity: access.clarity,
+    seed: `${spy.id}:${reportId}`,
+  });
+  const politicalAssessmentOrder = [
+    "POLITICAL ASSESSMENT — alongside the diplomatic exchanges, include politicalAssessment when the available collection supports a defensible read of hidden decision-making pressures.",
+    "Translate collection into player-readable prose. NEVER output raw Political Actor numbers, exact hidden scores, internal schema/property names, or equations. Describe tendencies qualitatively (for example unusually risk-tolerant, elite pressure appears intense, leadership seems to doubt alliance cohesion).",
+    access.level === "classified"
+      ? "Collection quality is strong enough for a relatively specific classified assessment, but uncertainty still exists."
+      : "Collection is partial. Keep the assessment cautious and broad; do not manufacture certainty to fill gaps.",
+    collectedPoliticalSignals
+      ? `SIMULATION-ONLY COLLECTED POLITICAL SIGNALS (already filtered by the espionage system; do not quote this block verbatim):\n${collectedPoliticalSignals}`
+      : "No additional hidden political signal was collected this period. Base any assessment only on the private traffic and supplied campaign evidence, or omit politicalAssessment if that would be speculation.",
+  ].join("\n");
   // Standing orders. A doubted entry can only be settled from material that
   // actually bears on it, and nothing was sending the agent to look: this task
   // wrote whatever traffic seemed plausible, so a replacement could report for
@@ -8461,6 +8564,7 @@ export const gatherIntelligence = async (target, { signal } = {}) => {
       `Report what the spy in ${name} intercepted this period.`,
       era ? `ERA & WORLD RULES:\n${era}` : "",
       `TARGET DOSSIER:\n${dossier || "(nothing recorded)"}`,
+      politicalAssessmentOrder,
       orders,
     ].filter(Boolean).join("\n\n"),
     variables,
@@ -8477,14 +8581,36 @@ export const gatherIntelligence = async (target, { signal } = {}) => {
     })
     .map((exchange, index) => ({
       ...exchange,
-      id: `${name}:${bundle.game?.round ?? 0}:${index}`.toLowerCase().replace(/\s+/g, "-"),
+      id: `${reportId}:${index}`,
     }));
+  const rawPoliticalAssessment = normalizePoliticalIntelligenceAssessment(payload?.politicalAssessment);
+  const politicalAssessment = rawPoliticalAssessment
+    ? normalizePoliticalIntelligenceAssessment({
+        ...rawPoliticalAssessment,
+        confidence: access.sourceIntegrity === "suspected" ? "Low" : access.confidence,
+        source: access.sourceIntegrity === "suspected"
+          ? "HUMINT reporting — source integrity concerns"
+          : "HUMINT reporting",
+        gatheredAt: normalizeString(bundle.game?.gameDate),
+      })
+    : null;
   // Stored sealed: the file, the network reply and the React tree hold ciphertext,
   // so copying the page or opening intercepts.json gives up nothing the player's
   // service did not decode. Only the renderer and the jump prompt open it.
   const seal = isSeal(bundle.world?.spySeal) ? bundle.world.spySeal : await ensureSpySeal();
   const sealed = await Promise.all(exchanges.map((exchange) => sealExchange(seal, exchange)));
-  const entry = { gatheredAt: normalizeString(bundle.game?.gameDate), round: Number(bundle.game?.round) || 0, planted: spy.status === "turned", exchanges: sealed };
+  const sealedPoliticalAssessment = politicalAssessment
+    ? await sealPoliticalAssessment(seal, reportId, politicalAssessment)
+    : null;
+  const entry = {
+    reportId,
+    spyId: spy.id,
+    gatheredAt: normalizeString(bundle.game?.gameDate),
+    round: Number(bundle.game?.round) || 0,
+    planted: spy.status === "turned",
+    exchanges: sealed,
+    ...(sealedPoliticalAssessment ? { politicalAssessment: sealedPoliticalAssessment } : {}),
+  };
   // Re-read at write time: another gather may have landed for a different target.
   const current = normalizeIntercepts(await readInterceptsState({ force: true }));
   await writeInterceptsState({ ...current, [name]: entry });
@@ -8499,7 +8625,15 @@ export const readOpenedIntercepts = async () => {
   if (!isSeal(world.spySeal)) return intercepts;
   const out = {};
   for (const [target, entry] of Object.entries(intercepts)) {
-    out[target] = { ...entry, exchanges: await Promise.all(entry.exchanges.map((exchange) => openExchange(world.spySeal, exchange))) };
+    const reportId = entry.reportId || `${target}:${entry.round || 0}:${entry.gatheredAt || "legacy"}`;
+    const politicalAssessment = entry.politicalAssessment
+      ? await openPoliticalAssessment(world.spySeal, reportId, entry.politicalAssessment)
+      : null;
+    out[target] = {
+      ...entry,
+      exchanges: await Promise.all(entry.exchanges.map((exchange) => openExchange(world.spySeal, exchange))),
+      ...(politicalAssessment ? { politicalAssessment } : {}),
+    };
   }
   return out;
 };

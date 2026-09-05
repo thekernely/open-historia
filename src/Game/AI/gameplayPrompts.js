@@ -159,7 +159,7 @@ export const PROMPT_SECTION_DEFINITIONS = [
     type: "root",
   },
   {
-    description: "What a planted spy intercepts: the target's private diplomacy with other polities.",
+    description: "What a planted spy intercepts: private diplomacy plus a bounded political intelligence assessment.",
     helpers: [
       "PLAYER_POLITY",
       "ORIGIN_ROUND_DATE",

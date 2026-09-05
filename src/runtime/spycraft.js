@@ -308,6 +308,46 @@ export const signalClarity = (readerIntelligence, targetIntelligence) => {
   return clamp01(Number(raw.toFixed(3)), 0.06, 1);
 };
 
+// The espionage-owned access seam for hidden political knowledge. Political
+// Actors owns the truth; this function owns only HOW GOOD the player's source is.
+// It deliberately never reports whether an apparently live source has secretly
+// been turned. A suspected source is player-known and therefore caps both detail
+// and confidence.
+export const politicalIntelligenceAccess = (world, target, { viewerPolity = "" } = {}) => {
+  const viewer = String(viewerPolity ?? "").trim();
+  const wanted = String(target ?? "").trim();
+  const same = (a, b) => String(a ?? "").trim().toLocaleLowerCase() === String(b ?? "").trim().toLocaleLowerCase();
+  const spy = normalizeSpies(world?.spies).find((entry) =>
+    isLive(entry) && same(entry.owner, viewer) && same(entry.target, wanted));
+
+  if (!viewer || !wanted || !spy) {
+    return {
+      level: "public",
+      clarity: 0,
+      confidence: "",
+      hasLiveSource: false,
+      sourceIntegrity: "none",
+      spyId: "",
+    };
+  }
+
+  const clarity = signalClarity(intelligenceOf(world, viewer), intelligenceOf(world, spy.target));
+  const suspected = spy.suspected === true;
+  const level = suspected ? "assessed" : clarity >= 0.62 ? "classified" : "assessed";
+  const confidence = suspected
+    ? "Low"
+    : clarity >= 0.75 ? "High" : clarity >= 0.42 ? "Moderate" : "Low";
+
+  return {
+    level,
+    clarity,
+    confidence,
+    hasLiveSource: true,
+    sourceIntegrity: suspected ? "suspected" : "normal",
+    spyId: spy.id,
+  };
+};
+
 const BLOCK = "█";
 
 // Redacts one message's text. Words are the unit; punctuation stays so the
@@ -362,7 +402,42 @@ const normalizeExchange = (exchange, index, target) => {
   };
 };
 
-// { [target]: { gatheredAt, round, planted, exchanges } }. `planted` marks a
+const normalizeStoredPoliticalAssessment = (value) => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const cipher = String(value.cipher ?? "").trim();
+  if (cipher) return { cipher };
+
+  const summary = String(value.summary ?? "").replace(/\s+/g, " ").trim();
+  const source = String(value.source ?? "").replace(/\s+/g, " ").trim();
+  const confidence = String(value.confidence ?? value.confidenceLabel ?? "").replace(/\s+/g, " ").trim();
+  const gatheredAt = String(value.gatheredAt ?? "").trim();
+  const findings = (Array.isArray(value.findings) ? value.findings : [])
+    .map((finding) => {
+      if (!finding || typeof finding !== "object" || Array.isArray(finding)) return null;
+      const text = String(finding.text ?? finding.assessment ?? finding.summary ?? "").replace(/\s+/g, " ").trim();
+      if (!text) return null;
+      const topic = String(finding.topic ?? "").replace(/\s+/g, " ").trim();
+      const findingConfidence = String(finding.confidence ?? finding.confidenceLabel ?? "").replace(/\s+/g, " ").trim();
+      return {
+        ...(topic ? { topic } : {}),
+        text,
+        ...(findingConfidence ? { confidence: findingConfidence } : {}),
+      };
+    })
+    .filter(Boolean)
+    .slice(0, 12);
+
+  if (!summary && !source && !confidence && !gatheredAt && findings.length === 0) return null;
+  return {
+    ...(summary ? { summary } : {}),
+    ...(source ? { source } : {}),
+    ...(confidence ? { confidence } : {}),
+    ...(gatheredAt ? { gatheredAt } : {}),
+    ...(findings.length ? { findings } : {}),
+  };
+};
+
+// { [target]: { reportId, spyId, gatheredAt, round, planted, politicalAssessment?, exchanges } }. `planted` marks a
 // report produced while the agent was turned: the file remembers, the player
 // does not get told. Anything malformed is dropped rather than rendered.
 export const normalizeIntercepts = (raw) => {
@@ -373,11 +448,15 @@ export const normalizeIntercepts = (raw) => {
       .map((exchange, i) => normalizeExchange(exchange, i, name))
       .filter(Boolean);
     if (!name || exchanges.length === 0) continue;
+    const politicalAssessment = normalizeStoredPoliticalAssessment(entry?.politicalAssessment);
     out[name] = {
+      reportId: String(entry?.reportId ?? "").trim(),
+      spyId: String(entry?.spyId ?? "").trim(),
       gatheredAt: String(entry?.gatheredAt ?? "").trim(),
       round: Number.isFinite(Number(entry?.round)) ? Number(entry.round) : 0,
       planted: entry?.planted === true,
       exchanges,
+      ...(politicalAssessment ? { politicalAssessment } : {}),
     };
   }
   return out;
