@@ -239,3 +239,39 @@ test("old political intelligence remains as stale assessed knowledge after the r
   assert.equal(view?.intelligence?.confidence, "Moderate");
   assert.match(view?.intelligence?.source || "", /no longer active/i);
 });
+
+test("public political knowledge preserves quantitative landscape basis without exposing hidden internals", () => {
+  const world = {
+    politicalActors: {
+      schemaVersion: 6,
+      byPolity: {
+        "Republic X": {
+          polityKey: "Republic X",
+          politicalSystem: { type: "parliamentary_republic", representation: "electoral" },
+          parties: [{ id: "a", name: "A", support: { percent: 37, basis: "generated-estimate" } }],
+          powerBlocs: [{ id: "army", name: "Army", influence: { percent: 20, basis: "campaign-derived" } }],
+        },
+      },
+    },
+  };
+  const view = buildPublicPoliticalView(world, "Republic X");
+  assert.deepEqual(view.parties[0].support, { percent: 37, basis: "generated-estimate" });
+  assert.deepEqual(view.powerBlocs[0].influence, { percent: 20, basis: "campaign-derived" });
+});
+
+test("public political knowledge preserves party-state influence basis for the Country panel", () => {
+  const world = {
+    politicalActors: {
+      schemaVersion: 6,
+      byPolity: {
+        "Party State X": {
+          polityKey: "Party State X",
+          politicalSystem: { type: "single_party_state", representation: "party_state" },
+          parties: [{ id: "state-party", name: "State Party", influence: { percent: 100, basis: "generated-estimate" } }],
+        },
+      },
+    },
+  };
+  const view = buildPublicPoliticalView(world, "Party State X");
+  assert.deepEqual(view.parties[0].influence, { percent: 100, basis: "generated-estimate" });
+});

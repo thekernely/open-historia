@@ -18,6 +18,7 @@ import {
   validateWorldEventConsequencePayload,
   validateWorldStorylinePayload,
 } from "./nativeWorldDirector.js";
+import { validateWorldPoliticalDecisionCompatibility } from "./politicalWorldDirector.js";
 import {
   createWorldEventScopeClassifier,
   deriveWorldExplorationAudit,
@@ -38,7 +39,7 @@ import {
 import { UNIT_CONTRACT_MARKER, collapseRepeatedBlock, templateAlreadySays } from "./promptDedupe.js";
 import { buildJumpProjectsDirective } from "./projectsDirective.js";
 import { extractJsonPayload, unwrapMimickedToolCall } from "./jsonSalvage.js";
-import { decodeGameMasterTransportPayload, getGameplayTool, normalizeGameplayPayload, validateGameplayPayload } from "./gameplaySchemas.js";
+import { decodeGameMasterTransportPayload, decodePregameHistoryTransportPayload, getGameplayTool, normalizeGameplayPayload, validateGameplayPayload } from "./gameplaySchemas.js";
 import { buildOwnerAliasMap, canonicalOwnerName, toCountryName } from "../../runtime/ownerNames.js";
 import {
   describeDoubtedForPrompt,
@@ -87,6 +88,9 @@ import {
   normalizeEvents,
   normalizeGameData,
   normalizeWorldState,
+  chatParticipantSetKey,
+  mergeIncomingChats,
+  reconcileChatsForPlayer,
   readActionsState,
   readChatsState,
   readEventsState,
@@ -105,6 +109,11 @@ import {
   writeWorldState,
 } from "../../runtime/gameState.js";
 import { dedupeGeneratedEvents } from "../../runtime/eventDedup.js";
+import {
+  isPregameBootstrapPending,
+  mergePregameEventLogs,
+  mergePregameSimulationHistory,
+} from "./pregameBootstrapState.js";
 import { allocateCanonicalTurnEventIds, remapLedgerEventIds } from "../../runtime/eventIdentity.js";
 import { sortTimelineEventsChronologically } from "../../runtime/timelineOrder.js";
 import { buildPolityIdentityIndex, resolvePolityIdentity } from "../../runtime/polityIdentity.js";
@@ -129,8 +138,17 @@ import {
   decodeAgreementUpdates,
   decodeRelationUpdates,
   migrateLegacyDiplomaticState,
+  ensureObjectiveConflictRelations,
   validateDiplomaticLedgerPayload,
 } from "./nativeDiplomaticDirector.js";
+import {
+  applyInstitutionUpdates,
+  bindInstitutionUpdatesToEvents,
+  buildInstitutionContext,
+  decodeInstitutionUpdates,
+  validateInstitutionUpdates,
+} from "../../runtime/institutions.js";
+import { refreshPowerStatus } from "../../runtime/powerStatus.js";
 import {
   appendCountryStatHistorySample,
   captureCountryStatsHistory,
@@ -528,6 +546,29 @@ Relation decision model: a canonical bilateral relation score/status is persiste
 - Return relationUpdates:"" and agreementUpdates:"" when nothing material changes.`;
 };
 
+const buildInstitutionLedgerDirective = (variables) => {
+  const canonicalDiplomacy = normalizeString(variables?.canonicalDiplomaticContext);
+  return `[Canonical Institution / Membership Ledger]
+Formal institution membership is canonical world state, not a descriptive country tag. The current institution position is included in the canonical diplomatic context below when relevant.
+
+${canonicalDiplomacy || "No bounded institution context is recorded yet."}
+
+Hard rules:
+- A polity joining/leaving an alliance, union, organization, pact or regional bloc MUST emit institutionUpdates. Do not merely change prose/tags.
+- Formal membership and strategic alignment are different. A NATO member is not merely nato-aligned.
+- A leadership-role change inside an institution uses op=role. Suspension/restoration use suspend/restore.
+- Creating or dissolving an institution uses create/dissolve; creating one does not itself add members, so emit join records for founding members as well.
+- institutionUpdates is compact text, one record per line, fields separated by ~ (never use ~ inside a field):
+  institutionId~op~polity~status~role~eventNumbersCSV~name~kind~note
+  ops: create | join | leave | suspend | restore | role | dissolve
+  status: member | candidate | associate | observer | suspended (blank when irrelevant)
+  role: leader | leading-member | member (blank when irrelevant)
+  kind for create: security_alliance | defense_pact | political_union | economic_union | regional_bloc | international_organization | consultative_group | other
+  eventNumbersCSV is the 1-based number of the causal event and may be blank only where native binding can unambiguously recover it.
+- Return institutionUpdates:"" when nothing changes.
+- Institution leadership contributes to strategic weight, but never invent a leadership title merely to make a polity seem important.`;
+};
+
 const IDLE_RELATION_DECISION_MODEL = `[Diplomatic Relation Decision Model]
 Treat the canonical bilateral relation score/status as a strong prior for diplomatic tone and willingness to initiate contact. Friendly relations make reassurance, congratulations, candid consultation, alliance follow-up and commercial feelers more plausible; strained or hostile relations make protests, warnings, guarded clarification, counter-balancing or silence more plausible. This is not a hard threshold: current interests and events still decide whether anybody has a real reason to write.`;
 
@@ -539,26 +580,46 @@ const buildPregameBootstrapDirective = (variables) => {
     "the game start date";
   const vocabulary = normalizeString(variables?.pregameCanonicalPolityVocabulary) || "No current polity vocabulary was available.";
   return `[Round-Zero World Bootstrap Contract]
-This ONE pregameHistory response writes bounded history strictly BEFORE ${roundOneDate} and compiles the belligerency and diplomacy ALREADY TRUE at Round 1 into the canonical war, relation and agreement ledgers. It is not a future-history scheduler.
+This ONE pregameHistory response writes bounded history strictly BEFORE ${roundOneDate} and compiles the belligerency, diplomacy and formal institutional structure ALREADY TRUE at Round 1 into the canonical war, relation, agreement and institution ledgers. It is not a future-history scheduler.
+
+PROVIDER TRANSPORT
+The required tool fields are eventsJson, summary, and canonicalUpdatesJson. eventsJson and canonicalUpdatesJson are JSON ARRAY TEXT strings, not nested tool objects. Encode valid JSON arrays inside those strings. Native code decodes and validates them before anything is written.
+
+CURRENT TIMELINE EVENT CONTRACT (released-beta compatibility)
+Every object encoded inside eventsJson MUST use this current timeline shape:
+{"date":"YYYY-MM-DD","title":"","description":"","importance":"minor","kind":"world","tags":["Politics"],"warId":""}
+- importance is ALWAYS a STRING and MUST be exactly "minor" or "major". Never emit a number.
+- tags is ALWAYS an ARRAY with 1-3 entries chosen ONLY from: Military, Diplomacy, Economy, Politics, Culture, Disaster. Never invent category names such as Security, Geopolitics, War, Society or International.
+- kind is a short timeline kind such as world, diplomacy or military; it is separate from tags.
+- warId is a string. Use the canonical live-war id only when this event establishes or changes that war; otherwise use "".
+- Pre-game events have NO impacts/effects/changes object. They are historical records; the map already reflects them.
+- Keep the JSON property types exactly as shown even though eventsJson itself is a string field in the outer tool call.
 
 CANONICAL ENVELOPE
-Use canonicalUpdates only. Every item uses the same flat required fields; fill the fields a kind does not use with "", [] or 0.
+Inside canonicalUpdatesJson, use only the canonicalUpdates item shape below. Every item uses the same flat required fields; fill the fields a kind does not use with "", [] or 0.
 Kinds:
 - relation: polities=[A,B], score (absolute, -100..100), detail (summary).
 - storyline:active | storyline:dormant: id (stable, e.g. storyline-<slug>), polities (participants), pressure (0-100, unresolved stakes), momentum (0-100, current rate of change), date (when the process began, YYYY-MM-DD), category (process kind: crisis, revolution, diplomacy, politics, economy, insurgency...), title, detail (state: what is true now and why it is unresolved). One per unresolved multi-turn process still alive at Round 1 that is NOT itself a live war; the engine mirrors every live war into a storyline on its own.
 - war:start | war:join-a | war:join-b | war:leave | war:ceasefire | war:resume | war:end: id, polities (actors / side A), opponents (side B), detail (note). Every war still live at Round 1 begins with a war:start, and the pre-game event that started it carries the same event.warId.
-- agreement:start: id, polities (parties), category (agreement type: alliance | mutual_defense | guarantee | non_aggression | friendship_consultation | trade_economic | military_cooperation | military_access | neutrality | peace_settlement | other), title, detail (terms). Only agreements still in force on the start date; instruments that already ended belong in the backstory only.
+- agreement:start: id, polities (parties), date=agreement start/effective date, category (agreement type: alliance | mutual_defense | guarantee | non_aggression | friendship_consultation | trade_economic | military_cooperation | military_access | neutrality | peace_settlement | other), title, detail (terms). Only agreements already in force on the start date; instruments that begin later or already ended belong outside the Day-1 ledger.
+- institution:active: id, polities=current formal members, opponents=leading members (a subset of polities; [] when no special leadership is warranted), date=institution founding/establishment date, category=institution kind (security_alliance | defense_pact | political_union | economic_union | regional_bloc | international_organization | consultative_group | other), title=canonical institution name, detail=compact role/purpose note. Include only strategically relevant institutions that ALREADY EXIST on the start date; never project later real-world organizations backward into earlier scenarios. Do not dump every universal organization merely because it exists.
 Never output relation status or event indexes/ids; the engine owns those.
 
 ROUND-ZERO AUDIT
 - Every war still live at Round 1 must be represented.
 - Every unresolved non-war process that shapes Day-1 decisions (a crisis, an insurgency, a negotiation in progress, an economic emergency) should be a storyline; never spend a slot mirroring a live war.
 - Every materially important active formal agreement explicit in the source must be represented.
+- Major strategically relevant formal memberships that shape Day-1 behavior should be represented as institution:active. Formal membership is not the same as alignment.
 - Persist the sparse bilateral relations needed to explain how the central actors make decisions on Day 1; do not leave central actors blank when the source establishes allies, patrons, rivals or enemies.
-- Keep wars, relations and agreements distinct. Preserve causal inertia where its causes remain intact; never schedule future outcomes.
+- Keep wars, relations, agreements and institutions distinct. Preserve causal inertia where its causes remain intact; never schedule future outcomes.
 
 [Round-Zero Runtime Grounding]
 Start date: ${roundOneDate}
+
+TEMPORAL AUTHORITY:
+- Newly generated real-world institutions must actually exist by this date. Structured institutions already present in the scenario are authoritative alternate/fictional canon and may intentionally diverge from real history.
+- For institution:active, date must be the institution founding/establishment date.
+- For agreement:start, date must be the agreement start/effective date.
 
 CURRENT ROUND-ONE POLITIES (structured-output authority):
 ${vocabulary}
@@ -577,7 +638,7 @@ ${normalizeString(variables?.canonicalDiplomaticContext) || "None recorded."}
 Do not duplicate canonical state already present. Return canonicalUpdates:[] only when no qualifying Day-1 canonical state exists.
 
 [Round-Zero Diplomatic Baseline]
-Round-Zero relations are absolute as-of-start political memory, not single-event deltas. Existing agreements are standing Day-1 state, not necessarily newly signed during the displayed backstory window. Emit historically justified relation and agreement baseline records even when no single generated event card uniquely anchors them: the engine attaches a source event when one is clear and otherwise keeps the valid baseline fact without inventing causality. Do NOT create filler event cards solely to satisfy bookkeeping; within the envelope's capacity, cover the material diplomatic graph rather than stopping after a handful of obvious pairs.`;
+Round-Zero relations are absolute as-of-start political memory, not single-event deltas. Existing agreements and institution memberships are standing Day-1 state, not necessarily newly signed/joined during the displayed backstory window. Emit historically justified relation/agreement/institution baseline records even when no single generated event card uniquely anchors them: the engine attaches a source event when one is clear and otherwise keeps the valid baseline fact without inventing causality. Do NOT create filler event cards solely to satisfy bookkeeping; within the envelope's capacity, cover the material diplomatic graph rather than stopping after a handful of obvious pairs.`;
 };
 
 // Pregame history answers with one flat "canonicalUpdates" envelope (see
@@ -597,6 +658,7 @@ const expandCanonicalUpdateEnvelope = (candidate) => {
   const warUpdates = [];
   const relationUpdates = [];
   const agreementUpdates = [];
+  const institutionUpdates = [];
 
   for (const raw of normalizeArray(candidate.canonicalUpdates)) {
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
@@ -649,11 +711,41 @@ const expandCanonicalUpdateEnvelope = (candidate) => {
         eventIds: [],
         title: normalizeString(raw.title),
         terms: normalizeString(raw.detail),
+        startedDate: normalizeString(raw.date),
       });
+    } else if (family === "institution" && operation === "active") {
+      const leaders = new Set(opponents.map((entry) => normalizeString(entry)));
+      institutionUpdates.push({
+        id: normalizeString(raw.id),
+        op: "create",
+        polity: "",
+        status: "",
+        role: "",
+        eventIndexes: [],
+        eventIds: [],
+        name: normalizeString(raw.title) || normalizeString(raw.id),
+        kind: normalizeString(raw.category).toLowerCase(),
+        foundedDate: normalizeString(raw.date),
+        note: normalizeString(raw.detail),
+      });
+      for (const polity of polities) {
+        institutionUpdates.push({
+          id: normalizeString(raw.id),
+          op: "join",
+          polity,
+          status: "member",
+          role: leaders.has(polity) ? "leading-member" : "member",
+          eventIndexes: [],
+          eventIds: [],
+          name: "",
+          kind: "",
+          note: normalizeString(raw.detail),
+        });
+      }
     }
   }
 
-  const expanded = { ...candidate, storylineUpdates, warUpdates, relationUpdates, agreementUpdates };
+  const expanded = { ...candidate, storylineUpdates, warUpdates, relationUpdates, agreementUpdates, institutionUpdates };
   delete expanded.canonicalUpdates;
   return expanded;
 };
@@ -712,11 +804,18 @@ const validateSegmentLedgers = (candidate, { world, strict, segmentIndex = 0 }) 
 
   const diplomaticError = validateDiplomaticLedgerPayload(candidate, { world, allowNativeBinding: true });
   if (diplomaticError) return diplomaticError;
+  const institutionError = validateInstitutionUpdates(candidate?.institutionUpdates, {
+    world,
+    events,
+    allowUnboundBaseline: false,
+  });
+  if (institutionError) return institutionError;
 
   const boundEvents = normalizeArray(candidate.events);
   candidate.warUpdates = bindWarUpdatesToEvents(decodeWarUpdates(candidate.warUpdates), boundEvents);
   candidate.relationUpdates = bindRelationUpdatesToEvents(decodeRelationUpdates(candidate.relationUpdates), boundEvents);
   candidate.agreementUpdates = bindAgreementUpdatesToEvents(decodeAgreementUpdates(candidate.agreementUpdates), boundEvents);
+  candidate.institutionUpdates = bindInstitutionUpdatesToEvents(decodeInstitutionUpdates(candidate.institutionUpdates), boundEvents);
   return "";
 };
 
@@ -832,6 +931,7 @@ const screenSegmentPayload = (payload, {
   payload.warUpdates = filterBoundLedgerUpdatesToKeptEvents(payload?.warUpdates, taggedEvents, screened.events);
   payload.relationUpdates = filterBoundLedgerUpdatesToKeptEvents(payload?.relationUpdates, taggedEvents, screened.events);
   payload.agreementUpdates = filterBoundLedgerUpdatesToKeptEvents(payload?.agreementUpdates, taggedEvents, screened.events);
+  payload.institutionUpdates = filterBoundLedgerUpdatesToKeptEvents(payload?.institutionUpdates, taggedEvents, screened.events);
   payload.storylineUpdates = filterStorylineUpdatesAfterIntegrityScreen({
     updates: decodedStorylineUpdates,
     allEvents: taggedEvents,
@@ -887,10 +987,17 @@ const advanceLedgerWorld = (world, payload, { stopDate = "", round = 0 } = {}) =
     stopDate,
     round,
   });
+  const institutionMerge = applyInstitutionUpdates({
+    world: diplomaticMerge.world,
+    updates: normalizeArray(payload?.institutionUpdates),
+    events,
+    stopDate,
+    round,
+  });
   // Storylines too, so the next segment's world director sees a crisis born
   // mid-round and lets it compete for attention before the round ends.
   return applyWorldStorylineUpdates({
-    world: diplomaticMerge.world,
+    world: institutionMerge.world,
     updates: normalizeArray(payload?.storylineUpdates),
     events,
     stopDate,
@@ -2033,12 +2140,18 @@ This live instruction supersedes older frozen country-stat prompts and all earli
         elapsedMs: Date.now() - taskStartedAt,
       }, { verbose: true });
       let parsed = response?.toolInput ?? unwrapMimickedToolCall(extractJsonPayload(rawText), tool?.name);
-      // The GM answers through a shallow transport (JSON array text per
-      // subsystem); decode it here so schema validation sees the structured
-      // transaction and a broken array is reported like any other invalid payload.
+      // Provider-safe shallow transports are decoded here so the canonical
+      // in-app schemas and validators still see fully structured payloads. A bad
+      // JSON string is reported like any other invalid model answer and gets the
+      // normal one retry; nothing is written until decoding + validation succeed.
       let transportDecodeError = "";
       if (taskKey === "gameMaster" && parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
         const decoded = decodeGameMasterTransportPayload(parsed);
+        transportDecodeError = normalizeString(decoded?.error);
+        parsed = decoded?.payload;
+      }
+      if (taskKey === "pregameHistory" && parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        const decoded = decodePregameHistoryTransportPayload(parsed);
         transportDecodeError = normalizeString(decoded?.error);
         parsed = decoded?.payload;
       }
@@ -2919,21 +3032,29 @@ const fallbackNextSpeaker = ({ chat, excludedSpeaker }) => {
 
 export const buildGeneratedChat = async (chatLike, linkEventId, world, { fallbackTitle = "", playerName = "" } = {}) => {
   const countriesInput = Array.isArray(chatLike?.countries) ? chatLike.countries : [];
-  const countries = await resolveInvitees(countriesInput, world);
+  const resolvedCountries = await resolveInvitees(countriesInput, world);
+  if (resolvedCountries.length === 0) return null;
+
+  // The player is implicit in every stored diplomatic thread. Event-created chats
+  // often echo the player back in `countries` ("Latvia, Lithuania, Estonia" while
+  // Latvia is the campaign player). Persisting that extra self participant changes
+  // the participant-set key, forks a fresh thread and makes the established group's
+  // history appear to vanish. Strip the obvious self token here; the save-aware
+  // fold below performs the stronger lineage/alias-aware strip as a second guard.
+  const playerKey = normalizeString(playerName).toUpperCase();
+  const matchesPlayer = (country) =>
+    playerKey && (normalizeString(country.name).toUpperCase() === playerKey || normalizeString(country.code).toUpperCase() === playerKey);
+  const countries = resolvedCountries.filter((country) => !matchesPlayer(country));
   if (countries.length === 0) return null;
 
   // The initiating polity speaks first — and it is never the player. When the
   // model names no speaker (or names the player), attribute the opener to the
-  // first non-player participant.
-  const playerKey = normalizeString(playerName).toUpperCase();
-  const matchesPlayer = (country) =>
-    playerKey && (normalizeString(country.name).toUpperCase() === playerKey || normalizeString(country.code).toUpperCase() === playerKey);
+  // first remaining participant.
   const speakerKey = normalizeString(chatLike?.speaker).toUpperCase();
   const initiator =
     countries.find((country) =>
-      speakerKey && !matchesPlayer(country)
+      speakerKey
       && (normalizeString(country.name).toUpperCase() === speakerKey || normalizeString(country.code).toUpperCase() === speakerKey))
-    ?? countries.find((country) => !matchesPlayer(country))
     ?? countries[0];
 
   const entry = normalizeChatEntry({
@@ -3030,15 +3151,53 @@ const logGeneratedChat = (built, outcome) => {
 // `dropped` on the returned array counts the notes discarded this way, so a
 // caller that must know whether anything actually landed can tell without
 // diffing the result.
-const foldGeneratedChatsIntoStorage = (storageChats, builtChats, { stampTime = "", dropEchoes = false } = {}) => {
-  let chats = [...storageChats];
+const foldGeneratedChatsIntoStorage = (storageChats, builtChats, {
+  stampTime = "",
+  dropEchoes = false,
+  world = null,
+  playerCountry = "",
+} = {}) => {
+  let chats = world
+    ? reconcileChatsForPlayer(storageChats, world, playerCountry)
+    : [...storageChats];
   const created = [];
   let dropped = 0;
   const stamp = (messages) => (stampTime
     ? messages.map((msg) => (msg.time ? msg : { ...msg, time: stampTime }))
     : messages);
 
-  for (const built of builtChats) {
+  for (const rawBuilt of builtChats) {
+    const stampedBuilt = { ...rawBuilt, messages: stamp(rawBuilt.messages || []) };
+
+    // Current Continuum saves have stable polity identities and the player is
+    // implicit. Use that semantic identity for every generated/event/idle note.
+    // This is the important path for the beta-merge regression where an event
+    // response containing [player, Lithuania, Estonia] opened a second 3-member
+    // thread instead of appending to the existing [Lithuania, Estonia] channel.
+    if (world) {
+      const built = reconcileChatsForPlayer([stampedBuilt], world, playerCountry)[0];
+      if (!built) {
+        logGeneratedChat(rawBuilt, "dropped — no non-player participants survived identity resolution");
+        dropped += 1;
+        continue;
+      }
+      const key = chatParticipantSetKey(built, world);
+      const existing = key
+        ? chats.find((chat) => normalizeString(chat?.status).toLowerCase() !== "closed" && chatParticipantSetKey(chat, world) === key)
+        : null;
+      if (existing && dropEchoes && built.messages.some((msg) => echoesExistingMessage(msg.text, existing.messages))) {
+        logGeneratedChat(built, "dropped — it echoed a message already in the thread");
+        dropped += 1;
+        continue;
+      }
+      logGeneratedChat(built, existing ? "appended to an existing save-aware thread" : "opened a new save-aware thread");
+      chats = mergeIncomingChats(chats, [built], world, { playerCountry });
+      continue;
+    }
+
+    // Legacy/fallback path for callers that genuinely have no world identity
+    // context. Keep the old order-blind name-set behavior rather than guessing.
+    const built = stampedBuilt;
     const key = chatParticipantKey(built.countries);
     const existingIdx = key ? chats.findIndex((chat) =>
       chat.status !== "closed" && chatParticipantKey(chat.countries) === key) : -1;
@@ -3051,26 +3210,25 @@ const foldGeneratedChatsIntoStorage = (storageChats, builtChats, { stampTime = "
       }
       logGeneratedChat(built, "appended to an existing thread");
       chats = chats.map((chat, index) => (index === existingIdx
-        ? { ...chat, messages: [...chat.messages, ...stamp(built.messages)] }
+        ? { ...chat, messages: [...chat.messages, ...built.messages] }
         : chat));
       continue;
     }
     const createdIdx = key ? created.findIndex((chat) => chatParticipantKey(chat.countries) === key) : -1;
     if (createdIdx !== -1) {
       logGeneratedChat(built, "merged into another note from the same turn");
-      created[createdIdx] = { ...created[createdIdx], messages: [...created[createdIdx].messages, ...stamp(built.messages)] };
+      created[createdIdx] = { ...created[createdIdx], messages: [...created[createdIdx].messages, ...built.messages] };
       continue;
     }
     logGeneratedChat(built, "opened a new thread");
-    created.push({ ...built, messages: stamp(built.messages) });
+    created.push(built);
   }
 
-  const result = [...created, ...chats];
+  const result = world ? chats : [...created, ...chats];
   // Non-enumerable so this never rides along into a JSON write of the chats.
   Object.defineProperty(result, "dropped", { value: dropped, enumerable: false });
   return result;
 };
-
 // The semantic pass answers one resolution per item; a RESOLVED answer must
 // carry ids, and no index may be answered twice.
 const validateGeographyResolution = (candidate) => {
@@ -4523,10 +4681,10 @@ export const sendAdvisorDraftedMessage = async ({ countryName, text }) => {
       throw new Error("Can't send a diplomatic message to your own polity.");
     }
 
-    const chats = normalizeChats(await readChatsState({ force: true }));
-    const recipientKey = chatParticipantKey([recipient]);
+    const chats = await readChatsState({ force: true, world: bundle.world, playerCountry: playerName });
+    const recipientKey = chatParticipantSetKey({ countries: [recipient] }, bundle.world);
     const existing = chats.find((chat) =>
-      chat.status !== "closed" && chatParticipantKey(chat.countries) === recipientKey);
+      chat.status !== "closed" && chatParticipantSetKey(chat, bundle.world) === recipientKey);
     const priorMessages = existing?.messages ?? [];
 
     const gameDate = normalizeString(bundle.game?.gameDate);
@@ -4559,10 +4717,10 @@ export const sendAdvisorDraftedMessage = async ({ countryName, text }) => {
     });
     if (!built) throw new Error("Could not build the message.");
 
-    const nextChats = foldGeneratedChatsIntoStorage(chats, [built], {});
-    await writeChatsState(nextChats);
+    const nextChats = foldGeneratedChatsIntoStorage(chats, [built], { world: bundle.world, playerCountry: playerName });
+    await writeChatsState(nextChats, { world: bundle.world, playerCountry: playerName });
 
-    const finalChat = nextChats.find((chat) => chatParticipantKey(chat.countries) === recipientKey);
+    const finalChat = nextChats.find((chat) => chatParticipantSetKey(chat, bundle.world) === recipientKey);
     return { chat: finalChat, reply };
   } finally {
     endSimulation();
@@ -4746,6 +4904,7 @@ const applySimulationResult = async ({
   const keptWarUpdates = filterBoundLedgerUpdatesToKeptEvents(result.warUpdates, dedupedEvents, curatedEvents);
   const keptRelationUpdates = filterBoundLedgerUpdatesToKeptEvents(result.relationUpdates, dedupedEvents, curatedEvents);
   const keptAgreementUpdates = filterBoundLedgerUpdatesToKeptEvents(result.agreementUpdates, dedupedEvents, curatedEvents);
+  const keptInstitutionUpdates = filterBoundLedgerUpdatesToKeptEvents(result.institutionUpdates, dedupedEvents, curatedEvents);
   const keptStorylineUpdates = filterBoundLedgerUpdatesToKeptEvents(result.storylineUpdates, dedupedEvents, curatedEvents);
 
   // Canonical, round-scoped event ids (event-ai-r0007-19140801-003): unique
@@ -4761,6 +4920,7 @@ const applySimulationResult = async ({
   const warUpdates = remapLedgerEventIds(normalizeArray(keptWarUpdates), canonicalEventIdentity.idMap);
   const relationUpdates = remapLedgerEventIds(normalizeArray(keptRelationUpdates), canonicalEventIdentity.idMap);
   const agreementUpdates = remapLedgerEventIds(normalizeArray(keptAgreementUpdates), canonicalEventIdentity.idMap);
+  const institutionUpdates = remapLedgerEventIds(normalizeArray(keptInstitutionUpdates), canonicalEventIdentity.idMap);
   const storylineUpdates = remapLedgerEventIds(normalizeArray(keptStorylineUpdates), canonicalEventIdentity.idMap);
   const nextGame = normalizeGameData({
     ...baseGame,
@@ -4986,7 +5146,22 @@ const applySimulationResult = async ({
     round: nextGame.round,
   });
   worldWithImpacts = diplomaticMerge.world;
-  // Storylines last: they read the wars and relations as this turn left them.
+  const institutionMerge = applyInstitutionUpdates({
+    world: worldWithImpacts,
+    updates: institutionUpdates,
+    events: freshEvents,
+    stopDate: nextGame.gameDate,
+    round: nextGame.round,
+  });
+  const objectiveRelationMerge = ensureObjectiveConflictRelations(institutionMerge.world, {
+    date: nextGame.gameDate,
+    round: nextGame.round,
+  });
+  worldWithImpacts = refreshPowerStatus(objectiveRelationMerge.world, {
+    date: nextGame.gameDate,
+    round: nextGame.round,
+  });
+  // Storylines last: they read the wars, relations and institutions as this turn left them.
   const storylineMerge = applyWorldStorylineUpdates({
     world: worldWithImpacts,
     updates: normalizeArray(storylineUpdates),
@@ -5002,8 +5177,8 @@ const applySimulationResult = async ({
     console.warn(`[ai] canonical war-state check on the merged turn: ${canonicalWarError}`);
     logDebugEvent("warn", "[turn] The canonical war-state check flagged the merged turn.", { error: canonicalWarError });
   }
-  if (warMerge.appliedIds.length || diplomaticMerge.appliedRelationIds.length || diplomaticMerge.appliedAgreementIds.length) {
-    logDebugEvent("turn", `Ledgers updated: ${warMerge.appliedIds.length} war op(s), ${diplomaticMerge.appliedRelationIds.length} relation(s), ${diplomaticMerge.appliedAgreementIds.length} agreement(s).`, undefined, { verbose: true });
+  if (warMerge.appliedIds.length || diplomaticMerge.appliedRelationIds.length || diplomaticMerge.appliedAgreementIds.length || institutionMerge.appliedIds.length) {
+    logDebugEvent("turn", `Ledgers updated: ${warMerge.appliedIds.length} war op(s), ${diplomaticMerge.appliedRelationIds.length} relation(s), ${diplomaticMerge.appliedAgreementIds.length} agreement(s), ${institutionMerge.appliedIds.length} institution op(s).`, undefined, { verbose: true });
   }
   if (storylineMerge.appliedIds.length) {
     logDebugEvent("turn", `Storylines updated: ${storylineMerge.appliedIds.length}.`, { ids: storylineMerge.appliedIds }, { verbose: true });
@@ -5236,9 +5411,9 @@ const applySimulationResult = async ({
     // already has an open thread with the player must have its new note land
     // THERE, not beside it in a duplicate chat opened from scratch.
     chatsToWrite = foldGeneratedChatsIntoStorage(
-      normalizeChats(await readChatsState({ force: true })),
+      await readChatsState({ force: true, world: nextWorld, playerCountry: nextGame.country }),
       generatedChats,
-      { stampTime: nextGame.gameDate },
+      { stampTime: nextGame.gameDate, world: nextWorld, playerCountry: nextGame.country },
     );
   } catch {
     chatsToWrite = nextChats;
@@ -5251,7 +5426,7 @@ const applySimulationResult = async ({
 
   await Promise.all([
     writeActionsState(nextActions),
-    writeChatsState(chatsToWrite),
+    writeChatsState(chatsToWrite, { world: nextWorld, playerCountry: nextGame.country }),
     writeEventsState(nextEvents),
     writeGameData(nextGame),
     writeJson(JSON_URLS.colors, nextColors, { pretty: true }),
@@ -6220,7 +6395,7 @@ const runWorldBreadthRepair = async ({
     `Do NOT repeat or paraphrase events already generated by the main pass. Do NOT service an existing persistent storyline merely because it exists; selected/deferred processes were handled by the primary simulation and anti-stasis machinery. If a supplied quiet slot independently creates a genuinely NEW unresolved process, you may create a NEW storyline linked to that event. Do not update an existing storyline id.\n\n` +
     `This narrow repair cannot declare/join/end a war, sign/ratify/suspend/end a formal agreement, or mutate bilateral relation ledgers. Those high-consequence ledger transitions belong to the primary whole-world pass. If a quiet-slot search points toward such a development, prefer the preceding concrete pressure/initiative only when it is independently timeline-worthy; otherwise return nothing rather than half-canonizing a treaty or war.\n\n` +
     `PLAYER AGENCY: ${playerPolity} is human-controlled. Autonomous private/social/local actors and limited officials may create circumstances, pressure, proposals, unrest, research, scandals, local actions, or public movements inside it. Do not make a NEW major sovereign/executive choice for ${playerPolity}.\n\n` +
-    `OUTPUT CONTRACT: call the normal jump-result tool once. stopDate=${targetDate}. clearActions=false. catalyst=null. diplomaticOutreach must be empty. warUpdates, relationUpdates and agreementUpdates must be empty strings. Return at most ${maxEvents} visible event(s), but there is NO minimum and no preferred exact count. Search all supplied lanes first, then return every independently worthwhile, date-valid outcome you found up to the ceiling. storylineUpdates may contain only NEW storyline ids created by a returned event, never an existing storyline.\n`;
+    `OUTPUT CONTRACT: call the normal jump-result tool once. stopDate=${targetDate}. clearActions=false. catalyst=null. diplomaticOutreach must be empty. warUpdates, relationUpdates, agreementUpdates and institutionUpdates must be empty strings. Return at most ${maxEvents} visible event(s), but there is NO minimum and no preferred exact count. Search all supplied lanes first, then return every independently worthwhile, date-valid outcome you found up to the ceiling. storylineUpdates may contain only NEW storyline ids created by a returned event, never an existing storyline.\n`;
 
   try {
     const game = normalizeGameData(bundle?.game || {});
@@ -6343,9 +6518,10 @@ const runWorldBreadthRepair = async ({
     if (
       normalizeArray(parsed.warUpdates).length ||
       normalizeArray(parsed.relationUpdates).length ||
-      normalizeArray(parsed.agreementUpdates).length
+      normalizeArray(parsed.agreementUpdates).length ||
+      normalizeArray(parsed.institutionUpdates).length
     ) {
-      throw new Error("breadth repair attempted to mutate war/relation/agreement ledgers");
+      throw new Error("breadth repair attempted to mutate war/relation/agreement/institution ledgers");
     }
 
     // R3.8: Crisis Discovery may correctly create a new process but forget the
@@ -9669,7 +9845,7 @@ const runJumpSegments = async ({ context, onProgress, signal, state }) => {
           if (worldChangeError) return worldChangeError;
           const ledgerError = validateSegmentLedgers(candidate, { world: ledgerWorld, strict, segmentIndex });
           if (ledgerError) return ledgerError;
-          return validateSegmentStorylines(candidate, {
+          const storylineError = validateSegmentStorylines(candidate, {
             world: ledgerWorld,
             analysis: worldInitiative.analysis,
             strict,
@@ -9678,6 +9854,12 @@ const runJumpSegments = async ({ context, onProgress, signal, state }) => {
             targetDate: segmentTarget,
             gameCountry: bundle.game.country,
           });
+          if (storylineError) return storylineError;
+          return validateWorldPoliticalDecisionCompatibility(
+            candidate,
+            worldInitiative.analysis,
+            { world: ledgerWorld, gameCountry: bundle.game.country },
+          );
         },
         variables: segmentVariables,
       });
@@ -9857,6 +10039,7 @@ const finishTimelineJump = async ({ context, signal, state }) => {
     warUpdates: merged.warUpdates,
     relationUpdates: merged.relationUpdates,
     agreementUpdates: merged.agreementUpdates,
+    institutionUpdates: merged.institutionUpdates,
     storylineUpdates: merged.storylineUpdates,
     breadthRepairContext: selectBreadthRepairContext(state, context),
     generation: state.generation,
@@ -10269,7 +10452,8 @@ const gameMasterEventHasCanonicalEffects = (candidate, eventIndex) => {
   return linked(candidate?.countryStatPatches)
     || linked(candidate?.warUpdates)
     || linked(candidate?.relationUpdates)
-    || linked(candidate?.agreementUpdates);
+    || linked(candidate?.agreementUpdates)
+    || linked(candidate?.institutionUpdates);
 };
 
 const validateGameMasterChronology = (candidate, game) => {
@@ -10602,6 +10786,9 @@ const validateGameMasterPreviewPayload = async (candidate, { mode, world, game, 
     agreementUpdates,
   }, { world });
   if (diplomaticError) return `[canonical diplomatic-state] ${diplomaticError}`;
+  const institutionUpdates = bindInstitutionUpdatesToEvents(decodeInstitutionUpdates(candidate.institutionUpdates), normalizedEvents);
+  const institutionError = validateInstitutionUpdates(institutionUpdates, { world, events: normalizedEvents });
+  if (institutionError) return `[canonical institution-state] ${institutionError}`;
 
   const storylineError = await validateGameMasterStorylineUpdates(candidate, { mode, world, game, request });
   if (storylineError) return `[canonical storyline-state] ${storylineError}`;
@@ -10736,6 +10923,8 @@ const gameMasterStateFingerprint = ({ game = {}, world = {}, events = [], colors
       wars: normalizedWorld.wars,
       relations: normalizedWorld.relations,
       agreements: normalizedWorld.agreements,
+      institutions: normalizedWorld.institutions,
+      powerStatus: normalizedWorld.powerStatus,
     },
   };
   return hashGameMasterText(JSON.stringify(relevant));
@@ -10750,6 +10939,7 @@ const gameMasterTransactionCandidate = (transaction) => ({
   warUpdates: cloneValue(normalizeArray(transaction?.warUpdates)),
   relationUpdates: cloneValue(normalizeArray(transaction?.relationUpdates)),
   agreementUpdates: cloneValue(normalizeArray(transaction?.agreementUpdates)),
+  institutionUpdates: cloneValue(normalizeArray(transaction?.institutionUpdates)),
   diplomaticOutreach: cloneValue(normalizeArray(transaction?.diplomaticOutreach)),
 });
 
@@ -10775,6 +10965,7 @@ const gameMasterAcceptedOperationLabels = (transaction) => {
   normalizeArray(transaction?.warUpdates).forEach((entry, index) => labels.push(`war:${index}:${normalizeString(entry?.id)}`));
   normalizeArray(transaction?.relationUpdates).forEach((entry, index) => labels.push(`relation:${index}:${relationPairKeyForHistory(entry?.a, entry?.b)}`));
   normalizeArray(transaction?.agreementUpdates).forEach((entry, index) => labels.push(`agreement:${index}:${normalizeString(entry?.id)}`));
+  normalizeArray(transaction?.institutionUpdates).forEach((entry, index) => labels.push(`institution:${index}:${normalizeString(entry?.id)}:${normalizeString(entry?.polity)}`));
   normalizeArray(transaction?.diplomaticOutreach).forEach((_, index) => labels.push(`outreach:${index}`));
   return labels.filter(Boolean).slice(0, 128);
 };
@@ -10885,6 +11076,7 @@ export const previewGameMasterCommand = async (requestText, { mode = "world-inte
     const warUpdates = bindWarUpdatesToEvents(decodeWarUpdates(payload?.warUpdates), events);
     const relationUpdates = bindRelationUpdatesToEvents(decodeRelationUpdates(payload?.relationUpdates), events);
     const agreementUpdates = bindAgreementUpdatesToEvents(decodeAgreementUpdates(payload?.agreementUpdates), events);
+    const institutionUpdates = bindInstitutionUpdatesToEvents(decodeInstitutionUpdates(payload?.institutionUpdates), events);
     const countryStatPatches = normalizeGameMasterStatPatches(payload?.countryStatPatches, bundle.world);
 
     return {
@@ -10905,6 +11097,7 @@ export const previewGameMasterCommand = async (requestText, { mode = "world-inte
         warUpdates,
         relationUpdates,
         agreementUpdates,
+        institutionUpdates,
         diplomaticOutreach: normalizeArray(payload?.diplomaticOutreach),
       },
       generation,
@@ -11037,6 +11230,25 @@ export const applyGameMasterPreview = async (preview) => {
     }
     nextWorld = diplomaticMerge.world;
 
+    const institutionMerge = applyInstitutionUpdates({
+      world: nextWorld,
+      updates: normalizeArray(transaction.institutionUpdates),
+      events,
+      stopDate: bundle.game.gameDate || bundle.game.startDate || "",
+      round: bundle.game.round || 0,
+    });
+    if (institutionMerge.appliedIds.length !== normalizeArray(transaction.institutionUpdates).length) {
+      throw new Error("A canonical institution operation failed during the in-memory apply. Nothing was persisted; regenerate the preview.");
+    }
+    const objectiveRelationMerge = ensureObjectiveConflictRelations(institutionMerge.world, {
+      date: bundle.game.gameDate || bundle.game.startDate || "",
+      round: bundle.game.round || 0,
+    });
+    nextWorld = refreshPowerStatus(objectiveRelationMerge.world, {
+      date: bundle.game.gameDate || bundle.game.startDate || "",
+      round: bundle.game.round || 0,
+    });
+
     const storylineMerge = applyWorldStorylineUpdates({
       world: nextWorld,
       updates: normalizeArray(transaction.storylineUpdates),
@@ -11073,9 +11285,11 @@ export const applyGameMasterPreview = async (preview) => {
     // generated chat goes through).
     let chatsToWrite = null;
     if (generatedChats.length) {
-      const liveChats = normalizeChats(await readChatsState({ force: true }));
+      const liveChats = await readChatsState({ force: true, world: nextWorld, playerCountry: bundle.game.country });
       chatsToWrite = foldGeneratedChatsIntoStorage(liveChats, generatedChats, {
         stampTime: bundle.game.gameDate || bundle.game.startDate || "",
+        world: nextWorld,
+        playerCountry: bundle.game.country,
       });
     }
 
@@ -11134,7 +11348,7 @@ export const applyGameMasterPreview = async (preview) => {
     const touchedColors = JSON.stringify(nextColors) !== JSON.stringify(colors);
     const writes = [writeWorldState(nextWorld)];
     if (touchedEvents) writes.push(writeEventsState(nextEvents));
-    if (touchedChats) writes.push(writeChatsState(chatsToWrite));
+    if (touchedChats) writes.push(writeChatsState(chatsToWrite, { world: nextWorld, playerCountry: bundle.game.country }));
     if (touchedColors) writes.push(writeJson(JSON_URLS.colors, nextColors, { pretty: true }));
 
     try {
@@ -11145,7 +11359,7 @@ export const applyGameMasterPreview = async (preview) => {
       // intervention in canon. Best-effort rollback errors are logged separately.
       const rollbackWrites = [writeWorldState(bundle.world)];
       if (touchedEvents) rollbackWrites.push(writeEventsState(bundle.events));
-      if (touchedChats) rollbackWrites.push(writeChatsState(bundle.chats));
+      if (touchedChats) rollbackWrites.push(writeChatsState(bundle.chats, { world: bundle.world, playerCountry: bundle.game.country }));
       if (touchedColors) rollbackWrites.push(writeJson(JSON_URLS.colors, colors, { pretty: true }));
       const rollbackResults = await Promise.allSettled(rollbackWrites);
       const rollbackFailed = rollbackResults.some((result) => result.status === "rejected");
@@ -11424,15 +11638,19 @@ export const processPendingEventOutreach = async ({ debug = false } = {}) => {
     }
 
     const messageDate = normalizeString(event.date) || normalizeString(bundle.game?.gameDate);
-    const currentChats = normalizeChats(await readChatsState({ force: true }));
-    const nextChats = foldGeneratedChatsIntoStorage(currentChats, [built], { stampTime: messageDate });
-    await writeChatsState(nextChats);
+    const currentChats = await readChatsState({ force: true, world: latestWorld, playerCountry: bundle.game?.country });
+    const nextChats = foldGeneratedChatsIntoStorage(currentChats, [built], {
+      stampTime: messageDate,
+      world: latestWorld,
+      playerCountry: bundle.game?.country,
+    });
+    await writeChatsState(nextChats, { world: latestWorld, playerCountry: bundle.game?.country });
 
-    const builtParticipantKey = chatParticipantNamesKey(built);
+    const builtParticipantKey = chatParticipantSetKey(built, latestWorld);
     const mergedChat = builtParticipantKey
       ? nextChats.find((chat) =>
           normalizeString(chat?.status).toLowerCase() !== "closed" &&
-          chatParticipantNamesKey(chat) === builtParticipantKey)
+          chatParticipantSetKey(chat, latestWorld) === builtParticipantKey)
       : null;
     const actualChatId = normalizeString(mergedChat?.id || built.id);
 
@@ -11602,6 +11820,13 @@ const validatePregamePolityVocabulary = (candidate, { world = {}, canonicalPolit
       if (error) return error;
     }
   }
+  const institutionUpdates = decodeInstitutionUpdates(candidate?.institutionUpdates);
+  for (let i = 0; i < institutionUpdates.length; i += 1) {
+    const polity = normalizeString(institutionUpdates[i]?.polity);
+    if (!polity) continue;
+    const error = checkToken(polity, `$.institutionUpdates record ${i + 1}.polity`);
+    if (error) return error;
+  }
   return "";
 };
 
@@ -11743,6 +11968,8 @@ const validatePregameCanonicalBootstrap = (
       .map((update) => ({ ...update, eventIndexes: [], eventIds: [] }));
     candidate.agreementUpdates = decodeAgreementUpdates(candidate?.agreementUpdates)
       .map((update) => ({ ...update, eventIndexes: [], eventIds: [] }));
+    candidate.institutionUpdates = decodeInstitutionUpdates(candidate?.institutionUpdates)
+      .map((update) => ({ ...update, eventIndexes: [], eventIds: [] }));
     candidate.storylineUpdates = decodeWorldStorylineUpdates(candidate?.storylineUpdates)
       .map((update) => ({ ...update, eventIndexes: [] }));
   }
@@ -11786,6 +12013,10 @@ const validatePregameCanonicalBootstrap = (
     if (normalizeString(agreementUpdates[index]?.op).toLowerCase() !== "start") {
       return `$.agreementUpdates record ${index + 1} must use op=start for a formal commitment already in force when this fresh save begins. Ended, expired or suspended historical instruments belong in the backstory, not the active Day-1 ledger.`;
     }
+    const startedDate = normalizeString(agreementUpdates[index]?.startedDate);
+    if (!startedDate || !parseIsoDate(startedDate) || (parseIsoDate(startDate) && startedDate > startDate)) {
+      return `$.agreementUpdates record ${index + 1} must provide a valid agreement start/effective date on or before Round One ${startDate}.`;
+    }
   }
 
   // Round zero is state that already exists on the start date; its bounded
@@ -11798,6 +12029,15 @@ const validatePregameCanonicalBootstrap = (
     allowUnboundBaseline: true,
   });
   if (diplomaticError) return diplomaticError;
+
+  const institutionError = validateInstitutionUpdates(candidate?.institutionUpdates, {
+    world,
+    events,
+    allowUnboundBaseline: true,
+    enforceTemporalBaseline: true,
+    baselineDate: startDate,
+  });
+  if (institutionError) return institutionError;
 
   // Storylines: only unresolved processes alive at Round One, begun on or
   // before the start date, with every live war's mirror present, and the
@@ -11850,8 +12090,7 @@ export const maybeGeneratePregameHistory = async () => {
   const bundle = await readGameStateBundle({ force: true });
   const briefing = normalizeString(bundle.world.startingTimelineText);
   if (!briefing) return null;
-  if (normalizeEvents(bundle.events).length > 0) return null;
-  if ((normalizeWorldState(bundle.world).simulationHistory ?? []).length > 0) return null;
+  if (!isPregameBootstrapPending({ game: bundle.game, world: bundle.world })) return null;
   const startDate = normalizeString(bundle.game.startDate || bundle.game.gameDate);
   if (!startDate) return null;
 
@@ -11869,8 +12108,8 @@ export const maybeGeneratePregameHistory = async () => {
         : "No current polity vocabulary was available.",
     };
     const { payload } = await runJsonTask("pregameHistory", {
-      userMessage: `Write the pre-game historical timeline AND the canonical Round-One bootstrap for ${startDate} as JSON only. ` +
-        "Put every war, bilateral relation, formal agreement and unresolved non-war storyline already true on the start date into canonicalUpdates with the correct kind, using ONLY the supplied current polity identities; do not invent event indexes. " +
+      userMessage: `Write the pre-game historical timeline AND the canonical Round-One bootstrap for ${startDate}. ` +
+        "Call the required tool with eventsJson and canonicalUpdatesJson as valid JSON array strings. Put every war, bilateral relation, formal agreement and unresolved non-war storyline already true on the start date into canonicalUpdatesJson with the correct kind, using ONLY the supplied current polity identities; do not invent event indexes. " +
         "Prioritise every active war and formal agreement first, then the materially important bilateral climates among the central actors. A relation or standing agreement does NOT need its own event card merely to exist; include historical events because they are important timeline anchors, not as bookkeeping padding.",
       validatePayload: (candidate, { finalAttempt } = {}) =>
         validatePregameCanonicalBootstrap(candidate, {
@@ -11890,9 +12129,8 @@ export const maybeGeneratePregameHistory = async () => {
       readWorldState({ force: true }),
       readGameData({ force: true }),
     ]);
-    if (normalizeEvents(eventsNow).length > 0) return null;
     const currentWorld = normalizeWorldState(worldNow);
-    if ((currentWorld.simulationHistory ?? []).length > 0) return null;
+    if (!isPregameBootstrapPending({ game: gameNow, world: currentWorld })) return null;
     if (normalizeString(gameNow.startDate || gameNow.gameDate) !== startDate) return null;
 
     const generatedEvents = normalizeArray(payload?.events)
@@ -11907,7 +12145,11 @@ export const maybeGeneratePregameHistory = async () => {
     // Storyline ids are attached to the backstory events first, so every Day-1
     // process starts with real sourceEventIds and a last visible date.
     const storylineUpdates = decodeWorldStorylineUpdates(payload?.storylineUpdates);
-    const bootstrapEvents = attachStorylineIdsByIndexes(generatedEvents, storylineUpdates);
+    const generatedWithStorylines = attachStorylineIdsByIndexes(generatedEvents, storylineUpdates);
+    const { bootstrapEvents, mergedEvents } = mergePregameEventLogs(
+      normalizeEvents(eventsNow),
+      generatedWithStorylines,
+    );
     const warUpdates = bindWarUpdatesToEvents(decodeWarUpdates(payload?.warUpdates), bootstrapEvents);
     const relationUpdates = bindRelationUpdatesToEvents(decodeRelationUpdates(payload?.relationUpdates), bootstrapEvents);
     const agreementUpdates = bindAgreementUpdatesToEvents(decodeAgreementUpdates(payload?.agreementUpdates), bootstrapEvents);
@@ -11927,8 +12169,20 @@ export const maybeGeneratePregameHistory = async () => {
       round: 1,
       allowUnboundBaseline: true,
     });
-    const storylineMerge = applyWorldStorylineUpdates({
+    const institutionUpdates = bindInstitutionUpdatesToEvents(decodeInstitutionUpdates(payload?.institutionUpdates), bootstrapEvents);
+    const institutionMerge = applyInstitutionUpdates({
       world: diplomaticMerge.world,
+      updates: institutionUpdates,
+      events: bootstrapEvents,
+      stopDate: startDate,
+      round: 1,
+      allowUnboundBaseline: true,
+      enforceTemporalBaseline: true,
+    });
+    const objectiveRelations = ensureObjectiveConflictRelations(institutionMerge.world, { date: startDate, round: 1 });
+    const powerWorld = refreshPowerStatus(objectiveRelations.world, { date: startDate, round: 1 });
+    const storylineMerge = applyWorldStorylineUpdates({
+      world: powerWorld,
       updates: storylineUpdates,
       events: bootstrapEvents,
       stopDate: startDate,
@@ -11940,28 +12194,30 @@ export const maybeGeneratePregameHistory = async () => {
     };
     console.info(
       `[ai] pregame bootstrap: ${bootstrapEvents.length} event(s), ${storylineMerge.appliedIds.length} storyline(s), ${warMerge.appliedIds.length} war op(s), ` +
-      `${diplomaticMerge.appliedRelationIds.length} relation(s), ${diplomaticMerge.appliedAgreementIds.length} agreement(s).`,
+      `${diplomaticMerge.appliedRelationIds.length + objectiveRelations.appliedIds.length} relation(s), ${diplomaticMerge.appliedAgreementIds.length} agreement(s), ${institutionMerge.appliedIds.length} institution op(s).`,
     );
 
     const summary = normalizeString(payload?.summary);
-    bootstrapWorld.simulationHistory = [
-      {
-        catalyst: null,
-        date: startDate,
-        eventIds: bootstrapEvents.map((event) => event.id),
-        fallbackReason: "",
-        fromDate: normalizeString(bootstrapEvents[0]?.date) || startDate,
-        mode: "pregame",
-        plannedActions: [],
-        round: 1,
-        summary,
-        source: "ai",
-        storylineIds: [...storylineMerge.appliedIds],
-        toDate: startDate,
-      },
-    ];
+    const pregameHistoryEntry = {
+      catalyst: null,
+      date: startDate,
+      eventIds: bootstrapEvents.map((event) => event.id),
+      fallbackReason: "",
+      fromDate: normalizeString(bootstrapEvents[0]?.date) || startDate,
+      mode: "pregame",
+      plannedActions: [],
+      round: 1,
+      summary,
+      source: "ai",
+      storylineIds: [...storylineMerge.appliedIds],
+      toDate: startDate,
+    };
+    bootstrapWorld.simulationHistory = mergePregameSimulationHistory(
+      currentWorld.simulationHistory,
+      pregameHistoryEntry,
+    );
     await Promise.all([
-      writeEventsState(bootstrapEvents),
+      writeEventsState(mergedEvents),
       writeWorldState(bootstrapWorld),
     ]);
     return bootstrapEvents;
@@ -12077,6 +12333,10 @@ export const maybeSendIdleDiplomacy = async ({ chance = IDLE_PULSE_CHANCE } = {}
   try {
     const bundle = await readGameStateBundle({ force: true });
     if (!normalizeString(bundle.game?.country)) return null; // no active game
+    // Round Zero owns the world before autonomous idle activity is allowed to
+    // mutate it. Otherwise an idle sighting can create the first start-day event
+    // while the player is still in the library and suppress the pre-game bootstrap.
+    if (isPregameBootstrapPending({ game: bundle.game, world: bundle.world })) return null;
     const variables = {
       ...(await buildTemplateVariables(bundle)),
       idleChatAllowed: allowChat ? "yes" : "no",
@@ -12151,7 +12411,7 @@ export const maybeSendIdleDiplomacy = async ({ chance = IDLE_PULSE_CHANCE } = {}
       playerName: bundle.game.country,
     });
     if (!built) return null;
-    const chats = normalizeChats(await readChatsState({ force: true }));
+    const chats = await readChatsState({ force: true, world: bundle.world, playerCountry: bundle.game.country });
     // A note from a country the player already has an open thread with (1:1 or a
     // standing group) lands in that thread; only a genuinely new set of
     // participants opens a fresh chat. Matching 1:1 threads only meant a group
@@ -12161,10 +12421,12 @@ export const maybeSendIdleDiplomacy = async ({ chance = IDLE_PULSE_CHANCE } = {}
     const nextChats = foldGeneratedChatsIntoStorage(chats, [built], {
       stampTime: normalizeString(bundle.game?.gameDate),
       dropEchoes: true,
+      world: bundle.world,
+      playerCountry: bundle.game.country,
     });
     if (nextChats.dropped) return null;
     if (isSimulationBusy()) return null;
-    await writeChatsState(nextChats);
+    await writeChatsState(nextChats, { world: bundle.world, playerCountry: bundle.game.country });
     return built;
   } catch {
     return null; // silence is always the safe outcome

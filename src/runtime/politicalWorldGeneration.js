@@ -45,6 +45,7 @@ export const POLITICAL_GENERATION_NEEDS = Object.freeze({
   POLITICAL_SYSTEM: "political_system",
   GOVERNING_STRUCTURE: "governing_structure",
   REPRESENTATION_ENTITIES: "representation_entities",
+  QUANTITATIVE_LANDSCAPE: "quantitative_landscape",
   LEADERSHIP_TRAITS: "structured_leadership_traits",
   RESPONSE_PROFILES: "entity_response_profiles",
   STRATEGIC_CONTEXT: "strategic_context",
@@ -86,6 +87,7 @@ const GENERATED_PARTY_FIELDS = new Set([
   "shortName",
   "aliases",
   "support",
+  "influence",
   "ideology",
   "leader",
   "goals",
@@ -210,24 +212,62 @@ const hasGoverningStructure = (actor) => {
   ].some((value) => hasText(isPlainObject(value) ? value.name : value));
 };
 
+const representationEntities = (actor, representation) => {
+  if (representation === POLITICAL_REPRESENTATIONS.NONE) return [];
+  if (representation === POLITICAL_REPRESENTATIONS.ELECTORAL) {
+    return Array.isArray(actor?.parties) ? actor.parties : [];
+  }
+  if (representation === POLITICAL_REPRESENTATIONS.PARTY_STATE) {
+    return [
+      ...(Array.isArray(actor?.parties) ? actor.parties : []),
+      ...(Array.isArray(actor?.powerBlocs) ? actor.powerBlocs : []),
+    ];
+  }
+  return Array.isArray(actor?.powerBlocs) ? actor.powerBlocs : [];
+};
+
 const hasRepresentationEntities = (actor, representation) => {
   if (representation === POLITICAL_REPRESENTATIONS.NONE) return true;
-  if (representation === POLITICAL_REPRESENTATIONS.ELECTORAL) {
-    return Array.isArray(actor?.parties) && actor.parties.length > 0;
+  return representationEntities(actor, representation).length > 0;
+};
+
+const landscapePercent = (value) => {
+  const number = Number(value?.percent ?? value);
+  return Number.isFinite(number) && number >= 0 && number <= 100 ? number : null;
+};
+
+const quantitativeLandscapeEntities = (actor, representation) => {
+  if (representation === POLITICAL_REPRESENTATIONS.NONE) {
+    const blocs = Array.isArray(actor?.powerBlocs) ? actor.powerBlocs : [];
+    return blocs.length
+      ? { entities: blocs, metric: "influence", collection: "powerBlocs" }
+      : { entities: [], metric: "none", collection: "" };
   }
-  return Array.isArray(actor?.powerBlocs) && actor.powerBlocs.length > 0;
+  if (representation === POLITICAL_REPRESENTATIONS.ELECTORAL) {
+    return { entities: Array.isArray(actor?.parties) ? actor.parties : [], metric: "support", collection: "parties" };
+  }
+  if (representation === POLITICAL_REPRESENTATIONS.PARTY_STATE) {
+    const blocs = Array.isArray(actor?.powerBlocs) ? actor.powerBlocs : [];
+    if (blocs.length) return { entities: blocs, metric: "influence", collection: "powerBlocs" };
+    return { entities: Array.isArray(actor?.parties) ? actor.parties : [], metric: "influence", collection: "parties" };
+  }
+  return { entities: Array.isArray(actor?.powerBlocs) ? actor.powerBlocs : [], metric: "influence", collection: "powerBlocs" };
+};
+
+const hasQuantitativePoliticalLandscape = (actor, representation) => {
+  const { entities, metric } = quantitativeLandscapeEntities(actor, representation);
+  if (!entities.length || metric === "none") return representation === POLITICAL_REPRESENTATIONS.NONE;
+  return entities.every((entity) => landscapePercent(entity?.[metric]) != null);
 };
 
 const hasResponseProfiles = (actor, representation) => {
-  const entities = representation === POLITICAL_REPRESENTATIONS.ELECTORAL
-    ? actor?.parties
-    : actor?.powerBlocs;
-  if (!Array.isArray(entities) || !entities.length) return representation === POLITICAL_REPRESENTATIONS.NONE;
+  const entities = representationEntities(actor, representation);
+  if (!entities.length) return representation === POLITICAL_REPRESENTATIONS.NONE;
 
   // RICH/FULL generation asks for reusable hidden response metadata for every
   // represented entity, including deliberately-unpolled coalition members.
-  // That does NOT invent polling; it merely means a later support/influence
-  // value can become dynamic without another semantic AI pass.
+  // Party-states may legitimately expose the ruling party, internal power blocs,
+  // or both; every represented entity still needs reusable response metadata.
   return entities.every((entity) => hasKeys(entity?.politicalResponse));
 };
 
@@ -265,12 +305,16 @@ export const assessPoliticalGenerationNeeds = (actorInput, depthInput = POLITICA
     needs.push(POLITICAL_GENERATION_NEEDS.GOVERNING_STRUCTURE);
   }
 
-  if (depth === POLITICAL_GENERATION_DEPTHS.MINIMAL) return needs;
-
+  // A living political landscape is baseline state, not a richness upgrade.
+  // Even MINIMAL actors need a representation roster and a numeric starting
+  // distribution so campaign political dynamics have somewhere to move from.
   if (systemUnknown || !hasRepresentationEntities(actor, representation)) {
     needs.push(POLITICAL_GENERATION_NEEDS.REPRESENTATION_ENTITIES);
   }
-  if (depth === POLITICAL_GENERATION_DEPTHS.STANDARD) return needs;
+  if (systemUnknown || !hasQuantitativePoliticalLandscape(actor, representation)) {
+    needs.push(POLITICAL_GENERATION_NEEDS.QUANTITATIVE_LANDSCAPE);
+  }
+  if (depth === POLITICAL_GENERATION_DEPTHS.MINIMAL || depth === POLITICAL_GENERATION_DEPTHS.STANDARD) return needs;
 
   if (!hasKeys(actor?.traits)) needs.push(POLITICAL_GENERATION_NEEDS.LEADERSHIP_TRAITS);
   if (systemUnknown || !hasResponseProfiles(actor, representation)) needs.push(POLITICAL_GENERATION_NEEDS.RESPONSE_PROFILES);
@@ -353,7 +397,7 @@ const validateKnownFields = (object, allowed, prefix, errors) => {
   }
 };
 
-const validateGeneratedEntities = (entities, { kind, allowedFields, errors }) => {
+const validateGeneratedEntities = (entities, { kind, allowedFields, errors, existingIds = new Set() }) => {
   if (entities === undefined) return;
   if (!Array.isArray(entities)) {
     errors.push(`${kind} must be an array when generated`);
@@ -369,12 +413,65 @@ const validateGeneratedEntities = (entities, { kind, allowedFields, errors }) =>
     const id = clean(entity.id);
     const name = clean(entity.name);
     if (!id) errors.push(`${kind}[${index}] requires an explicit stable id`);
-    if (!name) errors.push(`${kind}[${index}] requires a display name`);
+    if (!name && (!id || !existingIds.has(id))) errors.push(`${kind}[${index}] requires a display name`);
     if (id) {
       if (seen.has(id)) errors.push(`${kind} contains duplicate id ${id}`);
       seen.add(id);
     }
   }
+};
+
+const validateCrossCollectionEntityIds = ({
+  parties,
+  powerBlocs,
+  existingPartyIds = new Set(),
+  existingPowerBlocIds = new Set(),
+  errors,
+}) => {
+  const generatedPartyIds = new Set((Array.isArray(parties) ? parties : [])
+    .map((entity) => clean(entity?.id)).filter(Boolean));
+  const generatedPowerBlocIds = new Set((Array.isArray(powerBlocs) ? powerBlocs : [])
+    .map((entity) => clean(entity?.id)).filter(Boolean));
+
+  for (const id of generatedPartyIds) {
+    if (generatedPowerBlocIds.has(id) || existingPowerBlocIds.has(id)) {
+      errors.push(`Political Actor entity id ${id} may not exist in both parties and powerBlocs`);
+    }
+  }
+  for (const id of generatedPowerBlocIds) {
+    if (existingPartyIds.has(id)) {
+      errors.push(`Political Actor entity id ${id} may not exist in both parties and powerBlocs`);
+    }
+  }
+};
+
+const hasExplicitPartyStateStructure = (patch) => {
+  const systemType = clean(patch?.politicalSystem?.type).toLocaleLowerCase().replace(/[_-]+/g, " ");
+  const governmentForm = clean(patch?.government?.form).toLocaleLowerCase().replace(/[_-]+/g, " ");
+  const joined = `${systemType} ${governmentForm}`.replace(/\s+/g, " ").trim();
+
+  // "Dominant-party" describes an incumbent advantage inside a broader political
+  // field; it is not evidence that the party and state are structurally fused.
+  // Reject both normal wording (dominant party) and the model's observed retry
+  // evasion (one party dominant ...) before checking true party-state markers.
+  if (/\bdominant party\b|\bparty dominant\b/.test(joined)) return false;
+
+  // This field is already restricted to politicalSystem.type / government.form,
+  // so once dominant-party wording has been excluded, an explicit one-party or
+  // single-party marker is itself sufficient structural evidence. Do not require
+  // the next noun to be exactly "state/system/regime/rule/government": real forms
+  // such as "one-party presidential republic", "one-party socialist republic",
+  // and "single-party communist state" are equally explicit party-state claims.
+  return /\b(?:one|single) party\b|\bvanguard party\b|\bparty state\b|\bparty led\b|\bparty rule\b|\bparty supremacy\b/.test(joined);
+};
+
+const validatePoliticalSystemSemantics = (patch, errors) => {
+  const representation = clean(patch?.politicalSystem?.representation).toLocaleLowerCase().replace(/[ -]+/g, "_");
+  if (representation !== POLITICAL_REPRESENTATIONS.PARTY_STATE) return;
+  if (hasExplicitPartyStateStructure(patch)) return;
+  errors.push(
+    "actorPatch.politicalSystem.representation=party_state requires explicit one-party/vanguard-party structural evidence in politicalSystem.type or government.form; dominant-party or generic republic systems must use electoral or an appropriate factional representation",
+  );
 };
 
 const validateReferenceList = (value, knownIds, path, errors) => {
@@ -411,12 +508,32 @@ const mergeEntityArray = (existing, generated, path, appliedPaths, { allowEntity
   return out;
 };
 
+const EMPTY_GOVERNMENT_PARTY_REF_PATHS = new Set(["government.rulingPartyIds", "government.coalitionPartyIds"]);
+
 const mergeMissingValue = (existing, generated, path, appliedPaths, options) => {
   if (!isPlainObject(generated)) return existing;
   const out = isPlainObject(existing) ? clone(existing) : {};
   for (const [key, generatedValue] of Object.entries(generated)) {
     const nextPath = path ? `${path}.${key}` : key;
     if (!hasOwn(out, key)) {
+      out[key] = clone(generatedValue);
+      appliedPaths.push(nextPath);
+      continue;
+    }
+    // Phase006D.1 governing-alignment repair is the one narrow exception to
+    // ordinary missing-only merge semantics: Political Actor normalization
+    // materializes absent government party references as empty arrays. During
+    // an explicit repair review only, those normalized empty arrays may be
+    // filled from an already-existing party roster. Non-empty canonical refs
+    // remain immutable and all other empty authored arrays stay closed.
+    if (
+      options?.fillEmptyGovernmentPartyRefs === true
+      && EMPTY_GOVERNMENT_PARTY_REF_PATHS.has(nextPath)
+      && Array.isArray(out[key])
+      && out[key].length === 0
+      && Array.isArray(generatedValue)
+      && generatedValue.length > 0
+    ) {
       out[key] = clone(generatedValue);
       appliedPaths.push(nextPath);
       continue;
@@ -432,16 +549,163 @@ const mergeMissingValue = (existing, generated, path, appliedPaths, options) => 
   return out;
 };
 
-export const mergeMissingPoliticalActor = (existingActor, generatedPatch, { allowEntityExpansion = false } = {}) => {
+export const mergeMissingPoliticalActor = (
+  existingActor,
+  generatedPatch,
+  { allowEntityExpansion = false, fillEmptyGovernmentPartyRefs = false } = {},
+) => {
   const appliedPaths = [];
   const actor = mergeMissingValue(
     isPlainObject(existingActor) ? existingActor : {},
     isPlainObject(generatedPatch) ? generatedPatch : {},
     "",
     appliedPaths,
-    { allowEntityExpansion: allowEntityExpansion === true },
+    {
+      allowEntityExpansion: allowEntityExpansion === true,
+      fillEmptyGovernmentPartyRefs: fillEmptyGovernmentPartyRefs === true,
+    },
   );
   return { actor, appliedPaths };
+};
+
+const landscapeEntityKey = (entity) => clean(entity?.id || entity?.name).toLocaleLowerCase();
+
+const politicalLandscapeFallbackWeight = (entity, actor, { collection, metric }) => {
+  const id = clean(entity?.id);
+  const government = isPlainObject(actor?.government) ? actor.government : {};
+  const ruling = new Set([
+    ...(Array.isArray(government.rulingPartyIds) ? government.rulingPartyIds : []),
+  ].map(clean));
+  const coalition = new Set([
+    ...(Array.isArray(government.coalitionPartyIds) ? government.coalitionPartyIds : []),
+  ].map(clean));
+
+  if (collection === "parties") {
+    if (entity?.ruling === true || (id && ruling.has(id))) return metric === "influence" ? 5 : 3;
+    if (entity?.coalition === true || (id && coalition.has(id))) return 2;
+    return 1;
+  }
+
+  const status = clean(entity?.status || entity?.influence?.label).toLocaleLowerCase().replace(/[ -]+/g, "_");
+  const rank = { dominant: 5, ruling: 5, very_strong: 4, strong: 3, moderate: 2, weak: 1, marginal: 0.5 };
+  return rank[status] ?? 1;
+};
+
+const roundedLandscapeShares = (weights, total) => {
+  const boundedTotal = Math.max(0, Math.min(100, Number(total) || 0));
+  const safeWeights = weights.map((value) => Math.max(0, Number(value) || 0));
+  const weightTotal = safeWeights.reduce((sum, value) => sum + value, 0) || safeWeights.length || 1;
+  const shares = safeWeights.map((weight) => Math.round((boundedTotal * (weight || 1) / weightTotal) * 10) / 10);
+  const roundedTotal = shares.reduce((sum, value) => sum + value, 0);
+  const delta = Math.round((boundedTotal - roundedTotal) * 10) / 10;
+  if (shares.length && Math.abs(delta) >= 0.05) {
+    const index = shares.reduce((best, value, candidate) => value > shares[best] ? candidate : best, 0);
+    shares[index] = Math.max(0, Math.round((shares[index] + delta) * 10) / 10);
+  }
+  return shares;
+};
+
+const setGeneratedLandscapeMetric = (patch, targetEntity, { collection, metric, percent, basis }) => {
+  if (!Array.isArray(patch[collection])) patch[collection] = [];
+  const key = landscapeEntityKey(targetEntity);
+  let entity = patch[collection].find((candidate) => landscapeEntityKey(candidate) === key);
+  if (!entity) {
+    entity = {
+      ...(clean(targetEntity?.id) ? { id: clean(targetEntity.id) } : {}),
+      ...(clean(targetEntity?.name) ? { name: clean(targetEntity.name) } : {}),
+    };
+    patch[collection].push(entity);
+  }
+  const current = isPlainObject(entity[metric]) ? clone(entity[metric]) : {};
+  entity[metric] = {
+    ...current,
+    percent: Math.max(0, Math.min(100, Math.round(Number(percent) * 10) / 10)),
+    basis: clean(basis) || "native-fallback-estimate",
+  };
+};
+
+// Complete only the quantitative starting landscape. This is a deterministic
+// safety net around AI estimates: it never changes authored percentages, never
+// adds model calls/retries, and never rewrites political identity. Generated
+// estimates are scaled down when they oversubscribe the remaining 100%; omitted
+// estimates get a bounded native fallback so no represented actor silently lands
+// at an undefined/0% starting state.
+export const completeGeneratedPoliticalLandscapePatch = (existingActor, generatedPatch, { allowEntityExpansion = false } = {}) => {
+  if (!isPlainObject(generatedPatch)) return { patch: generatedPatch, warnings: [] };
+  const out = clone(generatedPatch);
+  const merged = mergeMissingPoliticalActor(existingActor, out, { allowEntityExpansion }).actor;
+  const polityKey = clean(existingActor?.polityKey || merged?.polityKey);
+  const actor = normalizePoliticalActorRecord({ ...merged, ...(polityKey ? { polityKey } : {}) }, polityKey);
+  const representation = actorRepresentation(actor);
+  const target = quantitativeLandscapeEntities(actor, representation);
+  if (!target.entities.length || target.metric === "none") {
+    return { patch: out, warnings: [] };
+  }
+
+  const existingCollection = Array.isArray(existingActor?.[target.collection]) ? existingActor[target.collection] : [];
+  const existingByKey = new Map(existingCollection.map((entity) => [landscapeEntityKey(entity), entity]).filter(([key]) => Boolean(key)));
+  const mutable = [];
+  let fixedTotal = 0;
+
+  for (const entity of target.entities) {
+    const key = landscapeEntityKey(entity);
+    const existingEntity = existingByKey.get(key);
+    const fixed = landscapePercent(existingEntity?.[target.metric]);
+    if (fixed != null) {
+      fixedTotal += fixed;
+      continue;
+    }
+    mutable.push({
+      entity,
+      percent: landscapePercent(entity?.[target.metric]),
+      basis: clean(entity?.[target.metric]?.basis),
+    });
+  }
+
+  const remainingCapacity = Math.max(0, 100 - fixedTotal);
+  const known = mutable.filter((entry) => entry.percent != null);
+  const missing = mutable.filter((entry) => entry.percent == null);
+  let knownTotal = known.reduce((sum, entry) => sum + entry.percent, 0);
+  const warnings = [];
+
+  if (knownTotal > remainingCapacity + 0.05 && known.length) {
+    const scaled = roundedLandscapeShares(known.map((entry) => entry.percent), remainingCapacity);
+    known.forEach((entry, index) => {
+      entry.percent = scaled[index];
+      setGeneratedLandscapeMetric(out, entry.entity, {
+        collection: target.collection,
+        metric: target.metric,
+        percent: entry.percent,
+        basis: entry.basis || "generated-estimate",
+      });
+    });
+    knownTotal = known.reduce((sum, entry) => sum + entry.percent, 0);
+    warnings.push(`Normalized generated ${target.metric} estimates to fit the remaining political landscape capacity`);
+  }
+
+  if (missing.length) {
+    const remainingAfterKnown = Math.max(0, remainingCapacity - knownTotal);
+    const fallbackPool = target.entities.length === 1
+      ? remainingAfterKnown
+      : (known.length === 0
+        ? Math.min(remainingAfterKnown, remainingAfterKnown * 0.9)
+        : Math.min(remainingAfterKnown, Math.max(5 * missing.length, Math.min(30, remainingAfterKnown * 0.5))));
+    const shares = roundedLandscapeShares(
+      missing.map((entry) => politicalLandscapeFallbackWeight(entry.entity, actor, target)),
+      fallbackPool,
+    );
+    missing.forEach((entry, index) => {
+      setGeneratedLandscapeMetric(out, entry.entity, {
+        collection: target.collection,
+        metric: target.metric,
+        percent: shares[index] ?? 0,
+        basis: "native-fallback-estimate",
+      });
+    });
+    warnings.push(`Filled ${missing.length} missing ${target.metric} estimate${missing.length === 1 ? "" : "s"} with native bounded fallback values`);
+  }
+
+  return { patch: out, warnings };
 };
 
 const proposalReferenceDates = (proposal) => {
@@ -459,6 +723,7 @@ export const validatePoliticalGenerationProposal = (proposal, {
   depth = POLITICAL_GENERATION_DEPTHS.STANDARD,
   existingActor = null,
   allowEntityExpansion = false,
+  fillEmptyGovernmentPartyRefs = false,
 } = {}) => {
   const errors = [];
   const warnings = [];
@@ -515,20 +780,53 @@ export const validatePoliticalGenerationProposal = (proposal, {
   }
   validateKnownFields(patch.government, GENERATED_GOVERNMENT_FIELDS, "actorPatch.government", errors);
   validateKnownFields(patch.politicalSystem, GENERATED_POLITICAL_SYSTEM_FIELDS, "actorPatch.politicalSystem", errors);
-  validateGeneratedEntities(patch.parties, { kind: "actorPatch.parties", allowedFields: GENERATED_PARTY_FIELDS, errors });
-  validateGeneratedEntities(patch.powerBlocs, { kind: "actorPatch.powerBlocs", allowedFields: GENERATED_BLOC_FIELDS, errors });
+  const existingPartyIds = new Set((Array.isArray(existingActor?.parties) ? existingActor.parties : [])
+    .map((entity) => clean(entity?.id)).filter(Boolean));
+  const existingPowerBlocIds = new Set((Array.isArray(existingActor?.powerBlocs) ? existingActor.powerBlocs : [])
+    .map((entity) => clean(entity?.id)).filter(Boolean));
+  validateGeneratedEntities(patch.parties, {
+    kind: "actorPatch.parties",
+    allowedFields: GENERATED_PARTY_FIELDS,
+    errors,
+    existingIds: existingPartyIds,
+  });
+  validateGeneratedEntities(patch.powerBlocs, {
+    kind: "actorPatch.powerBlocs",
+    allowedFields: GENERATED_BLOC_FIELDS,
+    errors,
+    existingIds: existingPowerBlocIds,
+  });
+  validateCrossCollectionEntityIds({
+    parties: patch.parties,
+    powerBlocs: patch.powerBlocs,
+    existingPartyIds,
+    existingPowerBlocIds,
+    errors,
+  });
+  validatePoliticalSystemSemantics(patch, errors);
 
-  const mergedPreview = mergeMissingPoliticalActor(existingActor, patch, { allowEntityExpansion });
+  const mergedPreview = mergeMissingPoliticalActor(existingActor, patch, {
+    allowEntityExpansion,
+    fillEmptyGovernmentPartyRefs,
+  });
   const normalizedActor = normalizePoliticalActorRecord(
     { ...mergedPreview.actor, polityKey: expectedPolityKey },
     expectedPolityKey,
   );
   const representation = normalizedActor?.politicalSystem?.representation ?? POLITICAL_REPRESENTATIONS.NONE;
 
-  if (representation !== POLITICAL_REPRESENTATIONS.ELECTORAL && Array.isArray(patch.parties)) {
+  if (Array.isArray(patch.parties)) {
     for (const party of patch.parties) {
-      if (party?.support !== undefined) {
+      if (representation !== POLITICAL_REPRESENTATIONS.ELECTORAL && party?.support !== undefined) {
         errors.push("Generated non-electoral political systems may not invent party polling/support percentages");
+        break;
+      }
+      if (representation === POLITICAL_REPRESENTATIONS.ELECTORAL && party?.influence !== undefined) {
+        errors.push("Generated electoral political systems must use party support, not party influence percentages");
+        break;
+      }
+      if (representation !== POLITICAL_REPRESENTATIONS.PARTY_STATE && representation !== POLITICAL_REPRESENTATIONS.ELECTORAL && party?.influence !== undefined) {
+        errors.push("Generated party influence percentages are reserved for party_state representation");
         break;
       }
     }

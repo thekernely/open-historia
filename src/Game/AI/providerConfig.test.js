@@ -112,3 +112,13 @@ test("Political World generation is independently routable to a dedicated model"
   config.setProviderField("gemini", "model_politicalWorldGeneration", "politics-model");
   assert.equal(config.getModelForTask("gemini", "politicalWorldGeneration"), "politics-model");
 });
+
+test("Political World exact-date verification inherits generation quality but can use a separate model", () => {
+  assert.ok(config.AI_TASK_ROUTING.some((entry) => entry.key === "politicalWorldVerification"));
+  config.setProviderField("gemini", "model", "default-model");
+  config.setProviderField("gemini", "model_politicalWorldGeneration", "politics-model");
+  config.setProviderField("gemini", "model_politicalWorldVerification", "");
+  assert.equal(config.getModelForTask("gemini", "politicalWorldVerification"), "politics-model");
+  config.setProviderField("gemini", "model_politicalWorldVerification", "verification-model");
+  assert.equal(config.getModelForTask("gemini", "politicalWorldVerification"), "verification-model");
+});

@@ -159,8 +159,9 @@ const partyResponseForActor = ({ actor, polityKey, pressures, updatedAt }) => {
   const entries = [];
   for (const party of asArray(actor.parties)) {
     const before = numericPercent(party?.support?.percent);
-    // Government membership does not imply polling. Parties without an authored
-    // numeric support snapshot remain unpolled rather than receiving fake data.
+    // Government membership does not imply a percentage. Parties without a
+    // canonical numeric support snapshot remain unquantified rather than
+    // receiving a fabricated value during a background tick.
     if (before == null) continue;
     entries.push({
       id: clean(party.id),
@@ -180,6 +181,37 @@ const partyResponseForActor = ({ actor, polityKey, pressures, updatedAt }) => {
     .filter((entry) => Math.abs(entry.after - entry.before) >= EPSILON)
     .map((entry) => ({
       kind: "party",
+      id: entry.id,
+      from: round1(entry.before),
+      to: round1(entry.after),
+      delta: round1(entry.after - entry.before),
+      directDelta: entry.directDelta,
+    }));
+};
+
+const partyInfluenceResponseForActor = ({ actor, polityKey, pressures, updatedAt }) => {
+  const entries = [];
+  for (const party of asArray(actor.parties)) {
+    const before = numericPercent(party?.influence?.percent);
+    if (before == null) continue;
+    entries.push({
+      id: clean(party.id),
+      before,
+      directDelta: responseDeltaForEntity({
+        polityKey,
+        entityKind: "party",
+        entity: party,
+        pressures,
+        updatedAt,
+      }),
+    });
+  }
+
+  if (!entries.some((entry) => Math.abs(entry.directDelta) >= EPSILON)) return [];
+  return rebalanceCompetitivePercentages(entries)
+    .filter((entry) => Math.abs(entry.after - entry.before) >= EPSILON)
+    .map((entry) => ({
+      kind: "party-influence",
       id: entry.id,
       from: round1(entry.before),
       to: round1(entry.after),
@@ -234,25 +266,41 @@ export const advancePoliticalResponseForActor = (
 
   const tickId = clean(updatedAt || pressures.updatedAt);
   const representation = clean(actor?.politicalSystem?.representation);
-  const changes = representation === POLITICAL_REPRESENTATIONS.ELECTORAL
-    ? partyResponseForActor({ actor, polityKey: key, pressures, updatedAt: tickId })
-    : (representation && representation !== POLITICAL_REPRESENTATIONS.NONE
+  let changes = [];
+  if (representation === POLITICAL_REPRESENTATIONS.ELECTORAL) {
+    changes = partyResponseForActor({ actor, polityKey: key, pressures, updatedAt: tickId });
+  } else if (representation === POLITICAL_REPRESENTATIONS.PARTY_STATE) {
+    changes = asArray(actor.powerBlocs).length
       ? powerBlocResponseForActor({ actor, polityKey: key, pressures, updatedAt: tickId })
-      : []);
+      : partyInfluenceResponseForActor({ actor, polityKey: key, pressures, updatedAt: tickId });
+  } else if (representation && representation !== POLITICAL_REPRESENTATIONS.NONE) {
+    changes = powerBlocResponseForActor({ actor, polityKey: key, pressures, updatedAt: tickId });
+  }
 
-  const operations = changes.map((change) => change.kind === "party"
-    ? {
+  const operations = changes.map((change) => {
+    if (change.kind === "party") {
+      return {
         op: POLITICAL_ACTOR_OPS.SET_PARTY_SUPPORT,
         polityKey: key,
         partyId: change.id,
         percent: change.to,
-      }
-    : {
-        op: POLITICAL_ACTOR_OPS.SET_POWER_BLOC_INFLUENCE,
+      };
+    }
+    if (change.kind === "party-influence") {
+      return {
+        op: POLITICAL_ACTOR_OPS.SET_PARTY_INFLUENCE,
         polityKey: key,
-        blocId: change.id,
+        partyId: change.id,
         percent: change.to,
-      });
+      };
+    }
+    return {
+      op: POLITICAL_ACTOR_OPS.SET_POWER_BLOC_INFLUENCE,
+      polityKey: key,
+      blocId: change.id,
+      percent: change.to,
+    };
+  });
 
   return { polityKey: key, changes, operations };
 };

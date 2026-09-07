@@ -13,6 +13,7 @@
 import { normalizeEvents, normalizeWorldState } from "../../runtime/gameState.js";
 import { toCountryName } from "../../runtime/ownerNames.js";
 import { resolvePolityIdentity } from "../../runtime/polityIdentity.js";
+import { buildInstitutionContext } from "../../runtime/institutions.js";
 
 export const DIPLOMATIC_LEDGER_VERSION = 1;
 export const DIPLOMATIC_DIRECTOR_VERSION = "0.1.7-round-zero-baseline";
@@ -387,6 +388,8 @@ export const decodeAgreementUpdates = (value) => {
         eventIds: unique(entry.eventIds, 24),
         title: clean(entry.title),
         terms: clean(entry.terms),
+        startedDate: parseIsoDate(entry.startedDate || entry.startDate || entry.effectiveDate),
+        endedDate: parseIsoDate(entry.endedDate || entry.endDate || entry.expiredDate),
       };
     }).filter(Boolean).slice(0, MAX_AGREEMENT_UPDATES_PER_PASS);
   }
@@ -1112,6 +1115,8 @@ export const applyAgreementUpdates = ({ world, updates, events = [], stopDate = 
     // For a Round-Zero baseline with no signing event in the bounded timeline,
     // do not falsely claim the agreement started on the campaign start date.
     const date = causalEvents.length ? updateDate(update, events, stopDate) : "";
+    const baselineStartedDate = allowUnboundBaseline ? parseIsoDate(update.startedDate) : "";
+    const baselineEndedDate = allowUnboundBaseline ? parseIsoDate(update.endedDate) : "";
     const observedDate = date || (allowUnboundBaseline ? parseIsoDate(stopDate) : "");
     const eventIds = unique([
       ...array(prior?.sourceEventIds),
@@ -1131,8 +1136,8 @@ export const applyAgreementUpdates = ({ world, updates, events = [], stopDate = 
         type,
         status: "active",
         parties,
-        startedDate: date,
-        endedDate: "",
+        startedDate: date || baselineStartedDate,
+        endedDate: baselineEndedDate || "",
         lastUpdatedDate: observedDate,
         terms: update.terms,
         ...(type === "guarantee" && parties.length >= 2
@@ -1234,6 +1239,71 @@ export const applyDiplomaticUpdates = ({
   };
 };
 
+// Objective conflict state must never coexist with a missing/benign bilateral
+// ledger merely because a producer omitted a relation update. This is not prose
+// inference: active wars and legal-sovereign-vs-controller disputes are native
+// canonical facts. Existing relations are only pushed more negative, never warmer.
+export const ensureObjectiveConflictRelations = (worldLike, { date = "", round = 0 } = {}) => {
+  const world = normalizeWorldState(worldLike);
+  const updatesByPair = new Map();
+  const consider = (aRaw, bRaw, score, summary) => {
+    const a = canonicalDiplomaticPolity(aRaw, world);
+    const b = canonicalDiplomaticPolity(bRaw, world);
+    const key = relationPairKey(a, b, world);
+    if (!a || !b || !key) return;
+    const existing = normalizedRelations(world).find((entry) => relationPairKey(entry.a, entry.b, world) === key);
+    const existingScore = Number(existing?.score);
+    if (Number.isFinite(existingScore) && existingScore <= score) return;
+    const prior = updatesByPair.get(key);
+    if (prior && prior.score <= score) return;
+    updatesByPair.set(key, {
+      a,
+      b,
+      score,
+      status: normalizeRelationStatus("", score),
+      eventIndexes: [],
+      eventIds: [],
+      summary,
+    });
+  };
+
+  for (const war of array(world.wars)) {
+    if (!['active', 'ceasefire'].includes(lower(war?.status))) continue;
+    const score = lower(war?.status) === 'active' ? -92 : -72;
+    for (const left of array(war?.sideA)) {
+      for (const right of array(war?.sideB)) {
+        consider(left, right, score, `Objective ${lower(war?.status) === 'active' ? 'belligerency' : 'ceasefire'} in ${clean(war?.title || war?.id) || 'a canonical conflict'}.`);
+      }
+    }
+  }
+
+  const disputeRegions = new Map();
+  for (const [regionId, sovereignRaw] of Object.entries(world.regionSovereigntyOverrides || {})) {
+    const controllerRaw = world.regionOwnershipOverrides?.[regionId];
+    const sovereign = canonicalDiplomaticPolity(sovereignRaw, world);
+    const controller = canonicalDiplomaticPolity(controllerRaw, world);
+    const key = relationPairKey(sovereign, controller, world);
+    if (!sovereign || !controller || !key) continue;
+    const list = disputeRegions.get(key) || { sovereign, controller, regions: [] };
+    list.regions.push(clean(regionId));
+    disputeRegions.set(key, list);
+  }
+  for (const { sovereign, controller, regions } of disputeRegions.values()) {
+    const sample = regions.slice(0, 3).join(', ');
+    consider(
+      sovereign,
+      controller,
+      -72,
+      `Canonical sovereignty/control dispute${sample ? ` over ${sample}${regions.length > 3 ? ` (+${regions.length - 3} more)` : ''}` : ''}.`,
+    );
+  }
+
+  const updates = [...updatesByPair.values()];
+  if (!updates.length) return { world, appliedIds: [], updates: [] };
+  const merged = applyRelationUpdates({ world, updates, events: [], stopDate: clean(date), round, allowUnboundBaseline: true });
+  return { world: merged.world, appliedIds: merged.appliedIds, updates };
+};
+
 const agreementDisplay = (agreement, world) => {
   const parties = array(agreement.parties).map((party) => diplomaticDisplayName(world, party));
   const role = agreement.type === "guarantee" && agreement.guarantor && agreement.beneficiary
@@ -1321,6 +1391,9 @@ export const buildBoundedDiplomaticContext = (
     "",
     "FORMAL AGREEMENTS / COMMITMENTS",
     agreements.length ? agreements.map((agreement) => agreementDisplay(agreement, world)).join("\n") : "No active/suspended formal agreement among these attention actors.",
+    "",
+    "FORMAL INSTITUTIONS / MEMBERSHIPS",
+    buildInstitutionContext(world, actors, { maxInstitutions: 12 }) || "No tracked formal institution membership among these attention actors.",
     "",
     "Sparse-ledger rule: an untracked pair is NOT secretly hostile and is NOT a numeric score of zero. It only means no material bilateral state has yet been canonically recorded.",
     "Formal commitments and bilateral warmth are different facts. An alliance may be strained; friendly countries may have no alliance.",

@@ -46,6 +46,15 @@ test("Player polity launcher is a full-size active Country button", () => {
 test("Political landscape shows governing party or coalition below the chart", () => {
   const politics = read("PoliticalOverview.jsx");
   assert.match(politics, /Governing coalition/);
-  assert.match(politics, /new Set\(\[\.\.\.rulingParties, \.\.\.coalitionParties\]\)/);
-  assert.match(politics, /coalitionName \|\| governmentParties\.join\(" · "\)/);
+  assert.match(politics, /buildGovernmentPartyPresentation/);
+  assert.match(politics, /governmentParties\.names\.join\(" \| "\)/);
+});
+
+
+test("Diplomacy view exposes canonical formal institution memberships", () => {
+  const stats = read("stats.jsx");
+  assert.match(stats, /institutionsForPolity/);
+  assert.match(stats, /Formal institutions/);
+  assert.match(stats, /No tracked formal institution memberships involving this polity/);
+  assert.match(stats, /Leading member/);
 });

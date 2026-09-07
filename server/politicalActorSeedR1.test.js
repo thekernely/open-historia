@@ -75,6 +75,32 @@ test("desktop and web fresh scenario seed contracts preserve authored Political 
   }
 });
 
+test("desktop and web fresh scenario seed contracts preserve geopolitical substrate", () => {
+  for (const [label, relativePath] of [
+    ["desktop", "server/libraryStore.js"],
+    ["web", "src/runtime/web/models.js"],
+  ]) {
+    const source = readSource(relativePath);
+    const keys = extractTemplateWorldOverrideKeys(source, label);
+    for (const key of ["institutions", "powerStatus", "agreements"]) {
+      assert.ok(keys.includes(key), `${label} seed allowlist must include ${key}`);
+    }
+    const seeded = seedWithTemplateKeys({
+      baseWorld: { marker: "base", institutions: { byId: {} }, powerStatus: { byPolity: {} }, agreements: [] },
+      scenarioWorld: {
+        institutions: { byId: { nato: { id: "nato", members: [{ polity: "Poland", status: "member" }] } } },
+        powerStatus: { byPolity: { Poland: { tier: "regional-power" } } },
+        agreements: [{ id: "standing-pact", status: "active", parties: ["Poland", "Latvia"] }],
+      },
+      keys,
+    });
+    assert.equal(seeded.institutions.byId.nato.id, "nato");
+    assert.equal(seeded.powerStatus.byPolity.Poland.tier, "regional-power");
+    assert.equal(seeded.agreements[0].id, "standing-pact");
+    assert.equal(seeded.marker, "base");
+  }
+});
+
 test("Fault Lines migration fills missing actors/tags without overwriting authored current values", () => {
   const world = mergePoliticalActorsSeed({
     politicalActors: {

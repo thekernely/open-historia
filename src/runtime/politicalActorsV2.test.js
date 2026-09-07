@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   POLITICAL_ACTORS_SCHEMA_VERSION,
   normalizePoliticalActors,
+  normalizePoliticalActorRecord,
   resolvePoliticalParty,
   resolvePoliticalPowerBloc,
 } from "./politicalActors.js";
@@ -194,4 +195,42 @@ test("explicit political representation wins over inference and permits qualitat
   assert.equal(actor.politicalSystem.representation, "elite_factions");
   assert.equal(actor.powerBlocs[0].influence.label, "Strong");
   assert.equal("percent" in actor.powerBlocs[0].influence, false);
+});
+
+test("quantitative political landscape metadata survives normalization without conflating support and influence", () => {
+  const actor = normalizePoliticalActorRecord({
+    polityKey: "Republic X",
+    politicalSystem: { type: "one_party_state", representation: "party_state" },
+    parties: [{
+      id: "workers",
+      name: "Workers Party",
+      support: { percent: 72, basis: "generated-estimate" },
+      influence: { percent: 100, basis: "generated-estimate", label: "Dominant" },
+    }],
+    powerBlocs: [{
+      id: "security",
+      name: "Security Establishment",
+      influence: { percent: 28, basis: "native-fallback-estimate", label: "Strong" },
+    }],
+  }, "Republic X");
+
+  assert.deepEqual(actor.parties[0].support, { percent: 72, basis: "generated-estimate" });
+  assert.deepEqual(actor.parties[0].influence, { percent: 100, basis: "generated-estimate", label: "Dominant" });
+  assert.deepEqual(actor.powerBlocs[0].influence, { percent: 28, basis: "native-fallback-estimate", label: "Strong" });
+});
+
+test("null political landscape values stay missing instead of normalizing to fake zero percent", () => {
+  const actor = normalizePoliticalActorRecord({
+    polityKey: "Nullia",
+    politicalSystem: { type: "parliamentary_republic", representation: "electoral" },
+    parties: [
+      { id: "a", name: "A", support: null },
+      { id: "b", name: "B", support: { percent: null } },
+    ],
+    powerBlocs: [{ id: "court", name: "Court", influence: { percent: null } }],
+  }, "Nullia");
+
+  assert.equal(actor.parties[0].support, undefined);
+  assert.equal(actor.parties[1].support, undefined);
+  assert.equal(actor.powerBlocs[0].influence, undefined);
 });

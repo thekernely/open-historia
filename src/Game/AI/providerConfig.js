@@ -197,6 +197,7 @@ export const AI_TASK_ROUTING = [
     { key: "projects", label: "Projects & operations", hint: "Mid-tier model", group: "Simulation" },
     { key: "pregameHistory", label: "Pre-game history", hint: "Mid-tier model", group: "Simulation" },
     { key: "politicalWorldGeneration", label: "Political world generation", hint: "Mid/high-tier: bounded scenario political seeding", group: "Simulation" },
+    { key: "politicalWorldVerification", label: "Political world verification", hint: "Mid/high-tier: exact-date Round-Zero identity cross-check", group: "Simulation" },
     { key: "gameMaster", label: "Game Master", hint: "High-tier model (direct world edits)", group: "Player" },
     { key: "actions", label: "Action suggestions", hint: "Small/mid-tier: short suggestions", group: "Player" },
     { key: "descriptionToAction", label: "Action parsing", hint: "Small model: text to a structured command", group: "Player" },
@@ -217,6 +218,14 @@ export function getModelForTask(provider, taskKey) {
     if (key && /^[A-Za-z][A-Za-z0-9_]*$/.test(key)) {
         const taskSpecific = getProviderField(normalized, `model_${key}`);
         if (taskSpecific && taskSpecific.trim()) return taskSpecific.trim();
+        // Exact-date political verification should be at least as capable as the
+        // generator it audits. When no verifier-specific override is configured,
+        // inherit the Political World generation override before falling back to
+        // the provider default. Authors can still route verification separately.
+        if (key === "politicalWorldVerification") {
+            const generationModel = getProviderField(normalized, "model_politicalWorldGeneration");
+            if (generationModel && generationModel.trim()) return generationModel.trim();
+        }
     }
     return getProviderField(normalized, "model");
 }

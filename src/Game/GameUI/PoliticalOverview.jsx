@@ -64,6 +64,7 @@ const donutPath = (startAngle, endAngle, outerRadius = 78, innerRadius = 50) => 
 };
 
 const formatSupport = (value) => {
+  if (value === null || value === undefined || value === "") return "—";
   const number = Number(value);
   if (!Number.isFinite(number)) return "—";
   return Number.isInteger(number) ? `${number}%` : `${number.toFixed(1)}%`;
@@ -194,7 +195,10 @@ const PartyDetail = ({ party, onClose }) => {
             {party.ruling && <Badge tone="rgba(245,158,11,0.14)" border="rgba(245,158,11,0.32)" color="#fde68a">Government</Badge>}
             {!party.ruling && party.coalition && <Badge>Coalition</Badge>}
           </div>
-          <div style={{ color: "rgba(255,255,255,0.5)", fontSize: "0.66rem", fontWeight: 800, marginTop: "0.15rem" }}>{formatSupport(party.support)} support</div>
+          <div style={{ color: "rgba(255,255,255,0.5)", fontSize: "0.66rem", fontWeight: 800, marginTop: "0.15rem" }}>
+            {formatSupport(party.support)} support
+            {party.supportApproximate && <span style={{ color: "rgba(253,230,138,0.62)", fontSize: "0.56rem", marginLeft: "0.35rem", textTransform: "uppercase" }}>Approximate</span>}
+          </div>
         </div>
         <button type="button" onClick={onClose} aria-label="Close party details" style={{ background: "none", border: 0, color: "rgba(255,255,255,0.42)", cursor: "pointer", fontSize: "0.9rem", padding: 0 }}>×</button>
       </div>
@@ -237,6 +241,7 @@ const PowerBlocDetail = ({ bloc, onClose }) => {
           </div>
           <div style={{ color: "rgba(255,255,255,0.5)", fontSize: "0.66rem", fontWeight: 800, marginTop: "0.15rem" }}>
             {bloc.displayValue || "Influence not quantified"}{bloc.displayValue ? " influence" : ""}
+            {bloc.influenceApproximate && <span style={{ color: "rgba(253,230,138,0.62)", fontSize: "0.56rem", marginLeft: "0.35rem", textTransform: "uppercase" }}>Approximate</span>}
           </div>
         </div>
         <button type="button" onClick={onClose} aria-label="Close power bloc details" style={{ background: "none", border: 0, color: "rgba(255,255,255,0.42)", cursor: "pointer", fontSize: "0.9rem", padding: 0 }}>×</button>
@@ -357,8 +362,13 @@ export default function PoliticalOverview({ profile, fallbackGovernment = "", fa
               <div style={sectionLabel}>{landscape.title}</div>
               <div style={{ color: "rgba(255,255,255,0.34)", fontSize: "0.59rem", marginTop: "0.15rem" }}>{landscape.subtitle}</div>
             </div>
-            <div style={{ color: "rgba(255,255,255,0.36)", fontSize: "0.59rem", fontWeight: 750 }}>
-              {landscape.hasQuantitativeValues ? `${landscape.totalKnownPercent}% ${landscape.mappedLabel}` : "Qualitative"}
+            <div style={{ color: "rgba(255,255,255,0.36)", fontSize: "0.59rem", fontWeight: 750, textAlign: "right" }}>
+              <div>{landscape.hasQuantitativeValues ? `${landscape.totalKnownPercent}% ${landscape.mappedLabel}` : "Qualitative"}</div>
+              {landscape.hasQuantitativeValues && landscape.isApproximate && (
+                <div style={{ color: "rgba(253,230,138,0.68)", fontSize: "0.54rem", fontWeight: 800, letterSpacing: "0.04em", marginTop: "0.12rem", textTransform: "uppercase" }}>
+                  Approximate
+                </div>
+              )}
             </div>
           </div>
 

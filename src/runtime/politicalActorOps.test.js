@@ -286,3 +286,31 @@ test("behavioral disposition commits and clears through the canonical Political 
   assert.equal(cleared.applied, true);
   assert.equal(world.politicalActors.byPolity.Poland.behavioralDisposition, undefined);
 });
+
+test("campaign support and influence mutations replace Round-Zero estimate basis with campaign-derived state", () => {
+  const world = {
+    politicalActors: {
+      schemaVersion: 6,
+      byPolity: {
+        "Republic X": {
+          polityKey: "Republic X",
+          politicalSystem: { type: "parliamentary_republic", representation: "electoral" },
+          parties: [{ id: "a", name: "A", support: { percent: 40, basis: "generated-estimate" } }],
+          powerBlocs: [{ id: "army", name: "Army", influence: { percent: 30, basis: "generated-estimate" } }],
+        },
+      },
+    },
+  };
+
+  const support = applyPoliticalActorOperation(world, { op: "set-party-support", polityKey: "Republic X", partyId: "a", percent: 44.5 });
+  assert.equal(support.applied, true);
+  assert.deepEqual(world.politicalActors.byPolity["Republic X"].parties[0].support, { percent: 44.5, basis: "campaign-derived" });
+
+  const partyInfluence = applyPoliticalActorOperation(world, { op: "set-party-influence", polityKey: "Republic X", partyId: "a", percent: 62 });
+  assert.equal(partyInfluence.applied, true);
+  assert.deepEqual(world.politicalActors.byPolity["Republic X"].parties[0].influence, { percent: 62, basis: "campaign-derived" });
+
+  const influence = applyPoliticalActorOperation(world, { op: "set-power-bloc-influence", polityKey: "Republic X", blocId: "army", percent: 35 });
+  assert.equal(influence.applied, true);
+  assert.deepEqual(world.politicalActors.byPolity["Republic X"].powerBlocs[0].influence, { percent: 35, basis: "campaign-derived" });
+});

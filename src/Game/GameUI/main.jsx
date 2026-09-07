@@ -248,7 +248,10 @@ const Main = ({
   // command, or catalyst stage is in flight, never overlaps itself, and stays
   // silent on any failure. Hidden tabs don't roll the dice.
   useEffect(() => {
-    if (hasNoGames) return undefined;
+    // The library/main menu is not game time. In particular, Round Zero must be
+    // allowed to bootstrap before the idle world pulse can create a start-day
+    // sighting or outreach message in the active campaign.
+    if (hasNoGames || mainMenuOpen) return undefined;
     const iv = setInterval(() => {
       if (document.visibilityState !== "visible") return;
       import("../AI/gameplay.js")
@@ -256,7 +259,7 @@ const Main = ({
         .catch(() => {});
     }, 60000);
     return () => clearInterval(iv);
-  }, [hasNoGames]);
+  }, [hasNoGames, mainMenuOpen]);
 
   // Spy reports, on the same rhythm and with the same guards: a roll each
   // minute the tab is visible, at odds that work out to roughly one report

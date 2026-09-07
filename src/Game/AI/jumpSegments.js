@@ -224,6 +224,7 @@ export const mergeSegmentPayloads = (payloads, { targetDate = "" } = {}) => {
   const warUpdates = [];
   const relationUpdates = [];
   const agreementUpdates = [];
+  const institutionUpdates = [];
   const storylineUpdates = [];
   const summaries = [];
   let catalyst = null;
@@ -236,6 +237,7 @@ export const mergeSegmentPayloads = (payloads, { targetDate = "" } = {}) => {
     warUpdates.push(...asLedgerRecords(payload.warUpdates));
     relationUpdates.push(...asLedgerRecords(payload.relationUpdates));
     agreementUpdates.push(...asLedgerRecords(payload.agreementUpdates));
+    institutionUpdates.push(...asLedgerRecords(payload.institutionUpdates));
     storylineUpdates.push(...asLedgerRecords(payload.storylineUpdates));
     const summary = normalizeString(payload.summary);
     if (summary) summaries.push(summary);

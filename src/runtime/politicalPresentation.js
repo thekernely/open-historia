@@ -18,10 +18,13 @@ const asList = (value, limit = 12) => {
 };
 
 const clampSupport = (value) => {
+  if (value === null || value === undefined || value === "") return null;
   const number = Number(value);
   if (!Number.isFinite(number)) return null;
   return Math.max(0, Math.min(100, Math.round(number * 10) / 10));
 };
+
+const approximateBasis = (value) => /estimate|approximate/i.test(clean(value));
 
 const partyKey = (party, index = 0) => clean(party?.id || party?.name) || `party-${index}`;
 
@@ -36,11 +39,21 @@ const publicPartyRow = (party, index) => {
   const name = clean(party.name);
   if (!name) return null;
   const support = clampSupport(party?.support?.percent);
+  const supportBasis = clean(party?.support?.basis);
+  const influence = clampSupport(party?.influence?.percent);
+  const influenceBasis = clean(party?.influence?.basis);
+  const influenceLabel = clean(party?.influence?.label);
   return {
     id: partyKey(party, index),
     name,
     shortName: clean(party.shortName || party.abbreviation),
     support,
+    supportBasis,
+    supportApproximate: approximateBasis(supportBasis),
+    influence,
+    influenceBasis,
+    influenceApproximate: approximateBasis(influenceBasis),
+    influenceLabel,
     ideology: asList(party.ideology, 5),
     goals: asList(party.goals, 6),
     publicPriorities: asList(party.publicPriorities, 6),
@@ -142,7 +155,7 @@ export const buildPoliticalPartyLandscape = (
   ).sort((left, right) => (Number(right.support) || 0) - (Number(left.support) || 0) || left.name.localeCompare(right.name));
 
   const supported = rows.filter((party) => Number.isFinite(party.support) && party.support > 0);
-  if (!supported.length) return { parties: rows, slices: [], totalKnownSupport: 0 };
+  if (!supported.length) return { parties: rows, slices: [], totalKnownSupport: 0, isApproximate: false };
 
   const explicitOther = supported.find((party) => /^(other|others|other parties|independent|independents)$/i.test(party.name));
   const namedCandidates = supported.filter((party) => party !== explicitOther);
@@ -197,6 +210,7 @@ export const buildPoliticalPartyLandscape = (
     parties: rows,
     slices: boundedSlices,
     totalKnownSupport: Math.round(Math.min(100, knownSupport) * 10) / 10,
+    isApproximate: supported.some((party) => party.supportApproximate),
   };
 };
 
@@ -278,6 +292,13 @@ const POLITICAL_LANDSCAPE_META = Object.freeze({
 export const getPoliticalLandscapeMeta = (publicPoliticalProfile) => {
   const representation = clean(publicPoliticalProfile?.politicalSystem?.representation) ||
     (Array.isArray(publicPoliticalProfile?.parties) && publicPoliticalProfile.parties.length ? "electoral" : "none");
+  if (representation === "none" && Array.isArray(publicPoliticalProfile?.powerBlocs) && publicPoliticalProfile.powerBlocs.length) {
+    return {
+      representation,
+      ...POLITICAL_LANDSCAPE_META.elite_factions,
+      subtitle: "Political actors and institutions shaping the regime",
+    };
+  }
   const meta = POLITICAL_LANDSCAPE_META[representation] || POLITICAL_LANDSCAPE_META.elite_factions;
   return { representation, ...meta };
 };
@@ -288,6 +309,7 @@ const publicPowerBlocRow = (bloc, index) => {
   if (!name) return null;
   const influence = clampSupport(bloc?.influence?.percent);
   const influenceLabel = clean(bloc?.influence?.label);
+  const influenceBasis = clean(bloc?.influence?.basis);
   return {
     id: clean(bloc.id || name) || `bloc-${index}`,
     name,
@@ -296,6 +318,8 @@ const publicPowerBlocRow = (bloc, index) => {
     status: clean(bloc.status),
     influence,
     influenceLabel,
+    influenceBasis,
+    influenceApproximate: approximateBasis(influenceBasis),
     displayValue: influence != null
       ? (Number.isInteger(influence) ? `${influence}%` : `${influence.toFixed(1)}%`)
       : influenceLabel,
@@ -366,6 +390,60 @@ export const buildPoliticalPowerStructure = (publicPoliticalProfile) => {
     slices: boundedSlices,
     totalKnownInfluence: Math.round(Math.min(100, knownInfluence) * 10) / 10,
     hasQuantitativeInfluence: numeric.length > 0,
+    isApproximate: numeric.some((bloc) => bloc.influenceApproximate),
+  };
+};
+
+const buildPartyStatePartyPowerStructure = (publicPoliticalProfile) => {
+  const rows = (Array.isArray(publicPoliticalProfile?.parties) ? publicPoliticalProfile.parties : [])
+    .map(publicPartyRow)
+    .filter(Boolean)
+    .map((party) => ({
+      ...party,
+      influence: party.influence,
+      influenceLabel: party.influenceLabel,
+      displayValue: party.influence != null
+        ? (Number.isInteger(party.influence) ? `${party.influence}%` : `${party.influence.toFixed(1)}%`)
+        : party.influenceLabel,
+    }))
+    .sort((left, right) => (Number(right.influence) || 0) - (Number(left.influence) || 0) || left.name.localeCompare(right.name));
+
+  const numeric = rows.filter((party) => Number.isFinite(party.influence) && party.influence >= 0);
+  const knownInfluence = numeric.reduce((sum, party) => sum + party.influence, 0);
+  const remainder = numeric.length ? Math.max(0, Math.round((100 - knownInfluence) * 10) / 10) : 0;
+  const slices = numeric.map((party) => ({ ...party, isOther: false }));
+  if (remainder > 0.05) {
+    slices.push({
+      id: "__other_party_state__",
+      name: "Other",
+      shortName: "Other",
+      influence: remainder,
+      influenceLabel: "",
+      influenceBasis: numeric.some((party) => party.influenceApproximate) ? "generated-estimate" : "",
+      influenceApproximate: numeric.some((party) => party.influenceApproximate),
+      displayValue: Number.isInteger(remainder) ? `${remainder}%` : `${remainder.toFixed(1)}%`,
+      ideology: [],
+      goals: [],
+      publicPriorities: [],
+      publicForeignPolicy: [],
+      publicDescription: "Includes political influence not individually represented in the current public profile.",
+      leader: "",
+      color: "",
+      isOther: true,
+    });
+  }
+  const chartTotal = slices.reduce((sum, party) => sum + (party.influence || 0), 0) || 1;
+  const boundedSlices = slices.map((party) => ({
+    ...party,
+    chartPercent: Math.max(0, (party.influence / chartTotal) * 100),
+  }));
+  return {
+    blocs: rows,
+    entries: boundedSlices.length ? boundedSlices : rows,
+    slices: boundedSlices,
+    totalKnownInfluence: Math.round(Math.min(100, knownInfluence) * 10) / 10,
+    hasQuantitativeInfluence: numeric.length > 0,
+    isApproximate: numeric.some((party) => party.influenceApproximate),
   };
 };
 
@@ -382,7 +460,13 @@ export const buildPoliticalLandscape = (publicPoliticalProfile, options = {}) =>
     };
   }
   if (meta.mode === "power") {
-    const landscape = buildPoliticalPowerStructure(publicPoliticalProfile);
+    const usePartyStateParties = meta.representation === "party_state"
+      && (!Array.isArray(publicPoliticalProfile?.powerBlocs) || publicPoliticalProfile.powerBlocs.length === 0)
+      && Array.isArray(publicPoliticalProfile?.parties)
+      && publicPoliticalProfile.parties.length > 0;
+    const landscape = usePartyStateParties
+      ? buildPartyStatePartyPowerStructure(publicPoliticalProfile)
+      : buildPoliticalPowerStructure(publicPoliticalProfile);
     return {
       ...meta,
       ...landscape,

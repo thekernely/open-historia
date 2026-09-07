@@ -11,12 +11,13 @@ import {
     loadRegionCatalog,
 } from "../../runtime/assets.js";
 import { NO_RESPONSE_BODY_NOTE, discardPendingJumpSegment, discardPendingProjectsJump, loadRollbackSnapshots, maybeGeneratePregameHistory, retryPendingJumpSegment, retryPendingProjectsJump, rollBackToSnapshot, simulateAutoJump, simulateTimelineJump } from "../AI/gameplay.js";
+import { isPregameBootstrapPending } from "../AI/pregameBootstrapState.js";
 import { acceptStructuredModeSuggestion, declineStructuredModeSuggestion, getStructuredModeSuggestion } from "../AI/main.jsx";
 import { getProviderField, getStoredProvider } from "../AI/providerConfig.js";
 import { copyToClipboard } from "../../runtime/clipboard.js";
 import { logDebugEvent, setDebugLogContext } from "../../runtime/debugLog.js";
 import { EVENT_TAG_ENUM } from "../../runtime/eventTags.js";
-import { isMainMenuOpen } from "./libraryBar";
+import { useMainMenuOpen } from "./libraryBar";
 import {
     applyEventImpactsToWorld,
     normalizeActions,
@@ -1654,31 +1655,52 @@ const DateWidget = ({
         };
     }, []);
 
-    // Pre-game history: a fresh game (round 1, no events, no turns) whose
-    // scenario wrote a "World Before Round One" briefing gets its backstory
-    // generated once, the first time the player actually enters it. Waits out
-    // the main menu (the poll re-runs this every 5s) so tokens are never spent
-    // on a game the player is only hovering past; every other guard — busy
-    // lock, still-the-same-game check, the done-marker — lives in
-    // maybeGeneratePregameHistory itself.
-    const pregameAttemptedRef = React.useRef(false);
+    // Pre-game history: a fresh game whose scenario carries a World Before
+    // Round One briefing must finish Round Zero before autonomous world activity
+    // is allowed to begin. The menu state is REACTIVE here: a campaign can mount
+    // while the library is still visible, and merely reading a module-level menu
+    // flag meant closing the menu did not itself wake this effect.
+    //
+    // This is an in-flight guard, not a one-shot "attempted" latch. Provider
+    // throttling, a temporary busy lock, or a rejected structured response may
+    // make maybeGeneratePregameHistory() return null. Round Zero is still pending
+    // in that case, so a later 5s state refresh may retry after a short backoff.
+    // Only the persisted simulationHistory mode="pregame" marker is completion.
+    const mainMenuOpen = useMainMenuOpen();
+    const pregameInFlightRef = React.useRef(false);
+    const pregameRetryStateRef = React.useRef({ failures: 0, retryAfter: 0 });
     useEffect(() => {
-        if (pregameAttemptedRef.current || !gameData || !worldState) {
+        if (pregameInFlightRef.current || !gameData || !worldState || mainMenuOpen) {
             return;
         }
-        const fresh =
-            (Number(gameData.round) || 1) === 1 &&
-            (events?.length ?? 0) === 0 &&
-            (worldState.simulationHistory?.length ?? 0) === 0;
-        if (!fresh || !String(worldState.startingTimelineText ?? "").trim()) {
+        if (!isPregameBootstrapPending({ game: gameData, world: worldState })) {
+            pregameRetryStateRef.current = { failures: 0, retryAfter: 0 };
             return;
         }
-        if (isMainMenuOpen()) {
+        if (Date.now() < pregameRetryStateRef.current.retryAfter) {
             return;
         }
-        pregameAttemptedRef.current = true;
-        maybeGeneratePregameHistory().catch(() => {});
-    }, [gameData, worldState, events]);
+
+        pregameInFlightRef.current = true;
+        maybeGeneratePregameHistory()
+            .then((result) => {
+                if (Array.isArray(result) && result.length > 0) {
+                    pregameRetryStateRef.current = { failures: 0, retryAfter: Number.POSITIVE_INFINITY };
+                    return;
+                }
+                const failures = Math.min(4, (pregameRetryStateRef.current.failures || 0) + 1);
+                const delayMs = Math.min(60000, 5000 * (2 ** Math.max(0, failures - 1)));
+                pregameRetryStateRef.current = { failures, retryAfter: Date.now() + delayMs };
+            })
+            .catch(() => {
+                const failures = Math.min(4, (pregameRetryStateRef.current.failures || 0) + 1);
+                const delayMs = Math.min(60000, 5000 * (2 ** Math.max(0, failures - 1)));
+                pregameRetryStateRef.current = { failures, retryAfter: Date.now() + delayMs };
+            })
+            .finally(() => {
+                pregameInFlightRef.current = false;
+            });
+    }, [gameData, worldState, events, mainMenuOpen]);
 
     function setPanel(panelName) {
         // Where the player was looking, in detailed mode. On its own a panel

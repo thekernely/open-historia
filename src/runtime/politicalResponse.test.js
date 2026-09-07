@@ -252,3 +252,55 @@ test("response batch is pure and its output commits through the canonical Politi
     assert.equal(party.support.percent, change.to);
   }
 });
+
+test("party-state party influence has a canonical campaign movement path when no power-bloc roster exists", () => {
+  const actor = {
+    polityKey: "Party State",
+    politicalSystem: { type: "one_party_state", representation: "party_state" },
+    government: { form: "One-party socialist state", rulingPartyIds: ["state-party"] },
+    parties: [
+      {
+        id: "state-party",
+        name: "State Party",
+        influence: { percent: 72, basis: "generated-estimate" },
+        politicalResponse: {
+          organization: 90,
+          credibility: 80,
+          inertia: 50,
+          issues: { security: { position: 80, sensitivity: 90, strainResponse: 30 } },
+        },
+      },
+      {
+        id: "satellite-party",
+        name: "Satellite Party",
+        influence: { percent: 18, basis: "generated-estimate" },
+        politicalResponse: {
+          organization: 55,
+          credibility: 45,
+          inertia: 65,
+          issues: { security: { position: -60, sensitivity: 75, strainResponse: -20 } },
+        },
+      },
+    ],
+    politicalPressures: {
+      updatedAt: "2014-04-01",
+      issues: {
+        security: { salience: 85, lean: 90, strain: 65, persistence: 0.9, momentum: 15 },
+      },
+    },
+  };
+
+  const result = advancePoliticalResponseForActor(actor, { polityKey: "Party State", updatedAt: "2014-04-01" });
+  assert.ok(result.changes.length > 0);
+  assert.equal(result.changes.every((change) => change.kind === "party-influence"), true);
+  assert.equal(result.operations.every((operation) => operation.op === "set-party-influence"), true);
+
+  const world = { politicalActors: normalizePoliticalActors({ byPolity: { "Party State": actor } }) };
+  const applied = applyPoliticalActorOperations(world, result.operations);
+  assert.equal(applied.failed, 0);
+  for (const change of result.changes) {
+    const party = world.politicalActors.byPolity["Party State"].parties.find((entry) => entry.id === change.id);
+    assert.equal(party.influence.percent, change.to);
+    assert.equal(party.influence.basis, "campaign-derived");
+  }
+});

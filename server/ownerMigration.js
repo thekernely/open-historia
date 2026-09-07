@@ -429,6 +429,29 @@ export const migrateWorld = (world, renames, warn, derivedMapRefs = {}) => {
 
   next.countryTags = rekeyOwnerMap(next.countryTags, renames, "countryTags", warn);
   next.internationalReputation = rekeyOwnerMap(next.internationalReputation, renames, "internationalReputation", warn);
+  if (next.powerStatus && typeof next.powerStatus === "object" && !Array.isArray(next.powerStatus)) {
+    const source = next.powerStatus.byPolity && typeof next.powerStatus.byPolity === "object"
+      ? next.powerStatus.byPolity
+      : {};
+    next.powerStatus = {
+      ...next.powerStatus,
+      byPolity: rekeyOwnerMap(source, renames, "powerStatus.byPolity", warn),
+    };
+  }
+  if (next.institutions?.byId && typeof next.institutions.byId === "object") {
+    next.institutions = {
+      ...next.institutions,
+      byId: Object.fromEntries(Object.entries(next.institutions.byId).map(([id, institution]) => [id, {
+        ...institution,
+        members: Array.isArray(institution?.members)
+          ? institution.members.map((member) => ({ ...member, polity: renameValue(member?.polity, renames) }))
+          : institution?.members,
+        leaders: Array.isArray(institution?.leaders)
+          ? institution.leaders.map((leader) => renameValue(leader, renames))
+          : institution?.leaders,
+      }])),
+    };
+  }
 
   next.ownerSchema = OWNER_SCHEMA;
   return next;

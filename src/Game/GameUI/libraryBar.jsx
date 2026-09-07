@@ -58,6 +58,8 @@ const MapEditor = lazy(() => import("../../Editor/MapEditor.jsx"));
 const CommunityPanel = lazy(() => import("./communityHub.jsx"));
 // Lazy so OpenLayers only loads when the country picker map is opened.
 const CountryPickerMap = lazy(() => import("./CountryPickerMap.jsx"));
+// Phase006C: political generation/review is scenario-authoring UI, loaded only when opened.
+const PoliticalWorldGenerationPanel = lazy(() => import("./PoliticalWorldGenerationPanel.jsx"));
 
 const BAR_HEIGHT = 64;
 
@@ -199,6 +201,7 @@ const editorSectionLabels = {
   assets: "Assets",
   bundles: "Bundles",
   overview: "Overview",
+  politics: "Politics",
   prompts: "Prompts",
   world: "World",
 };
@@ -729,6 +732,7 @@ const EditorDrawer = ({
   onOpenFileDialog,
   onOpenMapEditor,
   onSave,
+  onScenarioDetailsChange,
   promptSectionKey,
   setEditorSection,
   setPromptSectionKey,
@@ -740,7 +744,7 @@ const EditorDrawer = ({
   const record = kind === "scenario" ? details.scenario : details.game;
   const visibleSections =
     kind === "scenario"
-      ? ["overview", "world", "prompts", "assets", "bundles"]
+      ? ["overview", "world", "politics", "prompts", "assets", "bundles"]
       : ["overview", "world", "prompts", "assets"];
 
   return (
@@ -914,6 +918,22 @@ const EditorDrawer = ({
             </div>
           </div>
         </div>
+      )}
+
+      {editorSection === "politics" && kind === "scenario" && (
+        <Suspense
+          fallback={
+            <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "18px", marginBottom: "0.95rem", padding: "0.9rem", color: "rgba(255,255,255,0.6)", fontSize: "0.8rem" }}>
+              Loading political world tools…
+            </div>
+          }
+        >
+          <PoliticalWorldGenerationPanel
+            details={details}
+            formState={formState}
+            onDetailsChange={onScenarioDetailsChange}
+          />
+        </Suspense>
       )}
 
       {editorSection === "prompts" && (
@@ -2647,6 +2667,11 @@ const LibraryTopBar = () => {
         onFileSelect={handleEditorAssetSelect}
         onOpenFileDialog={(assetKey) => assetFileInputsRef.current[assetKey]?.click()}
         onSave={handleSave}
+        onScenarioDetailsChange={(nextDetails) => {
+          // Keep formState untouched: political Apply writes only world.politicalActors,
+          // while unsaved metadata/prompt edits in this drawer must remain in memory.
+          setEditorDetails(nextDetails);
+        }}
         promptSectionKey={promptSectionKey}
         setEditorSection={setEditorSection}
         setPromptSectionKey={setPromptSectionKey}

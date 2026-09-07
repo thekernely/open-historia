@@ -24,6 +24,13 @@ const applyEphemeralResponseOperation = (actorsByPolity, operation) => {
     return true;
   }
 
+  if (operation.op === POLITICAL_ACTOR_OPS.SET_PARTY_INFLUENCE) {
+    const party = (actor.parties || []).find((entry) => entry.id === operation.partyId);
+    if (!party) return false;
+    party.influence = { ...(party.influence || {}), percent: operation.percent };
+    return true;
+  }
+
   if (operation.op === POLITICAL_ACTOR_OPS.SET_POWER_BLOC_INFLUENCE) {
     const bloc = (actor.powerBlocs || []).find((entry) => entry.id === operation.blocId);
     if (!bloc) return false;
@@ -34,9 +41,11 @@ const applyEphemeralResponseOperation = (actorsByPolity, operation) => {
   return false;
 };
 
-const responseOperationKey = (operation) => operation.op === POLITICAL_ACTOR_OPS.SET_PARTY_SUPPORT
-  ? `${operation.polityKey}|party|${operation.partyId}`
-  : `${operation.polityKey}|bloc|${operation.blocId}`;
+const responseOperationKey = (operation) => {
+  if (operation.op === POLITICAL_ACTOR_OPS.SET_PARTY_SUPPORT) return `${operation.polityKey}|party-support|${operation.partyId}`;
+  if (operation.op === POLITICAL_ACTOR_OPS.SET_PARTY_INFLUENCE) return `${operation.polityKey}|party-influence|${operation.partyId}`;
+  return `${operation.polityKey}|bloc|${operation.blocId}`;
+};
 
 // Pure compute kernel. Intermediate monthly support/influence updates exist only
 // inside the worker's detached copy. The caller still commits the FINAL values

@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import {
   applyDiplomaticUpdates,
   buildBoundedDiplomaticContext,
+  ensureObjectiveConflictRelations,
   migrateLegacyDiplomaticState,
   validateDiplomaticLedgerPayload,
 } from "./nativeDiplomaticDirector.js";
@@ -164,4 +165,33 @@ test("a declared status that contradicts the absolute score is reconciled in sim
   assert.equal(validateDiplomaticLedgerPayload(midpoint, { world, allowNativeBinding: true }), "");
   assert.equal(midpoint.relationUpdates[0].score, -75, "when a sign flip does not explain it, the declared band's midpoint does");
   assert.equal(midpoint.relationUpdates[0].status, "hostile");
+});
+
+
+test("objective war and sovereignty/control facts force a matching negative bilateral relation", () => {
+  const conflictWorld = {
+    ...world,
+    polityOverrides: {
+      ...world.polityOverrides,
+      Ukraine: { code: "Ukraine", name: "Ukraine" },
+    },
+    regionOwnershipOverrides: { ...world.regionOwnershipOverrides, crimea: "Russia" },
+    regionSovereigntyOverrides: { crimea: "Ukraine" },
+    wars: [],
+  };
+  const territorial = ensureObjectiveConflictRelations(conflictWorld, { date: "2014-03-22", round: 1 });
+  const relation = territorial.world.relations.find((entry) =>
+    new Set([entry.a, entry.b]).has("Russia") && new Set([entry.a, entry.b]).has("Ukraine"));
+  assert.ok(relation, "a canonical sovereignty/control dispute must create an objective relation record");
+  assert.ok(relation.score <= -72);
+  assert.match(relation.summary, /sovereignty\/control dispute/i);
+
+  const atWar = ensureObjectiveConflictRelations({
+    ...territorial.world,
+    wars: [{ id: "war-1", title: "Test war", status: "active", sideA: ["France"], sideB: ["Germany"] }],
+  }, { date: "2014-03-23", round: 2 });
+  const belligerent = atWar.world.relations.find((entry) =>
+    new Set([entry.a, entry.b]).has("France") && new Set([entry.a, entry.b]).has("Germany"));
+  assert.ok(belligerent);
+  assert.ok(belligerent.score <= -92);
 });

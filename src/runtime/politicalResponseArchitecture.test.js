@@ -8,6 +8,7 @@ test("political response is a native pure calculation layer, not an AI or timeli
   assert.doesNotMatch(responseSource, /from\s+["\'][^"\']*(?:Game\/AI|gameplay)[^"\']*["\']/i);
   assert.doesNotMatch(responseSource, /(?:createEvent|eventImpact|chatCompletion|openai|anthropic|gemini)\s*\(/i);
   assert.match(responseSource, /POLITICAL_ACTOR_OPS\.SET_PARTY_SUPPORT/);
+  assert.match(responseSource, /POLITICAL_ACTOR_OPS\.SET_PARTY_INFLUENCE/);
   assert.match(responseSource, /POLITICAL_ACTOR_OPS\.SET_POWER_BLOC_INFLUENCE/);
 });
 

@@ -9,6 +9,8 @@ const config = fs.readFileSync(new URL("./providerConfig.js", import.meta.url), 
 test("Phase006B calls AI through the existing provider seam but owns no world persistence", () => {
   assert.match(provider, /import \{ callAI \} from "\.\/main\.jsx"/);
   assert.match(provider, /generatePoliticalWorldProposalsCore/);
+  assert.match(provider, /reverifyPoliticalWorldProposalsCore/);
+  assert.match(provider, /reverifyPoliticalWorldProposals/);
   assert.doesNotMatch(core + provider, /writeWorldState|writeGameState|writeScenario|simulateTimelineJump|nativeWorldDirector/);
 });
 
@@ -20,6 +22,11 @@ test("Phase006B keeps generation bounded, retry-limited, and downstream of the P
   assert.match(core, /behavioralDisposition and politicalPressures/);
 });
 
-test("Political World generation has its own per-task model routing key", () => {
+test("Political World generation and Round-Zero verification have separate per-task model routing keys", () => {
   assert.match(config, /key: "politicalWorldGeneration"/);
+  assert.match(config, /key: "politicalWorldVerification"/);
+  assert.match(provider, /verifyHistoricalIdentity: options\.verifyHistoricalIdentity \?\? true/);
+  assert.match(core, /POLITICAL_WORLD_HISTORICAL_VERIFICATION_TOOL/);
+  assert.match(core, /POLITICAL_WORLD_HISTORICAL_VERIFICATION_BATCH_SIZE = 4/);
+  assert.match(core, /crossPolityOfficeholderCollisions/);
 });

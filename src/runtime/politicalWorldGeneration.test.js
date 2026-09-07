@@ -7,6 +7,7 @@ import {
   assessPoliticalGenerationNeeds,
   buildPoliticalGenerationPlan,
   comparePoliticalGenerationAuthority,
+  completeGeneratedPoliticalLandscapePatch,
   classifyPoliticalGenerationDepth,
   mergeMissingPoliticalActor,
   validatePoliticalGenerationProposal,
@@ -64,7 +65,10 @@ test("1867 monarchy and 2067 fictional polity use the same scenario-agnostic com
     politicalSystem: { type: "constitutional_monarchy", representation: "electoral" },
     government: { form: "Constitutional monarchy" },
   }, "standard");
-  assert.deepEqual(futureNeeds, [POLITICAL_GENERATION_NEEDS.REPRESENTATION_ENTITIES]);
+  assert.deepEqual(futureNeeds, [
+    POLITICAL_GENERATION_NEEDS.REPRESENTATION_ENTITIES,
+    POLITICAL_GENERATION_NEEDS.QUANTITATIVE_LANDSCAPE,
+  ]);
 });
 
 test("missing-only merge preserves authored values and explicit empty lists", () => {
@@ -237,6 +241,7 @@ test("an unknown political system requests the full depth-appropriate shape inst
     POLITICAL_GENERATION_NEEDS.POLITICAL_SYSTEM,
     POLITICAL_GENERATION_NEEDS.GOVERNING_STRUCTURE,
     POLITICAL_GENERATION_NEEDS.REPRESENTATION_ENTITIES,
+    POLITICAL_GENERATION_NEEDS.QUANTITATIVE_LANDSCAPE,
     POLITICAL_GENERATION_NEEDS.LEADERSHIP_TRAITS,
     POLITICAL_GENERATION_NEEDS.RESPONSE_PROFILES,
     POLITICAL_GENERATION_NEEDS.STRATEGIC_CONTEXT,
@@ -256,4 +261,292 @@ test("rich generation requires response profiles for every represented entity wi
     goals: ["Maintain order"],
   }, "rich");
   assert.ok(needs.includes(POLITICAL_GENERATION_NEEDS.RESPONSE_PROFILES));
+});
+
+
+test("party-state representation may be carried by ruling parties, power blocs, or both", () => {
+  const needs = assessPoliticalGenerationNeeds({
+    polityKey: "People's Republic of China",
+    politicalSystem: { type: "one_party_state", representation: "party_state" },
+    government: { form: "One-party socialist republic", ideology: "Socialism with Chinese characteristics", headOfGovernment: "Li Keqiang" },
+    parties: [{
+      id: "chinese-communist-party",
+      name: "Chinese Communist Party",
+      politicalResponse: { organization: 95 },
+    }],
+    traits: { pragmatism: 80 },
+    goals: ["Maintain party rule"],
+  }, "rich");
+
+  assert.ok(!needs.includes(POLITICAL_GENERATION_NEEDS.REPRESENTATION_ENTITIES));
+  assert.ok(!needs.includes(POLITICAL_GENERATION_NEEDS.RESPONSE_PROFILES));
+});
+
+test("existing roster enrichment may identify an entity by stable id without repeating its display name", () => {
+  const existingActor = {
+    polityKey: "Republic of Poland",
+    politicalSystem: { type: "parliamentary_republic", representation: "electoral" },
+    government: { form: "Parliamentary republic", ideology: "Liberal-conservative coalition" },
+    parties: [{ id: "civic-platform", name: "Platforma Obywatelska" }],
+  };
+  const result = validatePoliticalGenerationProposal({
+    schemaVersion: 1,
+    polityKey: "Republic of Poland",
+    scenarioDate: "2014-03-22",
+    depth: "rich",
+    provenance: { source: "generated", confidence: "high" },
+    actorPatch: {
+      parties: [{ id: "civic-platform", politicalResponse: { organization: 80 } }],
+    },
+  }, {
+    polityKey: "Republic of Poland",
+    scenarioDate: "2014-03-22",
+    depth: "rich",
+    existingActor,
+  });
+
+  assert.equal(result.ok, true, result.errors?.join("\n"));
+  assert.equal(result.actor.parties[0].name, "Platforma Obywatelska");
+  assert.equal(result.actor.parties[0].politicalResponse.organization, 80);
+});
+
+
+test("party_state representation requires explicit party-state structural evidence", () => {
+  const invalid = validatePoliticalGenerationProposal({
+    schemaVersion: 1,
+    polityKey: "Republic X",
+    scenarioDate: "2014-03-22",
+    depth: "standard",
+    provenance: { source: "generated", confidence: "high" },
+    actorPatch: {
+      politicalSystem: { type: "presidential_republic", representation: "party_state" },
+      government: { form: "Dominant-party presidential republic", headOfState: "Leader X", headOfGovernment: "Leader X" },
+      parties: [{ id: "ruling-party", name: "Ruling Party" }],
+    },
+  }, {
+    polityKey: "Republic X",
+    scenarioDate: "2014-03-22",
+    depth: "standard",
+  });
+  assert.equal(invalid.ok, false);
+  assert.ok(invalid.errors.some((error) => error.includes("representation=party_state requires explicit one-party/vanguard-party")));
+
+  for (const governmentForm of [
+    "Presidential republic (dominant-party state)",
+    "One-party dominant vanguard state led by the ruling coalition",
+  ]) {
+    const dominantPartyEvasion = validatePoliticalGenerationProposal({
+      schemaVersion: 1,
+      polityKey: "Dominant Party X",
+      scenarioDate: "2014-03-22",
+      depth: "standard",
+      provenance: { source: "generated", confidence: "high" },
+      actorPatch: {
+        politicalSystem: { type: "dominant_party_republic", representation: "party_state" },
+        government: { form: governmentForm, headOfState: "Leader X", headOfGovernment: "Leader X" },
+        parties: [{ id: "ruling-party", name: "Ruling Party" }],
+      },
+    }, {
+      polityKey: "Dominant Party X",
+      scenarioDate: "2014-03-22",
+      depth: "standard",
+    });
+    assert.equal(dominantPartyEvasion.ok, false, governmentForm);
+    assert.ok(dominantPartyEvasion.errors.some((error) => error.includes("representation=party_state requires explicit one-party/vanguard-party")));
+  }
+
+  for (const [polityKey, governmentForm, type] of [
+    ["Republic of Cuba", "Single-party communist state", "communist_state"],
+    ["State of Eritrea", "One-party presidential republic", "presidential_republic"],
+    ["Sahrawi Arab Democratic Republic", "One-party semi-presidential republic", "semi_presidential_republic"],
+  ]) {
+    const explicitOneParty = validatePoliticalGenerationProposal({
+      schemaVersion: 1,
+      polityKey,
+      scenarioDate: "2014-03-22",
+      depth: "standard",
+      provenance: { source: "generated", confidence: "high" },
+      actorPatch: {
+        politicalSystem: { type, representation: "party_state" },
+        government: { form: governmentForm, headOfState: "Leader X", headOfGovernment: "Leader X" },
+        parties: [{ id: "ruling-party", name: "Ruling Party" }],
+      },
+    }, {
+      polityKey,
+      scenarioDate: "2014-03-22",
+      depth: "standard",
+    });
+    assert.equal(explicitOneParty.ok, true, `${polityKey}: ${explicitOneParty.errors?.join("\n")}`);
+  }
+
+  const valid = validatePoliticalGenerationProposal({
+    schemaVersion: 1,
+    polityKey: "Party State X",
+    scenarioDate: "2014-03-22",
+    depth: "standard",
+    provenance: { source: "generated", confidence: "high" },
+    actorPatch: {
+      politicalSystem: { type: "one_party_state", representation: "party_state" },
+      government: { form: "One-party socialist republic", headOfState: "Leader X", headOfGovernment: "Premier X" },
+      parties: [{ id: "vanguard-party", name: "Vanguard Party" }],
+    },
+  }, {
+    polityKey: "Party State X",
+    scenarioDate: "2014-03-22",
+    depth: "standard",
+  });
+  assert.equal(valid.ok, true, valid.errors?.join("\n"));
+});
+
+test("Political Actor stable ids are unique across parties and powerBlocs", () => {
+  const result = validatePoliticalGenerationProposal({
+    schemaVersion: 1,
+    polityKey: "Ethiopia",
+    scenarioDate: "2014-03-22",
+    depth: "standard",
+    provenance: { source: "generated", confidence: "high" },
+    actorPatch: {
+      politicalSystem: { type: "republic", representation: "electoral" },
+      government: { form: "Federal parliamentary republic", headOfState: "Mulatu Teshome", headOfGovernment: "Hailemariam Desalegn" },
+      parties: [{ id: "eprdf", name: "Ethiopian Peoples' Revolutionary Democratic Front" }],
+      powerBlocs: [{ id: "eprdf", name: "EPRDF governing coalition" }],
+    },
+  }, {
+    polityKey: "Ethiopia",
+    scenarioDate: "2014-03-22",
+    depth: "standard",
+  });
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((error) => error.includes("entity id eprdf may not exist in both parties and powerBlocs")));
+});
+
+
+test("quantitative landscape is a baseline need even when electoral identity is already complete", () => {
+  const needs = assessPoliticalGenerationNeeds({
+    polityKey: "Federal Republic of Germany",
+    politicalSystem: { type: "parliamentary_republic", representation: "electoral" },
+    government: { form: "Federal parliamentary republic", headOfGovernment: "Angela Merkel" },
+    parties: [
+      { id: "cdu-csu", name: "CDU/CSU" },
+      { id: "spd", name: "SPD" },
+    ],
+  }, "standard");
+  assert.deepEqual(needs, [POLITICAL_GENERATION_NEEDS.QUANTITATIVE_LANDSCAPE]);
+});
+
+test("authored quantitative landscape is complete and is never regenerated", () => {
+  const needs = assessPoliticalGenerationNeeds({
+    polityKey: "Republic X",
+    politicalSystem: { type: "parliamentary_republic", representation: "electoral" },
+    government: { form: "Parliamentary republic", headOfGovernment: "Leader" },
+    parties: [
+      { id: "a", name: "A", support: { percent: 55 } },
+      { id: "b", name: "B", support: { percent: 35 } },
+    ],
+  }, "standard");
+  assert.equal(needs.includes(POLITICAL_GENERATION_NEEDS.QUANTITATIVE_LANDSCAPE), false);
+});
+
+test("native landscape completion preserves authored shares and scales only generated estimates", () => {
+  const existing = {
+    polityKey: "Republic X",
+    politicalSystem: { type: "parliamentary_republic", representation: "electoral" },
+    government: { form: "Parliamentary republic", rulingPartyIds: ["a"] },
+    parties: [
+      { id: "a", name: "A", support: { percent: 60 } },
+      { id: "b", name: "B" },
+      { id: "c", name: "C" },
+    ],
+  };
+  const completed = completeGeneratedPoliticalLandscapePatch(existing, {
+    parties: [
+      { id: "b", support: { percent: 35, basis: "generated-estimate" } },
+      { id: "c", support: { percent: 25, basis: "generated-estimate" } },
+    ],
+  });
+  const b = completed.patch.parties.find((party) => party.id === "b");
+  const c = completed.patch.parties.find((party) => party.id === "c");
+  assert.equal(existing.parties[0].support.percent, 60);
+  assert.equal(Math.round((b.support.percent + c.support.percent) * 10) / 10, 40);
+  assert.equal(b.support.basis, "generated-estimate");
+  assert.ok(completed.warnings.some((warning) => warning.includes("Normalized generated support estimates")));
+});
+
+test("party-state parties receive influence baselines rather than fake voter support", () => {
+  const existing = {
+    polityKey: "People's Republic X",
+    politicalSystem: { type: "one_party_state", representation: "party_state" },
+    government: { form: "One-party socialist republic", rulingPartyIds: ["workers-party"] },
+    parties: [{ id: "workers-party", name: "Workers Party" }],
+  };
+  const completed = completeGeneratedPoliticalLandscapePatch(existing, { parties: [{ id: "workers-party" }] });
+  assert.deepEqual(completed.patch.parties[0].influence, { percent: 100, basis: "native-fallback-estimate" });
+  assert.equal(completed.patch.parties[0].support, undefined);
+});
+
+test("representation none still requests quantitative influence when canonical power blocs exist", () => {
+  const actor = {
+    polityKey: "Brunei-like",
+    politicalSystem: { type: "absolute_monarchy", representation: "none" },
+    government: { form: "Absolute monarchy", headOfState: "Sultan" },
+    powerBlocs: [{ id: "royal-house", name: "Royal House" }],
+  };
+  const needs = assessPoliticalGenerationNeeds(actor, POLITICAL_GENERATION_DEPTHS.STANDARD);
+  assert.deepEqual(needs, [POLITICAL_GENERATION_NEEDS.QUANTITATIVE_LANDSCAPE]);
+
+  const completed = completeGeneratedPoliticalLandscapePatch(actor, {
+    powerBlocs: [{ id: "royal-house", influence: { percent: 100, basis: "generated-estimate" } }],
+  });
+  assert.equal(completed.patch.powerBlocs[0].influence.percent, 100);
+});
+
+test("governing-alignment repair may fill normalized empty government party refs only when explicitly enabled", () => {
+  const existing = {
+    polityKey: "Federal Republic of Germany",
+    politicalSystem: { type: "parliamentary_republic", representation: "electoral" },
+    government: {
+      form: "Federal parliamentary republic",
+      headOfGovernment: "Angela Merkel",
+      rulingPartyIds: [],
+      coalitionPartyIds: [],
+    },
+    parties: [
+      { id: "cdu-csu", name: "CDU/CSU" },
+      { id: "spd", name: "SPD" },
+    ],
+  };
+  const patch = { government: { rulingPartyIds: ["cdu-csu"], coalitionPartyIds: ["spd"] } };
+
+  const ordinary = mergeMissingPoliticalActor(existing, patch);
+  assert.deepEqual(ordinary.actor.government.rulingPartyIds, []);
+  assert.deepEqual(ordinary.actor.government.coalitionPartyIds, []);
+  assert.deepEqual(ordinary.appliedPaths, []);
+
+  const repair = mergeMissingPoliticalActor(existing, patch, { fillEmptyGovernmentPartyRefs: true });
+  assert.deepEqual(repair.actor.government.rulingPartyIds, ["cdu-csu"]);
+  assert.deepEqual(repair.actor.government.coalitionPartyIds, ["spd"]);
+  assert.deepEqual(repair.appliedPaths, ["government.rulingPartyIds", "government.coalitionPartyIds"]);
+});
+
+test("governing-alignment repair never overwrites existing non-empty canonical party refs", () => {
+  const existing = {
+    polityKey: "Republic X",
+    politicalSystem: { type: "parliamentary_republic", representation: "electoral" },
+    government: {
+      form: "Parliamentary republic",
+      rulingPartyIds: ["incumbent"],
+      coalitionPartyIds: ["partner"],
+    },
+    parties: [
+      { id: "incumbent", name: "Incumbent" },
+      { id: "partner", name: "Partner" },
+      { id: "opposition", name: "Opposition" },
+    ],
+  };
+  const repair = mergeMissingPoliticalActor(existing, {
+    government: { rulingPartyIds: ["opposition"], coalitionPartyIds: ["opposition"] },
+  }, { fillEmptyGovernmentPartyRefs: true });
+  assert.deepEqual(repair.actor.government.rulingPartyIds, ["incumbent"]);
+  assert.deepEqual(repair.actor.government.coalitionPartyIds, ["partner"]);
+  assert.deepEqual(repair.appliedPaths, []);
 });

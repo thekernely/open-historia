@@ -19,6 +19,7 @@ export const POLITICAL_ACTOR_OPS = Object.freeze({
   CREATE_PARTY: "create-party",
   UPDATE_PARTY: "update-party",
   SET_PARTY_SUPPORT: "set-party-support",
+  SET_PARTY_INFLUENCE: "set-party-influence",
   SET_PARTY_LEADER: "set-party-leader",
   CREATE_POWER_BLOC: "create-power-bloc",
   UPDATE_POWER_BLOC: "update-power-bloc",
@@ -185,7 +186,20 @@ export const applyPoliticalActorOperation = (world, operation) => {
     if (found.error) return result({ op, error: found.error });
     const percent = clampPercent(operation.percent);
     if (percent == null) return result({ op, error: "set-party-support requires a numeric percent." });
-    found.party.support = { percent };
+    found.party.support = { percent, basis: "campaign-derived" };
+    return result({ applied: true, op, actor: commitActor(world, key, actor) });
+  }
+
+  if (op === POLITICAL_ACTOR_OPS.SET_PARTY_INFLUENCE) {
+    const found = requireParty(actor, operation.partyId || operation.party);
+    if (found.error) return result({ op, error: found.error });
+    const percent = clampPercent(operation.percent);
+    if (percent == null) return result({ op, error: "set-party-influence requires a numeric percent." });
+    found.party.influence = {
+      ...(found.party.influence && typeof found.party.influence === "object" ? found.party.influence : {}),
+      percent,
+      basis: "campaign-derived",
+    };
     return result({ applied: true, op, actor: commitActor(world, key, actor) });
   }
 
@@ -251,6 +265,7 @@ export const applyPoliticalActorOperation = (world, operation) => {
       const percent = clampPercent(operation.percent);
       if (percent == null) return result({ op, error: "set-power-bloc-influence percent must be numeric." });
       influence.percent = percent;
+      influence.basis = "campaign-derived";
     }
     if (hasLabel) {
       const label = clean(operation.label);

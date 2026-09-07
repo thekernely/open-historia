@@ -57,6 +57,10 @@ const publicParty = (party) => {
   if (!name) return null;
 
   const support = Number(party?.support?.percent);
+  const supportBasis = clean(party?.support?.basis);
+  const influencePercent = Number(party?.influence?.percent);
+  const influenceBasis = clean(party?.influence?.basis);
+  const influenceLabel = clean(party?.influence?.label);
   const goals = cleanStringArray(party.goals, 12);
   const publicPriorities = cleanStringArray(party.publicPriorities, 12);
   const publicForeignPolicy = cleanStringArray(party.publicForeignPolicy, 12);
@@ -68,7 +72,17 @@ const publicParty = (party) => {
     ...(clean(party.shortName || party.abbreviation) ? { shortName: clean(party.shortName || party.abbreviation) } : {}),
     ...(clean(party.ideology) ? { ideology: clean(party.ideology) } : {}),
     ...(Number.isFinite(support)
-      ? { support: { percent: Math.max(0, Math.min(100, support)) } }
+      ? { support: {
+          percent: Math.max(0, Math.min(100, support)),
+          ...(supportBasis ? { basis: supportBasis } : {}),
+        } }
+      : {}),
+    ...((Number.isFinite(influencePercent) || influenceLabel)
+      ? { influence: {
+          ...(Number.isFinite(influencePercent) ? { percent: Math.max(0, Math.min(100, influencePercent)) } : {}),
+          ...(influenceBasis ? { basis: influenceBasis } : {}),
+          ...(influenceLabel ? { label: influenceLabel } : {}),
+        } }
       : {}),
     ...(leader ? { leader } : {}),
     ...(goals.length ? { goals } : {}),
@@ -86,6 +100,7 @@ const publicPowerBloc = (bloc) => {
   const name = clean(bloc.name);
   if (!name) return null;
   const influencePercent = Number(bloc?.influence?.percent);
+  const influenceBasis = clean(bloc?.influence?.basis);
   const influenceLabel = clean(bloc?.influence?.label);
   const goals = cleanStringArray(bloc.goals, 12);
   const publicPriorities = cleanStringArray(bloc.publicPriorities, 12);
@@ -102,6 +117,7 @@ const publicPowerBloc = (bloc) => {
     ...((Number.isFinite(influencePercent) || influenceLabel)
       ? { influence: {
           ...(Number.isFinite(influencePercent) ? { percent: Math.max(0, Math.min(100, influencePercent)) } : {}),
+          ...(influenceBasis ? { basis: influenceBasis } : {}),
           ...(influenceLabel ? { label: influenceLabel } : {}),
         } }
       : {}),

@@ -31,15 +31,31 @@ import Markdown, { MarkdownStyleInjector } from "./markdown.jsx";
 
 // ── Storage ───────────────────────────────────────────────────────────────────
 
+// Diplomatic storage treats the player as implicit and keys open threads by stable
+// polity identity. Always read/write through that save-aware lens: the beta merge
+// briefly let event-generated chats persist the player as an ordinary participant,
+// which forked [Lithuania, Estonia] into [Latvia, Lithuania, Estonia] and made the
+// established group's history appear to disappear. Loading also repairs such legacy
+// rows in memory; the next ordinary write persists the cleaned structure.
+const readChatIdentityContext = async () => {
+    const [game, world] = await Promise.all([
+        readJson(JSON_URLS.game, { defaultValue: {}, force: true }).catch(() => ({})),
+        readWorldStateView({ force: false }).catch(() => ({})),
+    ]);
+    return { playerCountry: String(game?.country ?? "").trim(), world: world || {} };
+};
+
 const saveAllChats = async (chats) => {
     try {
-        await writeChatsState(chats);
+        const { playerCountry, world } = await readChatIdentityContext();
+        await writeChatsState(chats, { world, playerCountry });
     } catch (err) { console.error("Failed to save chats:", err); }
 };
 
 const loadAllChats = async ({ force = false } = {}) => {
     try {
-        return await readChatsState({ force });
+        const { playerCountry, world } = await readChatIdentityContext();
+        return await readChatsState({ force, world, playerCountry });
     } catch { return []; }
 };
 

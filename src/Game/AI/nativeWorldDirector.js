@@ -1,5 +1,6 @@
 import { buildCompactEconomicContext, isCompleteCountryStatSheet } from "../../runtime/countryStats.js";
 import { buildBoundedDiplomaticContext } from "./nativeDiplomaticDirector.js";
+import { buildWorldDirectorPoliticalDecisionLayer } from "./politicalWorldDirector.js";
 import {
   buildNativeWorldExplorationSlate,
   deriveWorldTrajectoryValue,
@@ -29,7 +30,7 @@ import {
 // - bounded candidate count
 // - O(recent events + recent chats + a tiny bounded world-state sample)
 
-export const WORLD_DIRECTOR_VERSION = "0.13.1-crisis-seam-repair";
+export const WORLD_DIRECTOR_VERSION = "0.14.0-political-decision-context";
 
 const DEFAULT_MAX_CANDIDATES = 10;
 const RECENT_EVENT_WINDOW = 56;
@@ -3262,6 +3263,14 @@ export const buildWorldInitiativeContext = (
     explorationActors,
   );
 
+  const politicalDecisionLayer = buildWorldDirectorPoliticalDecisionLayer({
+    bundle,
+    storylineAttention,
+    explorationSlate,
+    diplomaticAttention,
+    economicAttention,
+  });
+
   const currentUnitLedger = formatCurrentPersistentUnitLedger(bundle?.world || {});
   const currentUnitCount = normalizeArray(bundle?.world?.units).length;
 
@@ -3499,6 +3508,12 @@ export const buildWorldInitiativeContext = (
     "This is a bounded slice of the persistent diplomatic ledger, not a dump of every country pair. Formal commitments, bilateral political climate, and actual wars are separate facts.",
     diplomaticAttention.text,
     "",
+    "POLITICAL DECISION CONTEXT — ACTOR-RELATIVE",
+    "Use each actor capsule to reason about what THAT government, leader, party/coalition or power structure is likely to choose now. Actor perceptions are beliefs and may be wrong; objective relations/agreements/wars constrain what is actually true and feasible. Behavioral disposition changes plausibility, not destiny: high assertiveness does not force aggression and low assertiveness does not forbid action when a concrete trigger changes the situation.",
+    "Do not transfer one actor's private fears, ambitions, traits, pressures or perceptions into another actor's knowledge. A counterpart may react only to what it plausibly knows through public/assessed/classified Political Knowledge and observable campaign state.",
+    "The human player's explicit orders remain authoritative over the player polity's political tendencies. Use the player capsule for domestic consequences, constraints and NPC reactions; never veto a legal player order because its government's inferred temperament would prefer otherwise.",
+    politicalDecisionLayer.text || "No Political Decision Context capsule was available for the current bounded attention set. Do not invent hidden political traits to fill the gap.",
+    "",
     "CANONICAL ECONOMIC CONSTRAINTS",
     "Only actors with an already-persisted native Stats baseline are listed here; absence means no canonical numeric baseline exists, not that the actor has infinite resources.",
     "Use these figures as causal capability/financing constraints, never as rigid action gates. A stressed polity can still mobilize, subsidize, build, or fight by borrowing, taxing, cutting elsewhere, seeking foreign finance, monetizing, or accepting inflation/debt/political consequences.",
@@ -3573,6 +3588,11 @@ export const buildWorldInitiativeContext = (
     mergedDuplicateStorylines: storylineAttention.mergedDuplicateCount || 0,
     duplicateStorylineGroups: storylineAttention.duplicateGroups || [],
     economicActors: economicAttention,
+    politicalDecisionActors: politicalDecisionLayer.actors,
+    politicalDecisionActorCount: politicalDecisionLayer.actors.length,
+    politicalDecisionOmittedActors: politicalDecisionLayer.omittedActorPolities,
+    politicalDecisionContextChars: politicalDecisionLayer.charCount,
+    politicalDecisionCompatibility: politicalDecisionLayer.compatibility,
     currentUnitCount,
     diplomaticActors: diplomaticAttention.actors,
     diplomaticRelations: diplomaticAttention.relations,
@@ -3622,7 +3642,7 @@ export const buildWorldInitiativeContext = (
     `[OH Native World Director v${WORLD_DIRECTOR_VERSION}] ` +
     `${storylineAttention.selected.length}/${storylineAttention.all.length} storyline(s) selected, ` +
     `${explorationSlate.length} exploration slot(s) (${explorationSlate.filter((slot) => slot.scope === "player-sphere").length} player-sphere / ${explorationSlate.filter((slot) => slot.scope === "wider-world").length} wider-world), ${bounded.length} causal candidate(s), ` +
-    `${economicAttention.length} economic actor baseline(s), ${currentUnitCount} current unit(s), ` +
+    `${economicAttention.length} economic actor baseline(s), ${politicalDecisionLayer.actors.length} political decision capsule(s), ${currentUnitCount} current unit(s), ` +
     `${diplomaticAttention.relations.length} relation(s), ${diplomaticAttention.agreements.length} agreement(s), ` +
     `${recentEvents.length} recent event(s), ${recentChats.length} recent chat(s)`,
   );

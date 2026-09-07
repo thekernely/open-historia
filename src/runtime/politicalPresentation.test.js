@@ -105,3 +105,60 @@ test("electoral systems preserve the existing party landscape path", () => {
   assert.equal(out.totalKnownPercent, 100);
   assert.deepEqual(out.slices.map((entry) => entry.id), ["a", "b"]);
 });
+
+test("generated support baselines render quantitatively and are marked approximate", () => {
+  const out = buildPoliticalLandscape({
+    politicalSystem: { type: "parliamentary_republic", representation: "electoral" },
+    parties: [
+      { id: "a", name: "Party A", support: { percent: 38, basis: "generated-estimate" } },
+      { id: "b", name: "Party B", support: { percent: 31, basis: "generated-estimate" } },
+    ],
+  });
+  assert.equal(out.hasQuantitativeValues, true);
+  assert.equal(out.isApproximate, true);
+  assert.equal(out.entries[0].supportApproximate, true);
+  assert.equal(out.slices.find((entry) => entry.id === "__other__").support, 31);
+});
+
+test("campaign-derived support is authoritative campaign state and no longer labeled approximate", () => {
+  const out = buildPoliticalLandscape({
+    politicalSystem: { type: "parliamentary_republic", representation: "electoral" },
+    parties: [
+      { id: "a", name: "Party A", support: { percent: 55, basis: "campaign-derived" } },
+      { id: "b", name: "Party B", support: { percent: 45, basis: "campaign-derived" } },
+    ],
+  });
+  assert.equal(out.hasQuantitativeValues, true);
+  assert.equal(out.isApproximate, false);
+});
+
+test("party-state systems can render ruling-party influence when no separate power blocs exist", () => {
+  const out = buildPoliticalLandscape({
+    politicalSystem: { type: "one_party_state", representation: "party_state" },
+    parties: [{
+      id: "workers",
+      name: "Workers Party",
+      influence: { percent: 100, basis: "generated-estimate" },
+    }],
+  });
+  assert.equal(out.mode, "power");
+  assert.equal(out.hasQuantitativeValues, true);
+  assert.equal(out.isApproximate, true);
+  assert.equal(out.entries[0].displayValue, "100%");
+  assert.equal(out.slices[0].id, "workers");
+});
+
+test("representation none with canonical power blocs still renders a quantitative power structure", () => {
+  const landscape = buildPoliticalLandscape({
+    politicalSystem: { type: "absolute_monarchy", representation: "none" },
+    powerBlocs: [
+      { id: "royal-house", name: "Royal House", influence: { percent: 100, basis: "generated-estimate" } },
+    ],
+  });
+
+  assert.equal(landscape.mode, "power");
+  assert.equal(landscape.representation, "none");
+  assert.equal(landscape.hasQuantitativeValues, true);
+  assert.equal(landscape.isApproximate, true);
+  assert.equal(landscape.slices[0].influence, 100);
+});

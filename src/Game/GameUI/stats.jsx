@@ -8,6 +8,7 @@ import { useCountryDisplayName } from "../../runtime/polityNames.js";
 import { resolvePolityIdentity } from "../../runtime/polityIdentity.js";
 import { buildPlayerPoliticalKnowledgeView, buildPublicPoliticalView } from "../../runtime/politicalKnowledge.js";
 import { resolveCountryTags } from "../../runtime/countryTags.js";
+import { institutionsForPolity } from "../../runtime/institutions.js";
 import { intelligenceOf } from "../../runtime/spycraft.js";
 import PoliticalOverview from "./PoliticalOverview.jsx";
 import { flagImageUrlFromGid } from "../../runtime/countryFlags.js";
@@ -368,6 +369,18 @@ const DiplomacySection = ({ world, targetCountry }) => {
                     String(right.lastUpdatedDate || right.startedDate || "").localeCompare(String(left.lastUpdatedDate || left.startedDate || ""));
             });
 
+        const formalInstitutions = institutionsForPolity(world, target, { includeSuspended: true })
+            .map(({ institution, member }) => ({
+                id: institution.id,
+                name: institution.shortName || institution.name || institution.id,
+                fullName: institution.name || institution.shortName || institution.id,
+                kind: institution.kind || "other",
+                institutionStatus: institution.status || "active",
+                memberStatus: member.status || "member",
+                role: member.role || "member",
+                sinceDate: member.sinceDate || "",
+            }));
+
         const currentWars = asArray(world.wars)
             .filter((war) => ["active", "ceasefire"].includes(lowerText(war?.status)))
             .map((war) => {
@@ -385,6 +398,7 @@ const DiplomacySection = ({ world, targetCountry }) => {
         return {
             relations,
             agreements,
+            formalInstitutions,
             currentWars,
             activeAgreements: agreements.filter((agreement) => lowerText(agreement.status) === "active").length,
         };
@@ -430,6 +444,42 @@ const DiplomacySection = ({ world, targetCountry }) => {
         }) : (
             <div style={{ borderTop: "1px solid rgba(255,255,255,0.07)", color: "rgba(255,255,255,0.4)", fontSize: "0.68rem", padding: "0.65rem" }}>
             No tracked bilateral relations. An absent record is not the same as explicit neutrality.
+            </div>
+        )}
+        </div>
+
+        <div style={{ ...cardStyle, marginTop: "0.55rem", padding: 0, overflow: "hidden" }}>
+        <div style={{ alignItems: "center", display: "flex", justifyContent: "space-between", padding: "0.55rem 0.65rem" }}>
+        <span style={{ color: "rgba(255,255,255,0.7)", fontSize: "0.72rem", fontWeight: 800 }}>Formal institutions</span>
+        <span data-no-translate style={{ color: "rgba(255,255,255,0.32)", fontSize: "0.6rem" }}>{diplomacy.formalInstitutions.length}</span>
+        </div>
+        {diplomacy.formalInstitutions.length ? diplomacy.formalInstitutions.map((membership) => {
+            const suspended = lowerText(membership.memberStatus) === "suspended" || lowerText(membership.institutionStatus) === "dormant";
+            const tone = suspended ? "#fbbf24" : "#60a5fa";
+            const roleLabel = lowerText(membership.role) === "leader"
+                ? "Leader"
+                : lowerText(membership.role) === "leading-member"
+                    ? "Leading member"
+                    : prettyToken(membership.memberStatus || "member");
+            return (
+                <div key={membership.id} style={{ borderTop: "1px solid rgba(255,255,255,0.07)", padding: "0.55rem 0.65rem" }}>
+                <div style={{ alignItems: "flex-start", display: "flex", gap: "0.55rem", justifyContent: "space-between" }}>
+                <div style={{ minWidth: 0 }}>
+                <div style={{ color: "rgba(255,255,255,0.86)", fontSize: "0.72rem", fontWeight: 750 }}>{membership.name}</div>
+                <div style={{ color: "rgba(255,255,255,0.38)", fontSize: "0.61rem", marginTop: "0.14rem" }}>
+                {prettyToken(membership.kind)}{membership.sinceDate ? ` · since ${membership.sinceDate}` : ""}
+                </div>
+                {membership.fullName !== membership.name && (
+                    <div style={{ color: "rgba(255,255,255,0.28)", fontSize: "0.58rem", marginTop: "0.12rem" }}>{membership.fullName}</div>
+                )}
+                </div>
+                <span style={statusBadgeStyle(tone)}>{roleLabel}</span>
+                </div>
+                </div>
+            );
+        }) : (
+            <div style={{ borderTop: "1px solid rgba(255,255,255,0.07)", color: "rgba(255,255,255,0.4)", fontSize: "0.68rem", padding: "0.65rem" }}>
+            No tracked formal institution memberships involving this polity.
             </div>
         )}
         </div>

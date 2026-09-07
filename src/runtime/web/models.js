@@ -43,7 +43,7 @@ export const JSON_ASSET_DEFAULTS = {
 
 export const TEMPLATE_WORLD_OVERRIDE_KEYS = [
   "allowedUnitTypes", "author", "background", "basemap", "customCities", "customGeometry", "customRegions",
-  "difficulty", "language", "mapCredit", "notes", "ownerCodes", "polityOverrides", "politicalActors",
+  "difficulty", "language", "mapCredit", "notes", "ownerCodes", "polityOverrides", "politicalActors", "institutions", "powerStatus", "agreements",
   "regionClaimants", "regionOwnershipOverrides", "regionSovereigntyOverrides",
   "simulationRules", "startingTimelineText",
 ];

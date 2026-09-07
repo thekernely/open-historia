@@ -3,6 +3,8 @@ import { JSON_URLS, primeJson, readJson, reportPerfOperation, writeJson } from "
 import { getBetaUnitsToStamp } from "./mapSettings.js";
 import { enqueueContentStrings } from "./translator.js";
 import { normalizeTagList } from "./countryTags.js";
+import { normalizeInstitutions, removePolityFromInstitutions } from "./institutions.js";
+import { normalizePowerStatus, refreshPowerStatus } from "./powerStatus.js";
 import { advanceRecurringDate, canPlayerDirect, normalizeMilestoneRepeat } from "./projects.js";
 import { dedupeEventLog } from "./eventDedup.js";
 import { normalizeEventTags } from "./eventTags.js";
@@ -66,6 +68,13 @@ export const WORLD_DEFAULTS = {
   // Background political scheduler metadata. Game time remains the canonical clock;
   // this only remembers which span the native political engine successfully consumed.
   politicalSimulation: normalizePoliticalSimulationClock({}),
+  // Canonical multilateral institutions and memberships. Formal membership is
+  // separate from bilateral relations/agreements and drives derived country badges.
+  institutions: { schemaVersion: 1, ledgerVersion: 0, byId: {} },
+  // Native/geopolitical power classification. Every active polity resolves to one
+  // of minor-power / regional-power / major-power; campaign-derived changes use
+  // hysteresis so normal monthly noise cannot flip a polity back and forth.
+  powerStatus: { schemaVersion: 1, byPolity: {} },
   // Per-country tags the AI has changed: owner code -> string[]. The scenario's
   // tags.json holds the map-maker's STARTING tags; this holds every change since,
   // and wins where present (see resolveCountryTags). These remain a compatibility /
@@ -3832,6 +3841,8 @@ export const normalizeWorldState = (world) => {
     countryStats,
     politicalActors: normalizePoliticalActors(nextWorld.politicalActors),
     politicalSimulation: normalizePoliticalSimulationClock(nextWorld.politicalSimulation),
+    institutions: normalizeInstitutions(nextWorld.institutions, diplomaticIdentityWorld),
+    powerStatus: normalizePowerStatus(nextWorld.powerStatus, diplomaticIdentityWorld),
     actionSuggestions: normalizeActionSuggestions(nextWorld.actionSuggestions),
     activeCatalyst: normalizeCatalyst(nextWorld.activeCatalyst),
     consolidatedHistory: normalizeConsolidatedHistory(nextWorld.consolidatedHistory),
@@ -4704,6 +4715,8 @@ const applyPolityAndTerritoryImpacts = ({
         lastUpdatedDate: endedDate || canonicalizeDateString(agreement.lastUpdatedDate),
       };
     });
+    world.institutions = removePolityFromInstitutions(world.institutions, code, world, endedDate);
+    if (world.powerStatus?.byPolity) delete world.powerStatus.byPolity[code];
     delete colors[code];
     console.info(`[polity lifecycle] dissolved "${code}".`);
   }
@@ -4842,11 +4855,16 @@ export const applyEventImpactsToWorld = ({
     }
   }
 
+  const powerRefreshed = refreshPowerStatus(nextWorld, {
+    date: normalizeOptionalString(events?.[events.length - 1]?.date || cursorDate),
+    round,
+  });
+
   return {
     colors: nextColors,
     // Record which system took this turn, so a later resume can tell that game
     // time passed while the beta engine was not running (resumeStandingOrders).
-    world: { ...nextWorld, unitSystem: betaEngine ? "beta" : "classic" },
+    world: { ...powerRefreshed, unitSystem: betaEngine ? "beta" : "classic" },
   };
 };
 

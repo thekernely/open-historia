@@ -27,12 +27,29 @@ const cloneActorValue = (value) => {
 };
 
 const clampPercent = (value) => {
+    if (value === null || value === undefined || value === "") return null;
     const number = Number(value);
     if (!Number.isFinite(number)) return null;
     return Math.max(0, Math.min(100, Math.round(number * 10) / 10));
 };
 
+const normalizeLandscapeShare = (value, { allowLabel = false } = {}) => {
+    const source = value && typeof value === "object" && !Array.isArray(value)
+        ? value
+        : { percent: value };
+    const percent = clampPercent(source.percent);
+    const basis = clean(source.basis);
+    const label = allowLabel ? clean(source.label) : "";
+    if (percent == null && !label) return null;
+    return {
+        ...(percent != null ? { percent } : {}),
+        ...(basis ? { basis } : {}),
+        ...(label ? { label } : {}),
+    };
+};
+
 const clampSignedPercent = (value) => {
+    if (value === null || value === undefined || value === "") return null;
     const number = Number(value);
     if (!Number.isFinite(number)) return null;
     return Math.max(-100, Math.min(100, Math.round(number * 10) / 10));
@@ -261,9 +278,17 @@ export const normalizePoliticalParty = (value, { index = 0 } = {}) => {
     if (aliases.length) out.aliases = aliases;
     else delete out.aliases;
 
-    const support = clampPercent(value?.support?.percent ?? value?.support);
-    if (support != null) out.support = { percent: support };
+    const support = normalizeLandscapeShare(value.support);
+    if (support) out.support = support;
     else delete out.support;
+
+    // Party-state systems may expose a ruling/state party as a political power
+    // actor rather than pretending its percentage is electoral support. Keep
+    // this metric distinct so the Country panel and simulation can label it as
+    // influence/control.
+    const influence = normalizeLandscapeShare(value.influence, { allowLabel: true });
+    if (influence) out.influence = influence;
+    else delete out.influence;
 
     const politicalResponse = normalizePoliticalResponseProfile(value.politicalResponse || value.responseProfile);
     if (politicalResponse) out.politicalResponse = politicalResponse;
@@ -317,20 +342,12 @@ export const normalizePoliticalPowerBloc = (value, { index = 0 } = {}) => {
     if (aliases.length) out.aliases = aliases;
     else delete out.aliases;
 
-    const sourceInfluence = value?.influence && typeof value.influence === "object" && !Array.isArray(value.influence)
-        ? value.influence
-        : {};
-    const percentSource = sourceInfluence.percent ?? (typeof value.influence === "number" ? value.influence : undefined);
-    const percent = percentSource === undefined || percentSource === null ? null : clampPercent(percentSource);
-    const influenceLabel = clean(sourceInfluence.label || value.influenceLabel);
-    if (percent != null || influenceLabel) {
-        out.influence = {
-            ...(percent != null ? { percent } : {}),
-            ...(influenceLabel ? { label: influenceLabel } : {}),
-        };
-    } else {
-        delete out.influence;
-    }
+    const influenceSource = value?.influence && typeof value.influence === "object" && !Array.isArray(value.influence)
+        ? { ...value.influence, ...(clean(value.influenceLabel) && !clean(value.influence?.label) ? { label: clean(value.influenceLabel) } : {}) }
+        : (typeof value.influence === "number" ? { percent: value.influence, ...(clean(value.influenceLabel) ? { label: clean(value.influenceLabel) } : {}) } : { ...(clean(value.influenceLabel) ? { label: clean(value.influenceLabel) } : {}) });
+    const influence = normalizeLandscapeShare(influenceSource, { allowLabel: true });
+    if (influence) out.influence = influence;
+    else delete out.influence;
     delete out.influenceLabel;
 
     const politicalResponse = normalizePoliticalResponseProfile(value.politicalResponse || value.responseProfile);

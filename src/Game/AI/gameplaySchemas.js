@@ -1,4 +1,4 @@
-import { EVENT_TAG_ENUM, MAX_EVENT_TAGS } from "../../runtime/eventTags.js";
+import { EVENT_TAG_ENUM, MAX_EVENT_TAGS, normalizeEventTags } from "../../runtime/eventTags.js";
 const textSchema = (description) => ({
   type: "string",
   description,
@@ -1097,6 +1097,11 @@ export const JUMP_FORWARD_SCHEMA = {
       description:
         "Compact newline-separated formal treaty/agreement lifecycle updates. Empty string when no formal commitment starts, changes, suspends, resumes, ends, or expires. Record format is documented in the live prompt.",
     },
+    institutionUpdates: {
+      type: "string",
+      description:
+        "Compact newline-separated formal institution/membership lifecycle updates. Empty string when no institution is created/dissolved and no polity joins, leaves, is suspended/restored, or changes leadership role. Record format is documented in the live prompt.",
+    },
   },
   // clearActions is deliberately NOT required: simulateTimelineJump already
   // reads it as `payload?.clearActions !== false`, so a missing value already
@@ -1296,18 +1301,18 @@ const canonicalUpdateSchema = {
     kind: {
       type: "string",
       description:
-        "Semantic kind code. Use relation; storyline:active; storyline:dormant; war:start; war:join-a; war:join-b; war:leave; war:ceasefire; war:resume; war:end; agreement:start.",
+        "Semantic kind code. Use relation; storyline:active; storyline:dormant; war:start; war:join-a; war:join-b; war:leave; war:ceasefire; war:resume; war:end; agreement:start; institution:active.",
     },
-    id: { type: "string", description: "Stable storyline/war/agreement id, or empty for a relation." },
+    id: { type: "string", description: "Stable storyline/war/agreement/institution id, or empty for a relation." },
     polities: {
       type: "array",
       description:
-        "Primary polities. Relation: exactly [A,B]. Storyline: participants. War: actors / side A. Agreement: parties.",
+        "Primary polities. Relation: exactly [A,B]. Storyline: participants. War: actors / side A. Agreement: parties. Institution: current members.",
       items: { type: "string" },
     },
     opponents: {
       type: "array",
-      description: "War opponents / side B; empty for non-war items.",
+      description: "War opponents / side B. Institution: leading members (subset of polities). Empty for other kinds.",
       items: { type: "string" },
     },
     score: {
@@ -1324,19 +1329,19 @@ const canonicalUpdateSchema = {
     },
     date: {
       type: "string",
-      description: "Storyline start date YYYY-MM-DD when known; empty for other kinds.",
+      description: "Storyline start date; agreement start/effective date; or institution founding/establishment date (YYYY-MM-DD when known). Empty when irrelevant.",
     },
     category: {
       type: "string",
-      description: "Storyline process kind (war, crisis, revolution, diplomacy, politics, economy) or agreement type (alliance, mutual_defense, guarantee, non_aggression, friendship_consultation, trade_economic, military_cooperation, military_access, neutrality, peace_settlement, other); otherwise empty.",
+      description: "Storyline process kind; agreement type; or institution kind (security_alliance, defense_pact, political_union, economic_union, regional_bloc, international_organization, consultative_group, other). Otherwise empty.",
     },
     title: {
       type: "string",
-      description: "Agreement or storyline title when relevant; otherwise empty.",
+      description: "Agreement, institution or storyline title when relevant; otherwise empty.",
     },
     detail: {
       type: "string",
-      description: "Relation summary, war note, agreement terms, or storyline state (what is true now and why the process is unresolved).",
+      description: "Relation summary, war note, agreement terms, institution note, or storyline state (what is true now and why the process is unresolved).",
     },
   },
   required: [
@@ -1370,13 +1375,130 @@ export const PREGAME_HISTORY_SCHEMA = {
     canonicalUpdates: {
       type: "array",
       description:
-        "Wars, bilateral relations and formal agreements ALREADY TRUE on the start date. Empty array only when no such Day-1 state exists. The engine dispatches and binds every item.",
+        "Wars, bilateral relations, formal agreements, major institutions/memberships and unresolved storylines ALREADY TRUE on the start date. Empty array only when no such Day-1 state exists. The engine dispatches and binds every item.",
       maxItems: 32,
       items: canonicalUpdateSchema,
     },
   },
   required: ["events", "summary"],
   additionalProperties: false,
+};
+
+
+// Provider transport for Round Zero. Gemini rejects some nested function
+// declaration schemas with a flat HTTP 400 "Request contains an invalid argument."
+// Keep the in-app payload fully structured, but send the two nested arrays as
+// JSON strings through a deliberately shallow tool contract. Native code
+// decodes them immediately and validates against PREGAME_HISTORY_SCHEMA before
+// any event or canonical ledger state is written.
+export const PREGAME_HISTORY_TRANSPORT_SCHEMA = {
+  type: "object",
+  description: "Gemini-safe shallow transport for the Round-Zero pre-game bootstrap using the current timeline event contract.",
+  properties: {
+    eventsJson: textSchema(
+      "JSON array text containing 4-10 pre-game event objects. Each object uses date, title, description, importance, kind, tags and warId. importance MUST be the string minor or major. tags MUST be an array of up to three values chosen only from Military, Diplomacy, Economy, Politics, Culture, Disaster. Use valid JSON only.",
+    ),
+    summary: textSchema("One-paragraph summary of the era leading into the start date."),
+    canonicalUpdatesJson: textSchema(
+      "JSON array text for canonical Day-1 relation/storyline/war/agreement/institution facts. Each object uses the flat canonicalUpdates fields described in the prompt. Use [] when none.",
+    ),
+  },
+  required: ["eventsJson", "summary", "canonicalUpdatesJson"],
+  additionalProperties: false,
+};
+
+const parsePregameTransportArray = (value, field) => {
+  if (Array.isArray(value)) return value;
+  const text = String(value ?? "").trim();
+  if (!text) return [];
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (error) {
+    throw new Error(`$.${field} must contain valid JSON array text: ${error?.message || error}.`);
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error(`$.${field} must decode to a JSON array.`);
+  }
+  return parsed;
+};
+
+const normalizePregameImportance = (value) => {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    // Compatibility with older/looser producers that treated importance as a
+    // numeric salience. Convert at the provider boundary; canonical timeline
+    // events still store the released-beta string contract. Support the common
+    // 0..1, 1..5 and 0..100 scales without exposing numeric importance downstream.
+    if (value >= 0 && value < 1) return value >= 0.6 ? "major" : "minor";
+    if (value >= 1 && value <= 5) return value >= 3 ? "major" : "minor";
+    if (value >= 0 && value <= 100) return value >= 60 ? "major" : "minor";
+    return value > 0 ? "major" : "minor";
+  }
+
+  const text = String(value ?? "").trim();
+  if (!text) return "";
+  const normalized = text.toLowerCase();
+  if (["critical", "high", "very high", "important"].includes(normalized)) return "major";
+  if (["moderate", "medium", "normal", "low", "very low"].includes(normalized)) return "minor";
+  return normalized === "major" || normalized === "minor" ? normalized : text;
+};
+
+const normalizePregameEventContract = (entry) => {
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) return entry;
+  const event = normalizeEventShape(entry);
+
+  // The released beta owns the visible event-tag vocabulary. The runtime save
+  // normalizer already drops unknown tags; do the same at this provider seam so
+  // one stale/creative tag cannot discard the entire Round-Zero bootstrap.
+  if (event.tags !== undefined) event.tags = normalizeEventTags(event.tags);
+
+  if (event.importance !== undefined) {
+    event.importance = normalizePregameImportance(event.importance);
+  }
+  if (event.kind !== undefined) event.kind = String(event.kind ?? "").trim();
+  if (event.warId !== undefined) event.warId = String(event.warId ?? "").trim();
+  return event;
+};
+
+const normalizePregameHistoryInternalPayload = (value) => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  return {
+    ...value,
+    ...(Array.isArray(value.events)
+      ? { events: value.events.map(normalizePregameEventContract) }
+      : {}),
+  };
+};
+
+export const decodePregameHistoryTransportPayload = (value) => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { payload: value, error: "" };
+  }
+
+  const isTransport = Object.prototype.hasOwnProperty.call(value, "eventsJson")
+    || Object.prototype.hasOwnProperty.call(value, "canonicalUpdatesJson");
+  if (!isTransport) {
+    // Raw/local providers may already return the internal structured payload;
+    // normalize their event metadata to the same current timeline contract.
+    return { payload: normalizePregameHistoryInternalPayload(value), error: "" };
+  }
+
+  try {
+    const payload = {
+      events: parsePregameTransportArray(value.eventsJson, "eventsJson"),
+      summary: String(value.summary ?? "").trim(),
+      canonicalUpdates: parsePregameTransportArray(value.canonicalUpdatesJson, "canonicalUpdatesJson"),
+    };
+    return {
+      payload: normalizePregameHistoryInternalPayload(payload),
+      error: "",
+    };
+  } catch (error) {
+    return {
+      payload: null,
+      error: String(error?.message || error || "Invalid pre-game history transport payload."),
+    };
+  }
 };
 
 // The idle-time diplomatic drip: while the player sits between jumps, a polity
@@ -1593,6 +1715,24 @@ const gmAgreementUpdateSchema = {
   additionalProperties: false,
 };
 
+const gmInstitutionUpdateSchema = {
+  type: "object",
+  description: "One canonical institution or membership lifecycle operation for world.institutions.",
+  properties: {
+    id: nonEmptyTextSchema("Stable institution id. Reuse it for later membership/lifecycle operations."),
+    op: { type: "string", enum: ["create", "join", "leave", "suspend", "restore", "role", "dissolve"] },
+    polity: textSchema("Polity affected by join/leave/suspend/restore/role; blank for create/dissolve."),
+    status: { type: "string", enum: ["", "member", "candidate", "associate", "observer", "suspended"] },
+    role: { type: "string", enum: ["", "leader", "leading-member", "member"] },
+    eventIndexes: gmEventIndexesSchema,
+    name: textSchema("Canonical institution name; required for create."),
+    kind: { type: "string", enum: ["", "security_alliance", "defense_pact", "political_union", "economic_union", "regional_bloc", "international_organization", "consultative_group", "other"] },
+    note: textSchema("Compact durable membership/lifecycle note."),
+  },
+  required: ["id", "op", "polity", "status", "role", "eventIndexes", "name", "kind", "note"],
+  additionalProperties: false,
+};
+
 const gmCountryStatPatchSchema = {
   type: "object",
   description:
@@ -1721,6 +1861,12 @@ export const GAME_MASTER_SCHEMA = {
       maxItems: 12,
       items: gmAgreementUpdateSchema,
     },
+    institutionUpdates: {
+      type: "array",
+      description: "Structured formal institution/membership lifecycle changes.",
+      maxItems: 20,
+      items: gmInstitutionUpdateSchema,
+    },
     diplomaticOutreach: {
       type: "array",
       description: "Direct NPC-to-player chats not attached to one specific authored event.",
@@ -1737,6 +1883,7 @@ export const GAME_MASTER_SCHEMA = {
     "warUpdates",
     "relationUpdates",
     "agreementUpdates",
+    "institutionUpdates",
     "diplomaticOutreach",
   ],
   additionalProperties: false,
@@ -1763,6 +1910,7 @@ export const GAME_MASTER_TRANSPORT_SCHEMA = {
     warUpdatesJson: textSchema("JSON array text for structured world.wars lifecycle operations. Use [] when none."),
     relationUpdatesJson: textSchema("JSON array text for structured world.relations operations. Use [] when none."),
     agreementUpdatesJson: textSchema("JSON array text for structured world.agreements lifecycle operations. Use [] when none."),
+    institutionUpdatesJson: textSchema("JSON array text for structured world.institutions membership/lifecycle operations. Use [] when none."),
     diplomaticOutreachJson: textSchema("JSON array text for direct NPC-to-player diplomatic outreach. Use [] when none."),
   },
   required: [
@@ -1774,6 +1922,7 @@ export const GAME_MASTER_TRANSPORT_SCHEMA = {
     "warUpdatesJson",
     "relationUpdatesJson",
     "agreementUpdatesJson",
+    "institutionUpdatesJson",
     "diplomaticOutreachJson",
   ],
   additionalProperties: false,
@@ -1786,6 +1935,7 @@ const GAME_MASTER_TRANSPORT_FIELDS = Object.freeze([
   ["warUpdatesJson", "warUpdates"],
   ["relationUpdatesJson", "relationUpdates"],
   ["agreementUpdatesJson", "agreementUpdates"],
+  ["institutionUpdatesJson", "institutionUpdates"],
   ["diplomaticOutreachJson", "diplomaticOutreach"],
 ]);
 
@@ -2622,8 +2772,8 @@ export const IDLE_DIPLOMACY_TOOL = makeTool(
 
 export const PREGAME_HISTORY_TOOL = makeTool(
   "submit_pregame_history",
-  "Submit the pre-game backstory events that led up to the campaign's start date.",
-  PREGAME_HISTORY_SCHEMA,
+  "Submit the Gemini-safe shallow Round-Zero transport. Encode current-contract timeline events and canonical updates as JSON array strings; native code normalizes, decodes and validates them before writing.",
+  PREGAME_HISTORY_TRANSPORT_SCHEMA,
 );
 
 export const SPY_INTERCEPT_TOOL = makeTool(
