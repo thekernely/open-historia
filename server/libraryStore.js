@@ -549,6 +549,11 @@ const TEMPLATE_WORLD_OVERRIDE_KEYS = [
   "politicalActors",
   "institutions",
   "powerStatus",
+  // Only explicitly authored starting Statistics and population flows are seeded.
+  "countryStats",
+  "migrationFlows",
+  "territorialSets",
+  "territorialCalibrationReviews",
   "agreements",
   "units",
   // What the Workshop authors besides the map: structures (markers), puppet
@@ -1160,7 +1165,8 @@ const scenarioLooksLikeRuntimeSnapshot = ({ actions, chat, game, world }) => {
   Boolean(normalizeSnapshotString(world?.lastJumpTargetDate)) ||
   (Array.isArray(world?.simulationHistory) && world.simulationHistory.length > 0);
 
-  return hasResolvedActions || hasChatTranscript || hasTimelineProgress;
+  const hasStatsReceipts = Array.isArray(world?.statsEventReceipts) && world.statsEventReceipts.length > 0;
+  return hasResolvedActions || hasChatTranscript || hasTimelineProgress || hasStatsReceipts;
 };
 
 const buildFreshGameSeedFromScenario = ({ baseGame, scenarioGame }) => {
@@ -1213,6 +1219,11 @@ const buildFreshWorldSeedFromScenario = ({ baseWorld, scenarioWorld }) => {
     nextWorld[key] = cloneJson(scenarioWorld[key]);
   }
 
+  // Default-world numeric Stats are not another scenario's starting values.
+  if (!Object.prototype.hasOwnProperty.call(scenarioWorld ?? {}, "countryStats")) delete nextWorld.countryStats;
+  if (!Object.prototype.hasOwnProperty.call(scenarioWorld ?? {}, "migrationFlows")) delete nextWorld.migrationFlows;
+  delete nextWorld.countryStatsHistory;
+  delete nextWorld.statsEventReceipts;
   return nextWorld;
 };
 
@@ -1274,6 +1285,13 @@ const seedScenarioJsonFilesFromScenario = (scenarioId, sourceScenarioId) => {
       );
     }
 
+    const scenarioWorldPath = getScenarioJsonPath(scenarioId, "world");
+    const scenarioWorld = cloneJson(scenarioSnapshot.world);
+    if (scenarioWorld && typeof scenarioWorld === "object" && !Array.isArray(scenarioWorld)) {
+      delete scenarioWorld.countryStatsHistory;
+      delete scenarioWorld.statsEventReceipts;
+      writeJsonFile(scenarioWorldPath, scenarioWorld);
+    }
     copyScenarioOptionalAssets(scenarioId, sourceScenarioId);
     return;
   }
@@ -1337,6 +1355,13 @@ const seedGameJsonFilesFromScenario = (gameId, scenarioId) => {
                    getGameJsonPath(gameId, assetKey),
                    JSON_ASSET_DEFAULTS[assetKey],
       );
+    }
+    const gameWorldPath = getGameJsonPath(gameId, "world");
+    const gameWorld = cloneJson(scenarioSnapshot.world);
+    if (gameWorld && typeof gameWorld === "object" && !Array.isArray(gameWorld)) {
+      delete gameWorld.countryStatsHistory;
+      delete gameWorld.statsEventReceipts;
+      writeJsonFile(gameWorldPath, gameWorld);
     }
     copyScenarioOptionalJsonAssetsToGame(gameId, scenarioId);
     return;

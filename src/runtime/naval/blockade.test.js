@@ -31,6 +31,7 @@ import {
   withTurnBlockades,
 } from "./blockade.js";
 import { NAVAL_REACH_KM, runNaval } from "./engine.js";
+import { deriveDatedBlockadeCharges } from "../statsNavalEconomicPort.js";
 
 const war = (extra = {}) => ({ id: "war-1", status: "active", sideA: ["Albion"], sideB: ["Teutonia"], ...extra });
 const fleet = (id, name, ownerCode, lng, lat, extra = {}) => ({ id, name, type: "naval", ownerCode, strength: 100, lng, lat, posture: "patrol", ...extra });
@@ -250,4 +251,104 @@ test("under a blockade, a place on a frozen coast is shut by the ice; ice alone 
   assert.deepEqual(dayPressure({ stations, blockaders: [strong], reach: 100, km, seaShare: 1 }), { pressure: 0.5, covered: 0.5 });
   assert.deepEqual(dayPressure({ stations, blockaders: [strong], reach: 100, km, seaShare: 1, iced }), { pressure: 1, covered: 0.5 }, "the fleet closes half, the ice the rest");
   assert.deepEqual(dayPressure({ stations, blockaders: [], reach: 100, km, seaShare: 1, iced }), { pressure: 0, covered: 0 });
+});
+
+test("naval blockade periods cover real civil months and preserve total daily pressure", () => {
+  const map = narrowSea();
+  const units = [fleet("period-fleet", "Grand Fleet", "Albion", 6.25, 52.25, { posture: "blockade" })];
+  const result = sea(units, map, { fromDate: "1914-08-27", days: 12 });
+  const periods = result.blockadePeriods;
+  assert.deepEqual(periods.map(({ country, fromDate, toDate, days, activeDays }) =>
+    [country, fromDate, toDate, days, activeDays]), [
+    ["Teutonia", "1914-08-28", "1914-08-31", 4, 4],
+    ["Teutonia", "1914-09-01", "1914-09-08", 8, 8],
+  ]);
+  const average = periods.reduce((sum, period) => sum + period.pressure * period.days, 0) / 12;
+  assert.ok(Math.abs(average - laid(result).pressure) < .0006, "month boundaries must not create or remove blockade pressure");
+  assert.deepEqual(periods.map(({ by }) => by), [["Albion"], ["Albion"]]);
+  assert.deepEqual(sea(units, map, { fromDate: "1914-08-27", days: 12 }).blockadePeriods, periods,
+    "replaying a period yields identical dated observations");
+  assert.deepEqual(sea(units.map((unit) => ({ ...unit, posture: "patrol" })), map, { fromDate: "1914-08-27", days: 12 }).blockadePeriods, [],
+    "a fleet that is not blockading does not generate spurious monthly shocks");
+});
+
+test("each real naval pressure-day is preserved exactly for future event-dated settlement", () => {
+  const map = narrowSea();
+  const units = [fleet("daily-fleet", "Grand Fleet", "Albion", 6.25, 52.25, { posture: "blockade" })];
+  const result = sea(units, map, { fromDate: "1914-08-27", days: 12 });
+  const daily = result.blockadeDays;
+  assert.equal(daily.length, 12);
+  assert.deepEqual([daily[0].date, daily.at(-1).date], ["1914-08-28", "1914-09-08"]);
+  assert.ok(daily.every((item) => item.country === "Teutonia" && item.pressure > 0 && item.by[0] === "Albion"));
+  const monthlySum = result.blockadePeriods.reduce((sum, part) => sum + part.days * part.pressure, 0);
+  const dailySum = daily.reduce((sum, entry) => sum + entry.pressure, 0);
+  assert.ok(Math.abs(dailySum - monthlySum) < 1e-12,
+    "daily pressure must reconcile with the existing month's exact unrounded mean");
+  const [projected] = deriveDatedBlockadeCharges({
+    fromDate: "1914-08-27", toDate: "1914-09-08", blockadeDays: daily,
+  });
+  assert.equal(projected.country, "Teutonia");
+  assert.equal(projected.activeDays, 12);
+  assert.ok(Math.abs(projected.pressureDays - dailySum) < 1e-12);
+  assert.ok(projected.gdpFactor < 1 && projected.budgetBalanceDelta < 0,
+    "read-only projector accepts the real engine observation without writing a Stats sheet");
+  assert.deepEqual(sea(units, map, { fromDate: "1914-08-27", days: 12 }).blockadeDays, daily);
+  assert.deepEqual(sea(units.map((unit) => ({ ...unit, posture: "patrol" })), map,
+    { fromDate: "1914-08-27", days: 12 }).blockadeDays, []);
+  assert.equal(sea(units, { world: map.world, grid: null }).blockadeDays, null,
+    "unknown geometry is not absence of naval economic pressure");
+});
+
+test("naval blockade periods account for days after a blockade was lifted, without future phantom debits", () => {
+  const map = narrowSea(["AAA~~~~BBB~~", "AAA~~~~BBB~~", "AAA~~~~BBB~~", "AAA~~~~BBB~~"]);
+  const units = [
+    fleet("u1", "Light Squadron", "Albion", 6.25, 52.25, { posture: "blockade", strength: 45 }),
+    fleet("u2", "High Seas Fleet", "Teutonia", 6.75, 53.25, { posture: "assaulting" }),
+  ];
+  const result = sea(units, map, { days: 60 });
+  assert.ok(result.battles.length > 0, "the blockader is challenged in this fixture");
+  const byPeriod = result.blockadePeriods;
+  assert.equal(byPeriod.length, 2, "the observed span includes the month after the blockade was lifted");
+  for (const period of byPeriod) {
+    assert.ok(period.days >= period.activeDays && period.activeDays >= 0);
+    assert.ok(period.fromDate <= period.toDate);
+    assert.ok(period.pressure >= 0 && period.pressure <= 1);
+  }
+  assert.equal(byPeriod[1].pressure, 0, "a fully liberated month is explicit zero evidence");
+  assert.equal(byPeriod[1].activeDays, 0);
+  const aggregatePressure = result.blockades.find(({ country }) => country === "Teutonia")?.pressure ?? 0;
+  const integrated = byPeriod.reduce((sum, period) => sum + period.pressure * period.days, 0) / 60;
+  assert.ok(Math.abs(integrated - aggregatePressure) < .0006,
+    "an interrupted blockade must retain the same time-weighted pressure as the existing war engine");
+  assert.equal(sea(units, { world: map.world, grid: null }).blockadePeriods, null,
+    "missing authoritative coast geography is unknown evidence, not zero blockade pressure");
+});
+
+test("dated observations preserve sub-threshold pressure without changing the legacy blockade rule", () => {
+  const map = narrowSea();
+  const fleetAtSea = fleet("weak", "Weak Fleet", "Albion", 6.25, 52.25, { posture: "blockade", strength: 0.5 });
+  const result = sea([fleetAtSea], map);
+  assert.deepEqual(result.blockades, [], "the legacy naval threshold refuses this insignificant pressure");
+  assert.ok(result.blockadePeriods.length === 1 && result.blockadePeriods[0].pressure > 0,
+    "the dated evidence preserves the raw pressure even when the old aggregated game rule discards it");
+  assert.ok(result.blockadePeriods[0].pressure < BLOCKADE_LEAST,
+    "raw observation is not permission to bypass the old economic threshold");
+});
+
+test("a blockade lifted early survives a long turn's whole-period threshold and reports later zero months", () => {
+  const map = narrowSea(["AAA~~~~BBB~~", "AAA~~~~BBB~~", "AAA~~~~BBB~~", "AAA~~~~BBB~~"]);
+  const units = [
+    fleet("u1", "Light Squadron", "Albion", 6.25, 52.25, { posture: "blockade", strength: 45 }),
+    fleet("u2", "High Seas Fleet", "Teutonia", 6.75, 53.25, { posture: "assaulting" }),
+  ];
+  const short = sea(units, map, { days: 30 });
+  const long = sea(units, map, { days: 365 });
+  assert.ok(short.blockades.length > 0 && long.blockades.length === 0,
+    "the historic whole-turn threshold remains unchanged and is demonstrably duration-sensitive");
+  assert.ok(long.blockadePeriods.length > 2, "long observation retains months after the blockade is lifted");
+  assert.deepEqual(long.blockadePeriods[0], short.blockadePeriods[0],
+    "the August dated evidence must not disappear when a longer skip is requested");
+  assert.ok(long.blockadePeriods.slice(1).every((period) => period.pressure === 0 && period.activeDays === 0),
+    "zero-pressure months are expressly observed, not guessed from absent entries");
+  assert.ok(long.blockadePeriods.every((period) => period.country === "Teutonia"));
 });

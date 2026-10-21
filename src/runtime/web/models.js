@@ -315,7 +315,8 @@ export const scenarioLooksLikeRuntimeSnapshot = ({ actions, chat, world }) => {
   const hasTimelineProgress =
     Boolean(normStr(world?.lastJumpMode)) || Boolean(normStr(world?.lastJumpSummary)) ||
     Boolean(normStr(world?.lastJumpTargetDate)) || (Array.isArray(world?.simulationHistory) && world.simulationHistory.length > 0);
-  return hasResolvedActions || hasChatTranscript || hasTimelineProgress;
+  const hasStatsReceipts = Array.isArray(world?.statsEventReceipts) && world.statsEventReceipts.length > 0;
+  return hasResolvedActions || hasChatTranscript || hasTimelineProgress || hasStatsReceipts;
 };
 
 export const buildFreshGameSeedFromScenario = ({ baseGame, scenarioGame }) => {
@@ -346,6 +347,10 @@ export const buildFreshWorldSeedFromScenario = ({ baseWorld, scenarioWorld }) =>
     if (!(key in (scenarioWorld ?? {}))) continue;
     nextWorld[key] = cloneJson(scenarioWorld[key]);
   }
+  if (!Object.prototype.hasOwnProperty.call(scenarioWorld ?? {}, "countryStats")) delete nextWorld.countryStats;
+  if (!Object.prototype.hasOwnProperty.call(scenarioWorld ?? {}, "migrationFlows")) delete nextWorld.migrationFlows;
+  delete nextWorld.countryStatsHistory;
+  delete nextWorld.statsEventReceipts;
   return nextWorld;
 };
 

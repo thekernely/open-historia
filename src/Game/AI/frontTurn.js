@@ -1269,6 +1269,16 @@ export const runTurnFronts = async ({
       const ordered = new Set(list.flatMap((event) => asArray(event?.impacts?.unitOps).map((op) => clean(op?.unit?.id ?? op?.unitId ?? op?.id)).filter(Boolean)));
       const admiral = typeof staffPolicy === "function" ? chooseFleetPostures(seaInput, { players, kept: ordered }) : null;
       sea = runNaval(admiral ? { ...seaInput, units: admiral.units } : seaInput);
+      // The naval run uses the opening war roster and opening coastal map.
+      // War transitions, control/sovereignty operations and land-front flips
+      // can invalidate the day's hostility/coast even when the fleet simulation
+      // itself ran normally. Reject BOTH economic evidence views together;
+      // the existing sea battles and legacy blockade GDP logic stay untouched.
+      if (moments.some((moment) => moment.type === "war" || moment.type === "control")
+        || asArray(result?.flips).length > 0) {
+        sea.blockadePeriods = null;
+        sea.blockadeDays = null;
+      }
       // What the admiral chose is what the world keeps (unless the war at sea sank the fleet or broke it off).
       if (admiral) {
         for (const [unitId, posture] of admiral.chosen) {
@@ -1378,7 +1388,7 @@ export const runTurnFronts = async ({
     // (A formation the land war took up this period is the land war's: the sea says nothing more of it.)
     unitChanges: [...asArray(result.unitChanges), ...asArray(sea?.unitChanges).filter((change) => !asArray(result.unitChanges).some((entry) => clean(entry?.unitId) === clean(change?.unitId)))],
     // What the period came to at sea: its battles, the fleets as it leaves them, and any commissioned (runtime/naval/engine.js).
-    sea: sea ? { battles: asArray(sea.battles), fleets: asArray(sea.fleets), commissioned: asArray(sea.commissioned), raised: asArray(sea.raised), blockades: asArray(sea.blockades), fromDate, days: sea.days } : null,
+    sea: sea ? { battles: asArray(sea.battles), fleets: asArray(sea.fleets), commissioned: asArray(sea.commissioned), raised: asArray(sea.raised), blockades: asArray(sea.blockades), blockadePeriods: sea.blockadePeriods === null ? null : asArray(sea.blockadePeriods), blockadeDays: sea.blockadeDays === null ? null : asArray(sea.blockadeDays), fromDate, days: sea.days } : null,
     notes,
     flips: asArray(result.flips),
     stats: result.stats ?? null,

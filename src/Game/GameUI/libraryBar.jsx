@@ -59,6 +59,7 @@ import { compactWarSettings } from "./scenarioWarSettings.js";
 import { militaryDefaultsFor } from "../../Editor/militaryForm.js";
 import ScenarioMusicPanel, { ScenarioMusicCredits } from "./ScenarioMusicPanel.jsx";
 import { normalizeScenarioMusic } from "../../runtime/scenarioMusic.js";
+const ScenarioStatsAuthoringPanel = lazy(() => import("./ScenarioStatsAuthoringPanel.jsx"));
 const PoliticalWorldAuthoringPanel = lazy(() => import("./PoliticalWorldAuthoringPanel.jsx"));
 const PoliticalWorldGenerationPanel = lazy(() => import("./PoliticalWorldGenerationPanel.jsx"));
 import { isFeatureEnabled, normalizeFeatureOverrides, normalizeFeatureSettings } from "../../runtime/gameFeatures.js";
@@ -78,6 +79,8 @@ import { buildGameZipBlob, formatZipSize, readGameZip, saveGameZipToDisk } from 
 import { findScenarioCopyOfBundle } from "../../runtime/importedScenarioCopy.js";
 import { createLatestRequest } from "../../runtime/latestRequest.js";
 import { changedFields, followSavedFields, formDiffers } from "../../runtime/editorForm.js";
+import { editorDetailsIssue } from "../../runtime/editorDetailsIntegrity.js";
+import { logDebugEvent } from "../../runtime/debugLog.js";
 import { createActivationHandOff } from "../../runtime/afterActivation.js";
 import { createWorkInProgress } from "../../runtime/workInProgress.js";
 import { buildScenarioCountryOptions, isOfferedCountry, seededWorldOf, worldWithFaction, worldWithPlayerGroup } from "../../runtime/newGameWorld.js";
@@ -1940,6 +1943,9 @@ const EditorDrawer = ({
   setPromptSectionKey,
   statsValue,
   onStatsChange,
+  statsDefinitionDirty = false,
+  statsDefinitionUnavailable = false,
+  onStatsAuthoringDirtyChange,
   communityCard = null,
   onSuggestChanges = null,
   countryOptions = [],
@@ -1951,6 +1957,9 @@ const EditorDrawer = ({
   }
 
   const record = kind === "scenario" ? details.scenario : details.game;
+  // If an inconsistent async response arrived, keep the world mounted instead
+  // of crashing the full application while trying to render an absent record.
+  if (!record) return null;
   const visibleSections =
     kind === "scenario"
       ? ["overview", "world", "history", "fronts", "politics", "stats", "features", "prompts", "assets", "music", "bundles"]
@@ -2410,11 +2419,26 @@ const EditorDrawer = ({
 
       {editorSection === "stats" && kind === "scenario" && (
         <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "18px", marginBottom: "0.95rem", padding: "0.9rem" }}>
-          <div style={{ color: "rgba(255,255,255,0.92)", fontSize: "0.92rem", fontWeight: 800, marginBottom: "0.2rem" }}>National Stats</div>
-          <div style={{ color: "rgba(255,255,255,0.46)", fontSize: "0.7rem", lineHeight: 1.45, marginBottom: "0.8rem" }}>
-            Define the entire National Stats sheet for this scenario. Sections, values, units, order, icons, colours and AI guidance are scenario data and travel with exports.
+          <div style={{ color: "rgba(255,255,255,0.92)", fontSize: "0.92rem", fontWeight: 800, marginBottom: "0.2rem" }}>Starting Country Statistics</div>
+          <div style={{ color: "rgba(255,255,255,0.62)", fontSize: "0.78rem", lineHeight: 1.5, marginBottom: "0.8rem" }}>
+            Set the starting numbers new campaigns inherit. Create map-backed estimates manually, or review bounded AI proposals before saving them to the scenario.
           </div>
-          <StatsSheetEditor value={statsValue} onChange={onStatsChange} />
+          <Suspense fallback={<div style={{ color: "#cbd5e1", padding: "1rem" }}>Loading Statistics authoring tools…</div>}>
+            <ScenarioStatsAuthoringPanel
+              details={details}
+              formState={formState}
+              countryOptions={countryOptions}
+              statsValue={statsValue}
+              statsDefinitionDirty={statsDefinitionDirty}
+              statsDefinitionUnavailable={statsDefinitionUnavailable}
+              onDetailsChange={onDetailsChange}
+              onDirtyChange={onStatsAuthoringDirtyChange}
+            />
+          </Suspense>
+          <details style={{ marginTop: "1rem", border: "1px solid rgba(255,255,255,0.12)", borderRadius: "12px", padding: "0.85rem" }}>
+            <summary style={{ cursor: "pointer", color: "#e4e4e7", fontWeight: 750 }}>Advanced - Customize full Statistics sheet</summary>
+            <div style={{ marginTop: "0.8rem" }}><StatsSheetEditor value={statsValue} onChange={onStatsChange} /></div>
+          </details>
         </div>
       )}
 
@@ -2677,6 +2701,7 @@ const LibraryTopBar = ({ onOpenSettings }) => {
   };
   // The open scenario's Stats sheet failed to download: Save leaves it alone.
   const [editorStatsFailed, setEditorStatsFailed] = useState(false);
+  const [editorStatsAuthoringDirty, setEditorStatsAuthoringDirty] = useState(false);
   const [editorError, setEditorError] = useState(null);
   // What delete moved to the trash (GET /api/trash), for the Recently deleted
   // shelves and the delete confirmation. null until it loads, and where the
@@ -2718,6 +2743,7 @@ const LibraryTopBar = ({ onOpenSettings }) => {
     setEditorState(null);
     adoptSavedStats(normalizeStatsEditorValue(null));
     setEditorStatsFailed(false);
+    setEditorStatsAuthoringDirty(false);
     setEditorError(null);
     setEditorSection("overview");
     setPromptSectionKey("leader");
@@ -2730,10 +2756,19 @@ const LibraryTopBar = ({ onOpenSettings }) => {
     const unsaved = Boolean(editorKind && editorDetails && editorState) && (
       formDiffers(editorState, editorKind === "scenario" ? buildScenarioEditorState(editorDetails) : buildGameEditorState(editorDetails))
       || formDiffers(editorStats, editorStatsSavedRef.current)
+      || editorStatsAuthoringDirty
     );
     if (unsaved && !window.confirm("Close the editor? The changes you have not saved will be lost.")) return false;
     resetEditor();
     return true;
+  };
+
+  const navigateEditorSection = (nextSection) => {
+    if (editorSection === "stats" && nextSection !== "stats" && editorStatsAuthoringDirty) {
+      if (!window.confirm("Unsaved edits and unapplied AI proposals will be lost. Leave Statistics?")) return;
+      setEditorStatsAuthoringDirty(false);
+    }
+    setEditorSection(nextSection);
   };
 
   const openScenarioEditor = async (scenarioId) => {
@@ -2752,6 +2787,8 @@ const LibraryTopBar = ({ onOpenSettings }) => {
           return null;
         }),
       ]);
+      const issue = editorDetailsIssue({ kind: "scenario", expectedId: scenarioId, details });
+      if (issue) throw new Error(`Scenario editor details could not be verified (${issue}).`);
       setEditorKind("scenario");
       setEditorDetails(details);
       setEditorState(buildScenarioEditorState(details));
@@ -2768,6 +2805,7 @@ const LibraryTopBar = ({ onOpenSettings }) => {
       });
       adoptSavedStats(normalizeStatsEditorValue(statsAsset));
       setEditorStatsFailed(statsFailed);
+      setEditorStatsAuthoringDirty(false);
       if (statsFailed) setEditorError("This scenario's Stats sheet could not be loaded, so Save leaves it as it is. Close the editor and open it again to edit it.");
       setEditorSection("overview");
       setPromptSectionKey("leader");
@@ -2784,6 +2822,8 @@ const LibraryTopBar = ({ onOpenSettings }) => {
 
     try {
       const details = await loadGameDetails(gameId);
+      const issue = editorDetailsIssue({ kind: "game", expectedId: gameId, details });
+      if (issue) throw new Error(`Game editor details could not be verified (${issue}).`);
       setEditorKind("game");
       setEditorDetails(details);
       setEditorState(buildGameEditorState(details));
@@ -3632,6 +3672,10 @@ const LibraryTopBar = ({ onOpenSettings }) => {
       return;
     }
 
+    if (editorKind === "scenario" && editorStatsAuthoringDirty) {
+      setEditorError("Save or discard the unsaved country Statistics edits and AI proposals before saving the scenario.");
+      return;
+    }
     setEditorError(null);
     setIsBusy(true);
 
@@ -3697,6 +3741,8 @@ const LibraryTopBar = ({ onOpenSettings }) => {
           }
           adoptSavedStats(normalizeStatsEditorValue(null));
         }
+        const issue = editorDetailsIssue({ kind: "scenario", expectedId: editorDetails.scenario.id, details });
+        if (issue) throw new Error(`Saved scenario details could not be verified (${issue}). Reopen the editor.`);
         setEditorDetails(details);
         setEditorState(buildScenarioEditorState(details));
       } else {
@@ -3727,6 +3773,8 @@ const LibraryTopBar = ({ onOpenSettings }) => {
           subtitle: editorState.subtitle,
           ...(Object.keys(worldPatch).length ? { worldPatch } : null),
         });
+        const issue = editorDetailsIssue({ kind: "game", expectedId: editorDetails.game.id, details });
+        if (issue) throw new Error(`Saved game details could not be verified (${issue}). Reopen the editor.`);
         setEditorDetails(details);
         setEditorState(buildGameEditorState(details));
       }
@@ -5425,7 +5473,19 @@ const LibraryTopBar = ({ onOpenSettings }) => {
         onExportPrompts={handleExportPrompts}
         onImportPrompts={handleImportPrompts}
         onDetailsChange={(nextDetails) => {
-          setEditorDetails(nextDetails);
+          const expectedId = editorKind === "scenario" ? editorScenarioIdRef.current : editorDetails?.game?.id;
+          const issue = editorDetailsIssue({ kind: editorKind, expectedId, details: nextDetails });
+          if (issue) {
+            logDebugEvent("error", "Rejected inconsistent editor details", { kind: editorKind, expectedId, issue }, { problem: true });
+            setEditorError(`Saved editor details could not be verified (${issue}). Reopen the editor.`);
+            // Let the originating action retain its draft; do not publish the
+            // wrong type of record into the editor (or into its next Save).
+            throw new Error(`Saved editor details could not be verified (${issue}).`);
+          }
+          setEditorDetails((current) => {
+            if (editorDetailsIssue({ kind: editorKind, expectedId, details: current })) return current;
+            return nextDetails;
+          });
           setEditorState((current) => current ? { ...current } : current);
         }}
         onOpenMapEditor={() => openMapEditorFor(editorDetails?.scenario || null, editorDetails?.data?.world ?? {}, {
@@ -5453,10 +5513,13 @@ const LibraryTopBar = ({ onOpenSettings }) => {
         onOpenFileDialog={(assetKey) => assetFileInputsRef.current[assetKey]?.click()}
         onSave={handleSave}
         promptSectionKey={promptSectionKey}
-        setEditorSection={setEditorSection}
+        setEditorSection={navigateEditorSection}
         setPromptSectionKey={setPromptSectionKey}
         statsValue={editorStats}
         onStatsChange={setEditorStats}
+        statsDefinitionDirty={formDiffers(editorStats, editorStatsSavedRef.current)}
+        statsDefinitionUnavailable={editorStatsFailed}
+        onStatsAuthoringDirtyChange={setEditorStatsAuthoringDirty}
       />
 
       {/* Until the library has come the Games and Scenarios tabs show their

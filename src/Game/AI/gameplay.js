@@ -212,6 +212,7 @@ import { frontsOn, strategyNetOn } from "./frontsGate.js";
 import { engineerLines } from "../../runtime/fronts/engineer.js";
 import { foreseeFronts } from "./foreseenFronts.js";
 import { offPageAvailable } from "./frontWorkerClient.js";
+import { planNativeStatsLiveTurn } from "../../runtime/statsLiveTurnClock.js";
 import { applyTurnFronts, citiesFollowCountries, withBlockadeEconomy, turnBlockades, regionHoldingsOf, forecastTurnFronts, frontsListBlock, frontPlansBlock, frontPowers, frontRegionTest, frontWarJoins, frontWarStarts, frontsLiveBlock, openScenarioFronts, routesIntoOthers, transportWaysFor, readFrontCities, scenarioFrontsPending, warRoomChartFor, warRoomIntelText, withFrontUnits, withoutFrontPowers } from "./frontApply.js";
 import { withTurnStrikes } from "../../runtime/strikes.js";
 import { playerDiplomacy, turnDays, turnWarAndPeace } from "./warAndPeace.js";
@@ -9068,9 +9069,37 @@ const applySimulationResult = async ({
   if (turnFronts) freshEvents.splice(0, freshEvents.length, ...turnFronts.events);
   if (phaseBeforeWar) phases?.enter(phaseBeforeWar);
 
+  // Native Statistics cutover is conditional on complete ZERO blockade
+  // evidence. Unknown/positive naval pressure remains on the original writer
+  // until GDP and fiscal blockade settlement have one agreed dated owner.
+  // Custom scenario stat sheets retain their existing runtime authority.
+  let nativeStatsChronology = null;
+  if ((result.mode === "jump" || result.mode === "auto") && Object.keys(baseWorld?.countryStats || {}).length) {
+    // Reject event identity that the canonical reducer would normalize into
+    // a different ID/date. Otherwise a missing generated ID could fail the
+    // chronology halfway through the already accepted turn.
+    const canonicalStatsEvents = normalizeEvents(freshEvents);
+    const stableIdentity = canonicalStatsEvents.length === freshEvents.length
+      && canonicalStatsEvents.every((event, i) =>
+        event.id === freshEvents[i]?.id && event.date === freshEvents[i]?.date);
+    const candidate = stableIdentity ? planNativeStatsLiveTurn({
+      baseWorld, turnFronts, warUpdates, fromDate: baseGame.gameDate,
+      toDate: nextGame.gameDate, events: canonicalStatsEvents, round: nextGame.round,
+    }) : null;
+    if (candidate) {
+      try {
+        const definition = await loadStatSheetDefinition();
+        if (definition && definition.custom !== true) nativeStatsChronology = candidate;
+      } catch (error) {
+        console.warn("[stats native] scenario sheet unavailable; keeping legacy turn path.", error);
+      }
+    }
+  }
+
   const impactMerge = applyEventImpactsToWorld({
     colors: baseColors,
     events: freshEvents,
+    statsChronology: nativeStatsChronology,
     // Give every unit op a travel budget of the days between the previous event
     // and its own, so a move op advances a formation as far as it could actually
     // have got rather than teleporting it. An over-long move becomes a partial
@@ -9192,7 +9221,7 @@ const applySimulationResult = async ({
   impactedWorld = withFrontPersonnel(impactedWorld, turnFronts);
   // And what a blockade cost the country it was laid on, off its economy
   // (runtime/naval/blockade.js): "make blockades affect the economy".
-  impactedWorld = withBlockadeEconomy(impactedWorld, turnFronts, applyCountryStatPatchToWorld);
+  if (!nativeStatsChronology) impactedWorld = withBlockadeEconomy(impactedWorld, turnFronts, applyCountryStatPatchToWorld);
   // Ground a side has taken on a battlefield is controlled by it, not disputed:
   // the claimants an earlier turn wrote for such a region come off it
   // (runtime/fronts/heldRegions.js). Nothing is touched with fronts off.
@@ -9832,7 +9861,7 @@ const applySimulationResult = async ({
   // interval is due, and one compact AI batch for every initialised tracked
   // country. A failure never invalidates the completed turn.
   try {
-    nextWorld = await refreshTrackedCountryStatsIfDue({
+    if (!nativeStatsChronology) nextWorld = await refreshTrackedCountryStatsIfDue({
       bundle: {
         actions: nextActions,
         chats: nextChats,
@@ -9854,7 +9883,7 @@ const applySimulationResult = async ({
   // read only on a turn when some country is due.
   nextWorld = await citiesFollowCountries({ world: nextWorld, baseWorld, game: nextGame, campaignId, loadRegions: createRenderedRegionsReader() });
   // And a country the player has come into conflict with is asked for its sheet, so that the war has its people and its economy to go by.
-  requestConflictSheets(nextWorld, nextGame);
+  if (!nativeStatsChronology) requestConflictSheets(nextWorld, nextGame);
 
   const lifecycleEventIds = [];
   // Native institution lifecycle clock: withdrawal notice periods and other

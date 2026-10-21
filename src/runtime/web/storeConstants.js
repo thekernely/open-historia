@@ -86,6 +86,11 @@ export const TEMPLATE_WORLD_OVERRIDE_KEYS = [
   "politicalActors",
   "institutions",
   "powerStatus",
+  // Explicit scenario-owned baselines, not campaign history. Mirrored in server.
+  "countryStats",
+  "migrationFlows",
+  "territorialSets",
+  "territorialCalibrationReviews",
   "agreements",
   "units",
   // What the Workshop authors besides the map: structures (markers), puppet

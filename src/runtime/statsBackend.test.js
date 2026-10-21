@@ -126,14 +126,16 @@ test("a country the player's own is on a battlefield with is asked for its sheet
   assert.deepEqual(conflictSheetTargets(world({ countryStats: known }), ["Aland"]), []);
 });
 
-test("it is asked after a turn, when a scenario's fronts are built, and when a route is drawn into a country", () => {
+test("legacy turns request missing conflict backends; front setup and routes still request them", () => {
   const turn = read("../Game/AI/gameplay.js");
   // (All of them in one request: Game/AI/conflictBackends.test.js.)
   assert.ok(turn.includes("const names = conflictSheetTargets(world, players, { extra }).slice(0, CONFLICT_BACKENDS_MOST);"));
   assert.ok(turn.includes('if (names.length > 0) void ensureConflictBackends(names, { reason: "in conflict with the player" });'));
   // And every other country at war whose people or figures nobody knows is rated against the others (militaryRating.js).
   assert.ok(turn.includes('const others = militaryTargets(world, { skip: names });\n  if (others.length > 0) void ensureMilitaryFigures(others, { reason: "at war" });'));
-  assert.ok(turn.includes("  requestConflictSheets(nextWorld, nextGame);\n"), "after a turn");
+  // Native economic turns have no new Statistics AI; legacy war/backends must still be requested.
+  assert.ok(turn.includes("  if (!nativeStatsChronology) requestConflictSheets(nextWorld, nextGame);\n"),
+    "after a legacy turn, while native turns never request a new AI Stats backend");
   assert.ok(turn.includes("    if (written) requestConflictSheets({ ...world, battlefields: built.battlefields }, bundle.game);"), "when a scenario's fronts are built");
   assert.ok(turn.includes("    if (attacked.length > 0) requestConflictSheets(world, game, attacked);"), "when a route is drawn into a country");
   // A sheet wanted for the war is one with a backend: a scenario's own sheet written before it kept one is written again.

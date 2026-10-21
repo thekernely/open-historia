@@ -102,6 +102,23 @@ test("a turn fights the period's sea battles in the run that fights its land war
   assert.deepEqual(quiet.unitChanges, []);
 });
 
+test("mid-turn changes of war status invalidate dated naval economic evidence without rewriting sea battles", async () => {
+  const map = sheet();
+  const world = worldOn(map, { units: fleets() });
+  const settled = await turn(map, world);
+  assert.ok(Array.isArray(settled.sea.blockadePeriods), "the unchanged belligerent roster has dated observations");
+  assert.ok(Array.isArray(settled.sea.blockadeDays), "complete naval daily observations follow the same turn");
+  const changing = await turn(map, world, {
+    warStages: [world.wars, [{ ...WAR, status: "ended", lastUpdatedDate: "1914-08-15" }]],
+  });
+  assert.equal(changing.sea.blockadePeriods, null,
+    "naval simulation based on the opening war roster must not imply complete dated coverage after peace");
+  assert.equal(changing.sea.blockadeDays, null,
+    "a war-status transition invalidates exact daily economic evidence as well as monthly aggregates");
+  assert.deepEqual(changing.sea.blockades, settled.sea.blockades,
+    "the existing whole-turn blockade application remains unchanged at this checkpoint");
+});
+
 test("where the lab's own staff leads the land war, an admiral chooses the postures of the fleets nobody plays", async () => {
   // (runtime/naval/admiral.js: "make it also be able to control and understand ... fleets and blockades", the owner.)
   const map = sheet();
@@ -279,6 +296,11 @@ test("a turn works out the period's blockades, and the world keeps them with the
   assert.deepEqual([run.sea.blockades.length, blockade.country, blockade.by, blockade.days, blockade.covered], [1, "Teutonia", ["Albion"], 30, 1]);
   assert.ok(blockade.pressure > 0.5, String(blockade.pressure));
   assert.deepEqual([run.sea.fromDate, run.sea.days], ["1914-08-01", 30]);
+  assert.equal(run.sea.blockadeDays.length, 30, "one economic observation per day under steady blockade");
+  assert.deepEqual([run.sea.blockadeDays[0].date, run.sea.blockadeDays.at(-1).date],
+    ["1914-08-02", "1914-08-31"]);
+  assert.deepEqual(run.sea.blockadePeriods.map(({ country, fromDate, toDate, days }) => [country, fromDate, toDate, days]),
+    [["Teutonia", "1914-08-02", "1914-08-31", 30]], "the actual naval turn carries dated blockade observations");
   // The world after the turn, and after the next: the days add up, and it is as old as the day it was laid.
   const first = turnBlockades(world, run);
   assert.deepEqual(first, [{ country: "Teutonia", by: ["Albion"], pressure: blockade.pressure, covered: 1, days: 30, since: "1914-08-01" }]);

@@ -1145,6 +1145,10 @@ const seedScenarioJsonFromScenario = (targetRecord, sourceRecord, baseRecord) =>
   if (!scenarioLooksLikeRuntimeSnapshot(snapshot)) {
     targetRecord.json = {};
     for (const key of JSON_ASSET_KEYS) targetRecord.json[key] = cloneJson(source.json?.[key] ?? JSON_ASSET_DEFAULTS[key]);
+    if (targetRecord.json.world && typeof targetRecord.json.world === "object") {
+      delete targetRecord.json.world.countryStatsHistory;
+      delete targetRecord.json.world.statsEventReceipts;
+    }
     copyScenarioOptionalAssets(targetRecord, source);
     return;
   }
@@ -1181,6 +1185,10 @@ const seedGameJsonFromScenario = (targetRecord, sourceScenario, baseRecord) => {
   if (!scenarioLooksLikeRuntimeSnapshot(snapshot)) {
     targetRecord.json = {};
     for (const key of JSON_ASSET_KEYS) targetRecord.json[key] = cloneJson(sourceScenario.json?.[key] ?? JSON_ASSET_DEFAULTS[key]);
+    if (targetRecord.json.world && typeof targetRecord.json.world === "object") {
+      delete targetRecord.json.world.countryStatsHistory;
+      delete targetRecord.json.world.statsEventReceipts;
+    }
     return;
   }
   const base = baseRecord;

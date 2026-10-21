@@ -5731,6 +5731,7 @@ const applyPolityAndTerritoryImpacts = ({
 // not stamped into an entry's activity, which lists timeline events only.
 export const applyEventImpactsToWorld = ({
   colors = {}, events = [], world, motion = null, round = 0, boardOnlyEventIds = [],
+  statsChronology = null,
 }) => {
   const boardOnly = new Set(normalizeArray(boardOnlyEventIds).map(normalizeOptionalString).filter(Boolean));
   let nextColors = cloneValue(colors) ?? {};
@@ -5761,7 +5762,29 @@ export const applyEventImpactsToWorld = ({
   // one event is a name the next event can already be using.
   let resolveOwner = createOwnerResolver(buildOwnerAliasMap(nextWorld.polityOverrides));
 
-  for (const event of normalizeEvents(events)) {
+  // Opt-in chronological Stats seam. The reducer must remain a SINGLE pass:
+  // replaying event groups through separate reducer invocations would reset
+  // motion/rename/project identity and could alter legal world transitions.
+  // Only Statistics and its read-only history may be replaced by the boundary;
+  // a rejected boundary aborts this detached turn before canonical publication.
+  const acceptedEvents = normalizeEvents(events);
+  const useStatsBoundary = statsChronology !== null;
+  if (useStatsBoundary && (typeof statsChronology?.beforeEvent !== "function"
+    || typeof statsChronology?.afterEvents !== "function")) {
+    throw new TypeError("Statistics chronology requires both boundary methods");
+  }
+  const settleStatsBoundary = (method, eventIndex) => {
+    const updated = statsChronology[method](nextWorld, eventIndex, acceptedEvents[eventIndex]);
+    if (!updated || typeof updated !== "object" || Array.isArray(updated)
+      || !updated.countryStats || typeof updated.countryStats !== "object") {
+      throw new Error("Statistics chronology returned no canonical countryStats");
+    }
+    nextWorld.countryStats = updated.countryStats;
+    if (Object.hasOwn(updated, "countryStatsHistory")) nextWorld.countryStatsHistory = updated.countryStatsHistory;
+  };
+  for (let eventIndex = 0; eventIndex < acceptedEvents.length; eventIndex += 1) {
+    const event = acceptedEvents[eventIndex];
+    if (useStatsBoundary) settleStatsBoundary("beforeEvent", eventIndex);
     // A project this event COMPLETES releases its effects into this event, before
     // anything at all is applied. See releaseProjectCompletionEffects for why it
     // cannot be done further down where the project ops themselves are applied:
@@ -5979,6 +6002,7 @@ export const applyEventImpactsToWorld = ({
       );
     }
   }
+  if (useStatsBoundary) settleStatsBoundary("afterEvents", acceptedEvents.length);
 
   return {
     colors: nextColors,

@@ -276,10 +276,18 @@ const placeOf = ({ lng, lat, seas, cities, km }) => {
 //   caps             { perCountry, world }: the most formations a country and the world may have
 //   raised           world.naviesRaised: [{ country, date }], when each country was last given
 //                    a navy or lost the last of one
-// Returns { battles, unitChanges, commissioned, fleets, raised, blockades }.
+// Returns { battles, unitChanges, commissioned, fleets, raised, blockades, blockadePeriods, blockadeDays }.
 //   blockades   [{ country, by: [names], pressure, covered, days }]: each country a fleet
 //               pressed on in the period (blockade.js): the mean of its days, the share
 //               of its coast reached, and how many of the period's days it stood
+//   blockadePeriods [{ country, fromDate, toDate, days, activeDays, pressure, covered, by }]:
+//               dated, disjoint monthly slices of raw pressure for coasts exposed
+//               during the turn, including later zero-pressure months. A missing
+//               map gives null evidence; NOT an additional GDP debit.
+//   blockadeDays [{ country, date, pressure, covered, by }]: sparse, positive,
+//               civil-day observations on (fromDate, fromDate+days]. Missing
+//               dates mean zero ONLY when this complete array is available.
+//               Null means unknown, never zero and never a GDP debit.
 export const runNaval = ({ fromDate = "", days = 0, seed = "", wars = [], units = [], strengthOf = null, controllerOf = null, grid = null, cities = [], seas = [], flat = false, scale = undefined, caps = {}, raised = [], era: setEra = null, militaryOf = null, weatherSeed = null, iced = [] } = {}) => {
   const era = eraOf(fromDate, setEra);
   // Weighing the weather (fronts/weather.js): a storm keeps fleets apart and weakens a blockade. Fleets in the same
@@ -313,7 +321,9 @@ export const runNaval = ({ fromDate = "", days = 0, seed = "", wars = [], units 
   const clock = new Map();
   for (const entry of list(raised)) if (clean(entry?.country) && clean(entry?.date)) clock.set(fold(entry.country), { country: clean(entry.country), date: clean(entry.date) });
   const clockNow = () => [...clock.values()].slice(-NAVIES_KEPT_MOST);
-  const empty = { battles: [], unitChanges: [], commissioned: [], fleets: [], raised: clockNow(), blockades: [] };
+  // Missing coast geometry cannot support a dated pressure observation.
+  // Peace, in contrast, establishes that no hostile blockade is possible.
+  const empty = { battles: [], unitChanges: [], commissioned: [], fleets: [], raised: clockNow(), blockades: [], blockadePeriods: grid || enemies.size === 0 ? [] : null, blockadeDays: grid || enemies.size === 0 ? [] : null };
   if (enemies.size === 0) return empty;
 
   const all = list(units);
@@ -402,9 +412,14 @@ export const runNaval = ({ fromDate = "", days = 0, seed = "", wars = [], units 
   for (const key of [...belligerents].sort()) {
     const cells = coasts.get(key) ?? [];
     if (!grid || cells.length === 0) continue;
-    posts.set(key, { stations: stationsOf(cells.map((cell) => grid.centreOf(cell))), seaShare: seaShareOf(cells.length, coasts.borders?.get(key) ?? 0), sum: 0, covered: 0, days: 0, by: new Set() });
+    posts.set(key, { stations: stationsOf(cells.map((cell) => grid.centreOf(cell))), seaShare: seaShareOf(cells.length, coasts.borders?.get(key) ?? 0), sum: 0, covered: 0, days: 0, by: new Set(), periods: new Map() });
   }
 
+  // Sparse civil-day economic observations stay ephemeral; no new writable
+  // blockade ledger or save schema. Overflow is unknown, not partial evidence.
+  const BLOCKADE_DAYS_MAX = 12000;
+  const blockadeDays = [];
+  let blockadeDaysOverflow = false;
   const battles = [];
   const live = (fleet) => !fleet.sunk && !fleet.broke;
   for (let day = 1; day <= days; day += 1) {
@@ -521,7 +536,33 @@ export const runNaval = ({ fromDate = "", days = 0, seed = "", wars = [], units 
         blockaders.push({ lng: fleet.lng, lat: fleet.lat, weight: mine > 0 ? (mine * mine) / (mine + tied) : 0, owner: fleet.owner });
       }
       const today = dayPressure({ stations: post.stations, blockaders, reach, km, seaShare: post.seaShare, iced: icedCoast });
+      // Keep each civil day in exactly one month. A month where the blockade
+      // was lifted still counts those zero-pressure days in its mean; using
+      // only the days when fleets were active would overstate economic harm.
+      const date = dateOf(day);
+      const month = date.slice(0, 7);
+      let period = post.periods.get(month);
+      if (!period) {
+        period = { fromDate: date, toDate: date, days: 0, activeDays: 0, sum: 0, covered: 0, by: new Set() };
+        post.periods.set(month, period);
+      }
+      period.toDate = date;
+      period.days += 1;
       if (!(today.pressure > 0)) continue;
+      if (!blockadeDaysOverflow) {
+        if (blockadeDays.length >= BLOCKADE_DAYS_MAX) blockadeDaysOverflow = true;
+        else blockadeDays.push({
+          country: names.get(key) ?? key,
+          date,
+          pressure: today.pressure,
+          covered: today.covered,
+          by: [...new Set(blockaders.map((fleet) => fleet.owner))].sort(),
+        });
+      }
+      period.sum += today.pressure;
+      period.covered += today.covered;
+      period.activeDays += 1;
+      for (const fleet of blockaders) period.by.add(fleet.owner);
       post.sum += today.pressure;
       post.covered += today.covered;
       post.days += 1;
@@ -535,6 +576,39 @@ export const runNaval = ({ fromDate = "", days = 0, seed = "", wars = [], units 
     if (!(pressure >= BLOCKADE_LEAST)) continue;
     blockades.push({ country: names.get(key) ?? key, by: [...post.by].sort(), pressure: Math.round(pressure * 1000) / 1000, covered: Math.round((post.covered / post.days) * 1000) / 1000, days: post.days });
   }
+
+  // Bounded turn-local evidence; these observations are NOT written into
+  // world.blockades. An exceptional skip producing too many slices reports
+  // the timeline unavailable, never silently a truncated apparently complete
+  // economic history. The original aggregate still drives the war as before.
+  const BLOCKADE_PERIODS_MAX = 12000;
+  const blockadePeriods = [];
+  for (const [key, post] of posts) {
+    // Evidence must not inherit the whole-turn blockade threshold: a short
+    // blockade can average below BLOCKADE_LEAST in a long skip yet exceed it
+    // during a shorter skip covering the same days. Preserve every month's
+    // observed pressure (including its weak signals), then explicit zero
+    // months after a pressured coast is liberated. The legacy `blockades`
+    // array remains thresholded and is still the ONLY GDP/budget writer.
+    if (!(post.sum > 0)) continue;
+    for (const period of post.periods.values()) {
+      blockadePeriods.push({
+        country: names.get(key) ?? key,
+        fromDate: period.fromDate, toDate: period.toDate,
+        days: period.days, activeDays: period.activeDays,
+        pressure: period.sum / period.days,
+        covered: period.activeDays > 0 ? period.covered / period.activeDays : 0,
+        by: [...period.by].sort(),
+      });
+    }
+  }
+  blockadePeriods.sort((a, b) => a.fromDate.localeCompare(b.fromDate) || a.country.localeCompare(b.country));
+  const datedBlockades = !grid || blockadePeriods.length > BLOCKADE_PERIODS_MAX ? null : blockadePeriods;
+  // A chronological writer cannot infer a specific event-day loss from a
+  // monthly average. This bounded exact daily evidence is the future input;
+  // it must never be confused with the legacy whole-period GDP writer.
+  blockadeDays.sort((a, b) => a.date.localeCompare(b.date) || a.country.localeCompare(b.country));
+  const datedBlockadeDays = !grid || blockadeDaysOverflow ? null : blockadeDays;
 
   const unitChanges = [];
   for (const fleet of fleets) {
@@ -575,6 +649,8 @@ export const runNaval = ({ fromDate = "", days = 0, seed = "", wars = [], units 
     commissioned,
     raised: clockNow(),
     blockades,
+    blockadePeriods: datedBlockades,
+    blockadeDays: datedBlockadeDays,
     fleets: fleets.filter((fleet) => !fleet.sunk).map(({ id, name, owner, strength, posture, lng, lat }) => ({ id, name, owner, strength: Math.round(strength), posture, lng, lat, place: placeOf({ lng, lat, seas, cities, km }) })),
   };
 };
