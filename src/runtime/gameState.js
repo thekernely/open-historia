@@ -8,6 +8,7 @@ import { normalizeCallsToArms } from "./alliances.js";
 import { normalizePeaceOffers, normalizePeaceTreaties, normalizeReparations } from "./peaceTerms.js";
 import { normalizeWarWeariness } from "./warWeariness.js";
 import { normalizeWarResources } from "./warResources.js";
+import { normalizeFrontPersonnel } from "./fronts/personnelReserve.js";
 import { normalizeAttrition } from "./attrition.js";
 import { eraSettingOf, normalizeWarSettings } from "./warSettings.js";
 import { normalizeClimateZones, normalizeFortifications, normalizeFreezingRegions, normalizeTerrainAreas, normalizeZoneWeather } from "./warGeography.js";
@@ -4331,6 +4332,7 @@ export const normalizeWorldState = (world) => {
     ...nextWorld,
     countryTags,
     countryStats,
+    ...(Object.hasOwn(nextWorld, "frontPersonnel") ? { frontPersonnel: normalizeFrontPersonnel(nextWorld.frontPersonnel) } : {}),
     politicalActors: normalizePoliticalActors(nextWorld.politicalActors),
     politicalSimulation: normalizePoliticalSimulationClock(nextWorld.politicalSimulation),
     institutions: normalizeInstitutions(nextWorld.institutions, diplomaticIdentityWorld),
@@ -5349,7 +5351,7 @@ const writeRegionSovereign = (world, regionId, sovereign) => {
   else world.regionSovereigntyOverrides[regionId] = name;
 };
 
-const POLITY_LIFECYCLE_STORES = ["countryStats", "countryTags", "internationalReputation", "intelligence"];
+const POLITY_LIFECYCLE_STORES = ["countryStats", "countryTags", "internationalReputation", "intelligence", "frontPersonnel"];
 
 const applyPolityAndTerritoryImpacts = ({
   colors, eventDate = "", eventId = "", polityChanges = [], regionClaims = [], regionControlOps = [], regionTransfers = [], resolveOwner, world,

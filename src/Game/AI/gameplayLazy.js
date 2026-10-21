@@ -17,13 +17,13 @@
 
 import { inSharedGame, requestFromHost } from "../../multiplayer/client/sharedGameBridge.js";
 import { readWorldStateView } from "../../runtime/gameState.js";
+import { retryableDynamicImport } from "../../runtime/retryableDynamicImport.js";
 
-let modulePromise = null;
-
-const gameplay = () => {
-  if (!modulePromise) modulePromise = import("./gameplay.js");
-  return modulePromise;
-};
+// Do not keep a rejected import promise for the rest of this page session.
+// The Statistics pane's "Try again" must be able to request the gameplay
+// module again after a transient chunk failure. The browser may require a
+// page reload when its native module map has cached a failed URL.
+const gameplay = retryableDynamicImport(() => import("./gameplay.js"));
 
 // A page playing a shared game (multiplayer/) never runs the game itself: the
 // host's engine does, and the page's screens send it requests instead. So

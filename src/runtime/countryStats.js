@@ -1,4 +1,4 @@
-import { astronomicalYear, compareGameDates, isGameDate, parseGameDate } from "./gameDates.js";
+import { addGameDays, astronomicalYear, compareGameDates, diffGameDays, isCanonicalGameDate, isGameDate, parseGameDate } from "./gameDates.js";
 import { STATS_BACKEND_FIELD, statsBackendPatch } from "./statsBackend.js";
 import { normalizeMilitaryStats } from "./militaryStats.js";
 import { DEFAULT_STAT_INDEX_KEYS, DEFAULT_STAT_INDEX_ROWS, MAX_STAT_INDICES, STAT_INDEX_KEY_PATTERN } from "./statIndexDefinitions.js";
@@ -186,6 +186,12 @@ const normalizeSignedPercent = (value) => {
   return parsed == null ? null : clamp(parsed, -1000, 1000);
 };
 
+// Native GDP mutations need sub-cent per-capita resolution: cent rounding of
+// each territorial component erases small changes and compounds drift. This
+// precision belongs to the canonical component ledger, not to presentation.
+const TERRITORIAL_GDP_PC_SCALE = 1_000_000;
+const roundTerritorialProductivity = (value) => Math.round(value * TERRITORIAL_GDP_PC_SCALE) / TERRITORIAL_GDP_PC_SCALE;
+
 const componentKey = (value) => clean(value).toLocaleLowerCase();
 
 export const normalizeTerritorialComponents = (value) => {
@@ -205,11 +211,13 @@ export const normalizeTerritorialComponents = (value) => {
     if (!Number.isFinite(population) || population < 0) continue;
     if (!Number.isFinite(gdpPerCapita) || gdpPerCapita <= 0) continue;
 
+    const preciseGdpPerCapita = roundTerritorialProductivity(gdpPerCapita);
+    if (!Number.isFinite(preciseGdpPerCapita) || !(preciseGdpPerCapita > 0)) continue;
     const normalized = {
       geography,
       group,
       population: Math.round(population),
-      gdpPerCapita: Math.round(gdpPerCapita * 100) / 100,
+      gdpPerCapita: preciseGdpPerCapita,
     };
 
     // A generated sheet should contain one row per geography. If a provider
@@ -355,6 +363,152 @@ const normalizePopulation = (value) => {
 };
 
 
+// A dated source's annual budget balance can fund a bounded native fiscal
+// clock. The clock is part of this Stats sheet's continuity, not a second debt
+// ledger. Invalid records cannot be mistaken for a zero/default assessment.
+const FISCAL_CLOCK_MAX_DAYS = 240;
+const FISCAL_CLOCK_MAX_ANNUAL_BALANCE = 50;
+export const normalizeCountryStatFiscalClock = (value) => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const { sourceDate, anchorDate, lastDate, balance, credited } = value;
+  if (![sourceDate, anchorDate, lastDate].every(isCanonicalGameDate)) return null;
+  if (compareGameDates(anchorDate, sourceDate) < 0 || compareGameDates(lastDate, anchorDate) < 0) return null;
+  if (compareGameDates(lastDate, addGameDays(sourceDate, FISCAL_CLOCK_MAX_DAYS)) > 0) return null;
+  if (typeof balance !== "number" || !Number.isFinite(balance) || balance === 0 || Math.abs(balance) > FISCAL_CLOCK_MAX_ANNUAL_BALANCE) return null;
+  if (typeof credited !== "number" || !Number.isFinite(credited) || Math.abs(credited) > FISCAL_CLOCK_MAX_ANNUAL_BALANCE) return null;
+  return { sourceDate, anchorDate, lastDate, balance, credited };
+};
+
+// Persistent operating-capacity ramp receipts. These are established ONLY by
+// accepted structured events about a completed, owned project, not by guessing
+// from names or a historical gdpGrowth observation.
+export const COUNTRY_STATS_GDP_RAMP_LIMIT = 24;
+export const normalizeCountryStatGdpRamps = (value) => {
+  if (!Array.isArray(value)) return undefined;
+  const seen = new Set();
+  const result = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const { eventId, projectId, startDate, endDate, lastDate, gdpDelta, credited } = entry;
+    if (typeof eventId !== "string" || !eventId.trim() || eventId.length > 128
+      || typeof projectId !== "string" || !projectId.trim() || projectId.length > 128
+      || ![startDate, endDate, lastDate].every(isCanonicalGameDate)
+      || compareGameDates(startDate, lastDate) > 0
+      || compareGameDates(lastDate, endDate) > 0
+      || compareGameDates(startDate, endDate) >= 0
+      || typeof gdpDelta !== "number" || !Number.isFinite(gdpDelta) || gdpDelta <= 0 || gdpDelta > 1e18
+      || typeof credited !== "number" || !Number.isFinite(credited) || credited < 0 || credited > gdpDelta * 1.001
+      || seen.has(eventId)) continue;
+    seen.add(eventId);
+    result.push({ eventId, projectId, startDate, endDate, lastDate, gdpDelta, credited });
+    if (result.length === COUNTRY_STATS_GDP_RAMP_LIMIT) break;
+  }
+  return result;
+};
+
+// A scenario-authorized, finite natural population process. Migration is
+// deliberately separate: cross-border moves require a balanced two-polity
+// transfer, not two unrelated national estimates. No rate is assumed when a
+// scenario has not established the entire dated process.
+export const COUNTRY_STATS_DEMOGRAPHIC_MAX_DAYS = 1461;
+export const COUNTRY_STATS_DEMOGRAPHIC_MAX_RATE = 80;
+export const normalizeCountryStatDemographicClock = (value) => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const { sourceDate, endDate, lastDate, basePopulation,
+    birthsPerThousand, deathsPerThousand, creditedBirths, creditedDeaths } = value;
+  if (![sourceDate, endDate, lastDate].every(isCanonicalGameDate)) return null;
+  const duration = (compareGameDates(sourceDate, endDate) < 0) ? diffGameDays(sourceDate, endDate) : null;
+  if (!(duration > 0) || duration > COUNTRY_STATS_DEMOGRAPHIC_MAX_DAYS
+    || compareGameDates(lastDate, sourceDate) < 0 || compareGameDates(lastDate, endDate) > 0) return null;
+  if (!Number.isSafeInteger(basePopulation) || basePopulation <= 0 || basePopulation > 1e12
+    || ![birthsPerThousand, deathsPerThousand].every((rate) =>
+      typeof rate === "number" && Number.isFinite(rate) && rate >= 0 && rate <= COUNTRY_STATS_DEMOGRAPHIC_MAX_RATE)
+    || ![creditedBirths, creditedDeaths].every((count) => Number.isSafeInteger(count) && count >= 0)) return null;
+  const elapsed = diffGameDays(sourceDate, lastDate);
+  const maxBirths = Math.round(basePopulation * birthsPerThousand / 1000 * elapsed / 365.2425);
+  const maxDeaths = Math.round(basePopulation * deathsPerThousand / 1000 * elapsed / 365.2425);
+  if (creditedBirths !== maxBirths || creditedDeaths !== maxDeaths) return null;
+  return { sourceDate, endDate, lastDate, basePopulation,
+    birthsPerThousand, deathsPerThousand, creditedBirths, creditedDeaths };
+};
+
+// Opt-in, scenario-initialized demographic evolution. These are *rates*, not
+// population deltas: the native demographic tick remains the only birth/death
+// accountant. Existing finite demographicClock receipts are never upgraded.
+export const COUNTRY_STATS_EVOLUTION_MAX_DAYS = 36525;
+export const COUNTRY_STATS_EVOLUTION_MAX_INFLUENCES = 24;
+export const normalizeCountryStatDemographicEvolution = (value) => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const { version, sourceDate, endDate, lastDate, basePopulation,
+    birthRate, deathRate, birthTrendPerYear, deathTrendPerYear,
+    creditedBirths, creditedDeaths, birthFraction, deathFraction, influences } = value;
+  if (version !== 1 || ![sourceDate, endDate, lastDate].every(isCanonicalGameDate)) return null;
+  const duration = diffGameDays(sourceDate, endDate);
+  if (!(duration > 0) || duration > COUNTRY_STATS_EVOLUTION_MAX_DAYS
+    || compareGameDates(lastDate, sourceDate) < 0 || compareGameDates(lastDate, endDate) > 0
+    || !Number.isSafeInteger(basePopulation) || basePopulation <= 0 || basePopulation > 1e12
+    || ![birthRate, deathRate].every((n) => typeof n === "number" && Number.isFinite(n) && n >= 0 && n <= 80)
+    || ![birthTrendPerYear, deathTrendPerYear].every((n) => typeof n === "number" && Number.isFinite(n) && n >= -2 && n <= 2)
+    || ![creditedBirths, creditedDeaths].every((n) => Number.isSafeInteger(n) && n >= 0)
+    || ![birthFraction, deathFraction].every((n) => typeof n === "number" && Number.isFinite(n) && n >= 0 && n < 1)
+    || !Array.isArray(influences) || influences.length > COUNTRY_STATS_EVOLUTION_MAX_INFLUENCES) return null;
+  if (lastDate === sourceDate && (creditedBirths !== 0 || creditedDeaths !== 0 || birthFraction !== 0 || deathFraction !== 0)) return null;
+  const ids = new Set();
+  const checked = [];
+  for (const entry of influences) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
+    const { eventId, startDate, birthRateChange, deathRateChange, lagDays, rampDays, durationDays } = entry;
+    if (typeof eventId !== "string" || !eventId.trim() || eventId.length > 128 || ids.has(eventId)
+      || !isCanonicalGameDate(startDate) || compareGameDates(startDate, sourceDate) < 0
+      || compareGameDates(startDate, endDate) > 0
+      || ![birthRateChange, deathRateChange].every((n) => typeof n === "number" && Number.isFinite(n) && n >= -5 && n <= 5)
+      || (birthRateChange === 0 && deathRateChange === 0)
+      || !Number.isSafeInteger(lagDays) || lagDays < 0 || lagDays > 1461
+      || !Number.isSafeInteger(rampDays) || rampDays < 30 || rampDays > 1461
+      || !Number.isSafeInteger(durationDays) || durationDays < rampDays || durationDays > 7305) return null;
+    ids.add(eventId);
+    checked.push({ eventId, startDate, birthRateChange, deathRateChange, lagDays, rampDays, durationDays });
+  }
+  return { version, sourceDate, endDate, lastDate, basePopulation,
+    birthRate, deathRate, birthTrendPerYear, deathTrendPerYear,
+    creditedBirths, creditedDeaths, birthFraction, deathFraction, influences: checked };
+};
+
+// An accepted, dated real-output and inflation assessment may inform at most
+// two years of native nominal GDP progression. Its cursor is saved with the
+// canonical sheet; malformed clock fields cannot become implicit authority.
+export const normalizeCountryStatGdpTrendClock = (value) => {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+    || Object.keys(value).some((key) => !["version", "sourceDate", "endDate", "lastDate", "realGrowth", "inflation"].includes(key))) return null;
+  const { version, sourceDate, endDate, lastDate, realGrowth, inflation } = value;
+  if (version !== 1 || ![sourceDate, endDate, lastDate].every(isCanonicalGameDate)
+    || compareGameDates(sourceDate, lastDate) > 0 || compareGameDates(lastDate, endDate) > 0
+    || !(diffGameDays(sourceDate, endDate) > 0) || diffGameDays(sourceDate, endDate) > 730
+    || typeof realGrowth !== "number" || !Number.isFinite(realGrowth) || realGrowth < -30 || realGrowth > 30
+    || typeof inflation !== "number" || !Number.isFinite(inflation) || inflation < -20 || inflation > 100) return null;
+  return { version, sourceDate, endDate, lastDate, realGrowth, inflation };
+};
+
+// Strict native macro cursor. Saved model state is separate from observed
+// scenario rates, which can be superseded only by a new dated assessment.
+export const normalizeCountryStatNativeEconomyClock = (value) => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const fields = ["version", "sourceDate", "lastDate", "lastPopulation", "lastGdp", "lastTerritoryKey", "sourceRealGrowth", "sourceInflation", "productivity", "demandGap", "inflation", "unemployment", "sourceUnemployment", "lastProjectOutput", "reportedGrowth"];
+  if (Object.keys(value).some((key) => !fields.includes(key)) || value.version !== 1
+    || !isCanonicalGameDate(value.sourceDate) || !isCanonicalGameDate(value.lastDate)
+    || compareGameDates(value.sourceDate, value.lastDate) > 0
+    || !Number.isSafeInteger(value.lastPopulation) || value.lastPopulation <= 0
+    || !Number.isFinite(value.lastGdp) || value.lastGdp <= 0 || value.lastGdp > 1e18
+    || typeof value.lastTerritoryKey !== "string" || !/^\d{1,6}:[0-9a-f]{8}:[0-9a-f]{8}$/.test(value.lastTerritoryKey)
+    || !["sourceRealGrowth", "productivity", "reportedGrowth"].every((k) => typeof value[k] === "number" && Number.isFinite(value[k]) && value[k] >= -35 && value[k] <= 35)
+    || !["sourceInflation", "inflation"].every((k) => typeof value[k] === "number" && Number.isFinite(value[k]) && value[k] >= -20 && value[k] <= 100)
+    || typeof value.demandGap !== "number" || !Number.isFinite(value.demandGap) || value.demandGap < -12 || value.demandGap > 8
+    || !(value.unemployment === null || (typeof value.unemployment === "number" && Number.isFinite(value.unemployment) && value.unemployment >= 0 && value.unemployment <= 100))
+    || (Object.hasOwn(value, "sourceUnemployment") && !(value.sourceUnemployment === null || (typeof value.sourceUnemployment === "number" && Number.isFinite(value.sourceUnemployment) && value.sourceUnemployment >= 0 && value.sourceUnemployment <= 100)))
+    || typeof value.lastProjectOutput !== "number" || !Number.isFinite(value.lastProjectOutput) || value.lastProjectOutput < 0 || value.lastProjectOutput > 1e18) return null;
+  return { ...value };
+};
+
 const MAX_ACCOUNTED_ECONOMIC_EVENTS = 64;
 const MAX_SEMANTIC_SPLIT_COMPONENTS = 64;
 
@@ -377,6 +531,37 @@ export const normalizeCountryStatContinuity = (value) => {
   if (Number.isInteger(populationCalibrationVersion) && populationCalibrationVersion > 0) {
     out.populationCalibrationVersion = populationCalibrationVersion;
   }
+  // Old-save opt-in compatibility provenance. Not a reviewed current GDP
+  // assessment, and never an authorization to extrapolate past annual rates.
+  const compatibility = value.compatibilityEstimate;
+  if (compatibility?.version === 1
+    && compatibility.source === "scenario-territorial-ledger"
+    && compatibility.scope === "territory-only"
+    && isCanonicalGameDate(compatibility.sourceDate)
+    && isCanonicalGameDate(compatibility.initializedDate)
+    && compareGameDates(compatibility.sourceDate, compatibility.initializedDate) <= 0) {
+    out.compatibilityEstimate = {
+      version: 1,
+      source: "scenario-territorial-ledger",
+      sourceDate: compatibility.sourceDate,
+      initializedDate: compatibility.initializedDate,
+      scope: "territory-only",
+    };
+  }
+  const foundingAssessment = value.foundingAssessment;
+  if (foundingAssessment?.version === 1 && clean(foundingAssessment.eventId).length <= 128
+    && clean(foundingAssessment.eventId) && isGameDate(clean(foundingAssessment.date))
+    && foundingAssessment.source === "ai-estimate" && clean(foundingAssessment.basis).length >= 32
+    && clean(foundingAssessment.basis).length <= 480) {
+    out.foundingAssessment = {
+      version: 1,
+      eventId: clean(foundingAssessment.eventId),
+      date: clean(foundingAssessment.date),
+      source: "ai-estimate",
+      basis: clean(foundingAssessment.basis),
+    };
+  }
+
 
   const accountedEventIds = [...new Set(
     (Array.isArray(value.accountedEventIds) ? value.accountedEventIds : [])
@@ -385,6 +570,19 @@ export const normalizeCountryStatContinuity = (value) => {
   )].slice(-MAX_ACCOUNTED_ECONOMIC_EVENTS);
 
   if (accountedEventIds.length) out.accountedEventIds = accountedEventIds;
+
+  const demographicEvolution = normalizeCountryStatDemographicEvolution(value.demographicEvolution);
+  if (demographicEvolution) out.demographicEvolution = demographicEvolution;
+  const demographicClock = normalizeCountryStatDemographicClock(value.demographicClock);
+  if (demographicClock) out.demographicClock = demographicClock;
+  const fiscalClock = normalizeCountryStatFiscalClock(value.fiscalClock);
+  if (fiscalClock) out.fiscalClock = fiscalClock;
+  const gdpTrendClock = normalizeCountryStatGdpTrendClock(value.gdpTrendClock);
+  if (gdpTrendClock) out.gdpTrendClock = gdpTrendClock;
+  const nativeEconomyClock = normalizeCountryStatNativeEconomyClock(value.nativeEconomyClock);
+  if (nativeEconomyClock) out.nativeEconomyClock = nativeEconomyClock;
+  const gdpRamps = normalizeCountryStatGdpRamps(value.gdpRamps);
+  if (gdpRamps) out.gdpRamps = gdpRamps;
 
   // Components whose share of their macro bucket the model set in a per-component
   // split (see decodeTerritorialComponentSplit), with how many map regions the
@@ -576,7 +774,7 @@ const scaleComponentPopulation = (components, predicate, targetPopulation) => {
 // proportions it gives them, so map granularity cannot make a 300-province
 // empire gain or lose tens of millions. The exact integer target is conserved
 // with largest-remainder rounding.
-const scaleComponentPopulationExact = (components, predicate, targetPopulation) => {
+export const scaleComponentPopulationExact = (components, predicate, targetPopulation) => {
   const target = Math.max(0, Math.round(Number(targetPopulation) || 0));
   const selected = components
     .map((component, index) => ({ component, index }))
@@ -934,7 +1132,7 @@ const scaleComponentProductivity = (components, predicate, ratio) => {
   if (!Number.isFinite(ratio) || !(ratio > 0)) return components;
   return components.map((component) => (
     predicate(component)
-      ? { ...component, gdpPerCapita: Math.max(1, Math.round(component.gdpPerCapita * ratio * 100) / 100) }
+      ? { ...component, gdpPerCapita: Math.max(1, roundTerritorialProductivity(component.gdpPerCapita * ratio)) }
       : component
   ));
 };
@@ -1201,6 +1399,8 @@ export const normalizeCountryStatHistorySample = (value) => {
   copyNumber("corePopulation");
   copyNumber("otherPopulation");
   for (const key of HISTORY_ECONOMY_KEYS) copyNumber(key);
+  // Canonical territorial-control observations. They do not mutate legal GDP.
+  for (const key of ["sovereignGdpUnderForeignControl", "foreignTerritorialGdpUnderControl"]) copyNumber(key);
   for (const key of HISTORY_BREAKDOWN_KEYS) copyNumber(key);
   const customStats = normalizeCustomCountryStats(value.customStats);
   if (customStats) out.customStats = customStats;

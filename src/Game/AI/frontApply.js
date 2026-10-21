@@ -498,32 +498,6 @@ export const citiesFollowCountries = async ({ world = {}, baseWorld = null, game
   }
 };
 
-// ---- the men troops are raised from ---------------------------------------------------
-
-// A world with what a turn's recruitment cost its countries taken off their
-// populations (runtime/fronts/manpower.js): the men drawn for the formations
-// raised, drafted and sent to make good losses, less the men who came home. A
-// country with no sheet of statistics has no population to take them from and
-// is left as it is. The same world when the run charged nobody.
-//   patch   (world, name, { population: { total } }) => writes it (gameState.js applyCountryStatPatchToWorld)
-export const withFrontManpower = (world, fronts, patch) => {
-  const ledger = asArray(fronts?.manpower).filter((entry) => clean(entry?.name) && (Number(entry.drawn) > 0 || Number(entry.returned) > 0));
-  if (ledger.length === 0 || typeof patch !== "function" || !world || typeof world.countryStats !== "object" || !world.countryStats) return world;
-  const next = { ...world, countryStats: { ...world.countryStats } };
-  const keys = new Map(Object.keys(next.countryStats).map((key) => [fold(key), key]));
-  let changed = false;
-  for (const entry of ledger) {
-    const key = keys.get(fold(entry.name));
-    const total = Number(next.countryStats[key]?.population?.total);
-    if (!key || !(total > 0)) continue;
-    const after = Math.max(1, Math.round(total - (Number(entry.drawn) || 0) + (Number(entry.returned) || 0)));
-    if (after === total) continue;
-    patch(next, key, { population: { total: after } });
-    changed = true;
-  }
-  return changed ? next : world;
-};
-
 // A world with what the period's blockades cost the countries they were laid
 // on taken off their economies (runtime/naval/blockade.js): a share of its GDP
 // by how hard the blockade pressed and how long the period was, and what each

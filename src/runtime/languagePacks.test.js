@@ -23,6 +23,7 @@ const tokens = (text) => [
 
 const CATALOG = read("catalog-en.json");
 const PROMPT_CATALOG = read("prompts/catalog-en.json");
+const DEFAULT_SCENARIO = JSON.parse(fs.readFileSync(new URL("../../server/seed/default/scenario.json", import.meta.url), "utf8"));
 // A pack made from an older catalog still ships, but not one that has fallen
 // this far behind it: regenerate the packs with the catalog (docs/i18n.md).
 const MIN_COVERAGE = 0.9;
@@ -41,6 +42,21 @@ test("every shipped pack on disk is one the game knows it has, and the other way
   assert.equal(hasShippedPack("de"), true);
   assert.equal(hasShippedPack("en"), false, "English is the source, not a pack");
   assert.equal(hasShippedPack("sw"), false);
+});
+
+// A generated built-in scenario changes its card text when the map assets change.
+// The current seed must have a catalog entry and a shipped translation in EVERY
+// language; overall pack coverage can stay green while one new card falls back.
+test("the built-in default scenario description has committed translations in every shipped language", () => {
+  const text = DEFAULT_SCENARIO.description;
+  assert.ok(typeof text === "string" && text.trim(), "the default scenario has a description");
+  assert.ok(CATALOG.includes(text), "the current scenario description is in the English catalog");
+  const generated = fs.readFileSync(new URL("./web/generated/defaultScenario.js", import.meta.url), "utf8");
+  assert.ok(generated.includes(JSON.stringify(text)), "the web-generated scenario uses the seed's description");
+  for (const code of SHIPPED_PACK_LANGUAGES) {
+    const translated = read(`${code}.json`)[text];
+    assert.ok(typeof translated === "string" && translated.trim(), `${code}: default scenario description must be translated`);
+  }
 });
 
 for (const code of SHIPPED_PACK_LANGUAGES) {

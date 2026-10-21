@@ -25,6 +25,7 @@
 // on every machine.
 
 import { HOLDER_SIDE_A, HOLDER_SIDE_B, MANPOWER_SHARE, MEN_PER_FORMATION_BY_ERA, PART_COUNTER_LEAST } from "./constants.js";
+import { isUnderWay } from "./transports.js";
 
 const fold = (value) => String(value ?? "").replace(/\s+/g, " ").trim().toLowerCase();
 
@@ -94,12 +95,110 @@ export const servingOf = (run, name) => {
   return (strength / 100) * menOf(run, name);
 };
 
+// Soldiers remain residents while mobilized. The extra commitment represents
+// replacements and losses NOT currently embodied in a live frontline unit.
+// It is not evidence of deaths. Keep the saved amount separate from the
+// active strength so a long war cannot recycle losses as fresh recruits.
+export const previousUnavailable = (run, name) => {
+  if (run.input?.isGroup?.(name)) return 0;
+  const row = priorPersonnelRow(run, name);
+  return Number.isSafeInteger(row?.unavailable) && row.unavailable > 0 ? row.unavailable : 0;
+};
+
+const priorPersonnelRow = (run, name) => {
+  if (!(run.priorPersonnelByName instanceof Map)) {
+    run.priorPersonnelByName = new Map(Object.entries(run.input?.frontPersonnel ?? {})
+      .map(([owner, row]) => [fold(owner), row]));
+  }
+  return run.priorPersonnelByName.get(fold(name));
+};
+
+export const previousUnresolved = (run, name) => {
+  if (run.input?.isGroup?.(name)) return 0;
+  const row = priorPersonnelRow(run, name);
+  return Number.isSafeInteger(row?.unresolved) && row.unresolved > 0 ? row.unresolved : 0;
+};
+
+// This must run after loading existing battlefields, BEFORE any new draft or
+// front order. Otherwise a carried battlefield appears to have been recruited
+// again during a retry.
+export const rememberStartingService = (run) => {
+  const names = new Set();
+  for (const battle of run.battles) if (battle.status !== "closed") {
+    for (const side of [HOLDER_SIDE_A, HOLDER_SIDE_B]) {
+      battle.sides[side].forEach((name) => names.add(name));
+    }
+  }
+  run.startServing = new Map([...names].map((name) => [fold(name), servingOf(run, name)]));
+};
+
+const replacedThisRun = (run, name) => {
+  let personnel = 0;
+  for (const battle of run.battles) {
+    for (const side of [HOLDER_SIDE_A, HOLDER_SIDE_B]) {
+      (battle.mendedBy?.[side] ?? []).forEach((points, owner) => {
+        const member = battle.sides[side][owner];
+        if (member && fold(member) === fold(name) && points > 0) personnel += (points / 100) * menOf(run, member);
+      });
+    }
+  }
+  return personnel;
+};
+
+export const committedThisRun = (run, name) => {
+  const before = run.startServing?.get(fold(name)) || 0;
+  const change = run.manpower?.get(fold(name));
+  return Math.max(servingOf(run, name), before + previousUnavailable(run, name)
+    + (change?.drawn || 0) - (change?.returned || 0) + replacedThisRun(run, name));
+};
+
+// Absolute reported reservations in excess of surviving active formations.
+// Once all of a country's active fronts AND transports close, military service
+// commitments are released, not transformed into recorded population deaths.
+export const personnelReport = (run) => {
+  if (!levies(run)) return null;
+  const participating = new Map();
+  for (const battle of run.battles) if (battle.status !== "closed") {
+    for (const side of [HOLDER_SIDE_A, HOLDER_SIDE_B]) {
+      battle.sides[side].forEach((name, index) => {
+        if (!battle.gone?.[side]?.has(index) && !run.input?.isGroup?.(name)) participating.set(fold(name), name);
+      });
+    }
+  }
+  for (const carrier of run.transports ?? []) {
+    if (isUnderWay(carrier) && carrier.load?.length && carrier.owner && !run.input?.isGroup?.(carrier.owner)) {
+      participating.set(fold(carrier.owner), carrier.owner);
+    }
+  }
+  // Older Statistics saves may contain independently verified missing-person
+  // incidents. Modern Beta does not yet produce that provenance, so preserve
+  // it rather than pretending the missing people have returned.
+  for (const [name, prior] of Object.entries(run.input?.frontPersonnel ?? {})) {
+    if (Number.isSafeInteger(prior?.unresolved) && prior.unresolved > 0 && !run.input?.isGroup?.(name)) {
+      if (!participating.has(fold(name))) participating.set(fold(name), name);
+    }
+  }
+  return [...participating.values()].map((name) => {
+    const prior = priorPersonnelRow(run, name);
+    const active = run.battles.some((battle) => battle.status !== "closed" &&
+      battle.sides.some((members) => members.some((member) => fold(member) === fold(name)))) ||
+      (run.transports ?? []).some((carrier) => isUnderWay(carrier) && fold(carrier.owner) === fold(name) && carrier.load?.length);
+    const unavailable = active ? Math.max(0, Math.round(committedThisRun(run, name) - servingOf(run, name))) : 0;
+    return { name, unavailable,
+      ...(previousUnresolved(run, name) > 0 ? { unresolved: previousUnresolved(run, name) } : {}),
+      ...(Array.isArray(prior?.incidents) && prior.incidents.length ? { incidents: prior.incidents } : {}),
+      ...(Number.isSafeInteger(prior?.lastUnattributedReturnRound) ?
+        { lastUnattributedReturnRound: prior.lastUnattributedReturnRound } : {}),
+    };
+  }).filter((row) => row.unavailable > 0 || (row.unresolved ?? 0) > 0);
+};
+
 // How many formations a country can still raise: Infinity where nothing holds it.
 export const formationsLeft = (run, name) => {
   if (!levies(run)) return Infinity;
   const people = peopleOf(run, name);
   if (people === 0) return Infinity;
-  return Math.max(0, Math.floor((shareOf(run, name) * people - servingOf(run, name)) / menOf(run, name)));
+  return Math.max(0, Math.floor((shareOf(run, name) * people - servingOf(run, name) - previousUnavailable(run, name) - previousUnresolved(run, name)) / menOf(run, name)));
 };
 
 // What is left of a country's men after its whole counters, as a part of one
@@ -111,7 +210,7 @@ export const partLeft = (run, name) => {
   if (!run.mech?.military || !levies(run)) return 0;
   const people = peopleOf(run, name);
   if (people === 0) return 0;
-  const men = shareOf(run, name) * people - servingOf(run, name);
+  const men = shareOf(run, name) * people - servingOf(run, name) - previousUnavailable(run, name) - previousUnresolved(run, name);
   if (!(men > 0)) return 0;
   const counters = men / menOf(run, name);
   const part = counters - Math.floor(counters);
@@ -142,7 +241,7 @@ export const mendBudget = (run, day) => {
     const key = fold(name);
     if (!run.mendLeft.has(key)) {
       const people = levies(run) ? peopleOf(run, name) : 0;
-      run.mendLeft.set(key, people === 0 ? Infinity : Math.max(0, ((shareOf(run, name) * people - servingOf(run, name)) / menOf(run, name)) * 100));
+      run.mendLeft.set(key, people === 0 ? Infinity : Math.max(0, ((shareOf(run, name) * people - servingOf(run, name) - previousUnavailable(run, name) - previousUnresolved(run, name)) / menOf(run, name)) * 100));
     }
     return { left: () => run.mendLeft.get(key), spend: (points) => run.mendLeft.set(key, run.mendLeft.get(key) - points) };
   };

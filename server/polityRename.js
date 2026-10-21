@@ -268,7 +268,7 @@ export const renamePolityInWorld = (world, fromName, toName) => {
   put("warWeariness", mapRows(world?.warWeariness, (row) => ({ ...row, country: one(row.country) })));
   put("warResources", mapRows(world?.warResources, (row) => ({ ...row, country: one(row.country) })));
   put("attrition", mapRows(world?.attrition, (row) => ({ ...row, country: one(row.country) })));
-  for (const field of ["countryStats", "countryTags", "internationalReputation", "intelligence", "playerGoals"]) {
+  for (const field of ["countryStats", "countryTags", "internationalReputation", "intelligence", "playerGoals", "frontPersonnel"]) {
     put(field, mapKeys(world?.[field], fromKey, to));
   }
   put("politicalActors", rekeyPoliticalActors(world?.politicalActors, fromKey, to));

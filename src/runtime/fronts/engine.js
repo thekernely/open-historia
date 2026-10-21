@@ -78,7 +78,7 @@ import { redistance, takeCapsule, traceContour } from "./field.js";
 import { downhill } from "./ground.js";
 import { pointInFrame, projectorOf } from "./frame.js";
 import { landWithin, othersOnWay } from "./invade.js";
-import { draw, formationsLeft, manpowerReport, menOf, menPerFormation, partLeft, sendHome } from "./manpower.js";
+import { draw, formationsLeft, manpowerReport, menOf, menPerFormation, partLeft, personnelReport, rememberStartingService, sendHome } from "./manpower.js";
 import { applyOrder, assignOrder, landCarried, putAshore, readSieges, setStandingOrder, standingOf } from "./orders.js";
 import { foldBattlefieldName, normalizeBattlefields } from "./record.js";
 import { authoredName } from "./scenarioFronts.js";
@@ -1950,6 +1950,7 @@ const begin = (run) => {
     if (!arena) throw REGIONS_NEEDED;
     run.battles.push(loadBattle(run, record, arena));
   }
+  rememberStartingService(run);
   for (const battle of run.battles) {
     syncWithWar(run, battle);
     reconcile(battle, run);
@@ -2283,6 +2284,7 @@ const snapshot = (run) => {
     })),
     // What recruitment drew from each country's people and what came home to them, in men (manpower.js).
     manpower: manpowerReport(run),
+    personnel: personnelReport(run),
     // How much each country's formations advanced, which its war resources pay for (runtime/warResources.js).
     ...(run.mech.supply ? { effort: [...run.effort.values()].map(({ name, advanced, troopDays, warDays }) => ({ name, advanced, troopDays, warDays })) } : {}),
     // What the weather and being cut off took from each country, besides the fighting (attrition.js).

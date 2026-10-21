@@ -22,6 +22,7 @@ import { PLAYER_GROUP_JUMP_RULE, describeGroupsForPrompt, describePlayerGroupFor
 import { effectiveCityPopulation } from "../../runtime/cityPopulation.js";
 import { hostingSharedGame, humanCountriesOf } from "../../runtime/humanPolities.js";
 import { withTurnSeaBattles } from "../../runtime/naval/record.js";
+import { withFrontPersonnel } from "../../runtime/fronts/personnelReserve.js";
 import { withFrontFortifications } from "../../runtime/warGeography.js";
 import { zoneWeatherFor } from "../../runtime/zoneWeather.js";
 import { militaryLookup } from "../../runtime/militaryStats.js";
@@ -211,7 +212,7 @@ import { frontsOn, strategyNetOn } from "./frontsGate.js";
 import { engineerLines } from "../../runtime/fronts/engineer.js";
 import { foreseeFronts } from "./foreseenFronts.js";
 import { offPageAvailable } from "./frontWorkerClient.js";
-import { applyTurnFronts, citiesFollowCountries, withFrontManpower, withBlockadeEconomy, turnBlockades, regionHoldingsOf, forecastTurnFronts, frontsListBlock, frontPlansBlock, frontPowers, frontRegionTest, frontWarJoins, frontWarStarts, frontsLiveBlock, openScenarioFronts, routesIntoOthers, transportWaysFor, readFrontCities, scenarioFrontsPending, warRoomChartFor, warRoomIntelText, withFrontUnits, withoutFrontPowers } from "./frontApply.js";
+import { applyTurnFronts, citiesFollowCountries, withBlockadeEconomy, turnBlockades, regionHoldingsOf, forecastTurnFronts, frontsListBlock, frontPlansBlock, frontPowers, frontRegionTest, frontWarJoins, frontWarStarts, frontsLiveBlock, openScenarioFronts, routesIntoOthers, transportWaysFor, readFrontCities, scenarioFrontsPending, warRoomChartFor, warRoomIntelText, withFrontUnits, withoutFrontPowers } from "./frontApply.js";
 import { withTurnStrikes } from "../../runtime/strikes.js";
 import { playerDiplomacy, turnDays, turnWarAndPeace } from "./warAndPeace.js";
 import { PEACE_BLOCK_HEADING, buildPeaceBlock } from "./peacePrompt.js";
@@ -9185,10 +9186,10 @@ const applySimulationResult = async ({
   // one (frontApply.js): before the standing orders advance, since a formation
   // on a battlefield keeps none, and before the unit caps, which leave it out.
   impactedWorld = withFrontUnits(impactedWorld, turnFronts);
-  // And what the troops raised this turn cost their countries in people, less
-  // the men who came home (runtime/fronts/manpower.js): "military recruitment
-  // directly draws from and reduces the available population pool."
-  impactedWorld = withFrontManpower(impactedWorld, turnFronts, applyCountryStatPatchToWorld);
+  // Front recruitment commits military personnel, NOT decreases living residents.
+  // Losses on a battlefield may be wounded or missing, not proven census deaths.
+  // Only independently validated demographic effects can change the population.
+  impactedWorld = withFrontPersonnel(impactedWorld, turnFronts);
   // And what a blockade cost the country it was laid on, off its economy
   // (runtime/naval/blockade.js): "make blockades affect the economy".
   impactedWorld = withBlockadeEconomy(impactedWorld, turnFronts, applyCountryStatPatchToWorld);

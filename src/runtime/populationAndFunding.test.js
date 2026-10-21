@@ -15,7 +15,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { countryWeight, frontWorldReaders } from "../Game/AI/frontTurn.js";
-import { withFrontManpower } from "../Game/AI/frontApply.js";
+import { withFrontPersonnel } from "./fronts/personnelReserve.js";
 import { normalizeGroups } from "./groups.js";
 import {
   FUNDING_FACTOR_LEAST,
@@ -137,22 +137,16 @@ test("funding moves a country's weight in a land war: its treasury alone, or aga
   assert.equal(readers.strengthOf("Middle"), countryWeight({ population: 10e6 }));
 });
 
-// ---- what recruitment costs a country ---------------------------------------------------
+// ---- military service is not a population change -------------------------
 
-test("what a turn's recruitment drew comes off the country's population, less the men who came home", () => {
-  const patched = [];
-  const patch = (world, name, change) => {
-    patched.push([name, change.population.total]);
-    world.countryStats[name] = { ...world.countryStats[name], population: { ...world.countryStats[name].population, total: change.population.total } };
-  };
-  const world = { countryStats: { Aland: { population: { total: 9000000 } }, Borduria: { population: { total: 4000000 } } } };
-  const fronts = { manpower: [{ name: "aland", drawn: 240000, returned: 30000 }, { name: "Borduria", drawn: 0, returned: 50000 }, { name: "Cisland", drawn: 90000, returned: 0 }] };
-  const next = withFrontManpower(world, fronts, patch);
-  assert.deepEqual(patched, [["Aland", 8790000], ["Borduria", 4050000]], "and a country with no sheet has nothing to take them from");
-  assert.equal(next.countryStats.Aland.population.total, 8790000);
-  assert.equal(world.countryStats.Aland.population.total, 9000000, "the world it was given is not written on");
-  // Nothing charged: the same world.
-  assert.equal(withFrontManpower(world, { manpower: [] }, patch), world);
-  assert.equal(withFrontManpower(world, null, patch), world);
-  assert.equal(withFrontManpower(world, { manpower: [{ name: "Cisland", drawn: 5, returned: 0 }] }, patch), world);
+test("mobilization and return update service commitments, not living residents", () => {
+  const world = { countryStats: { Aland: { population: { total: 9e6 } }, Borduria: { population: { total: 4e6 } } },
+    frontPersonnel: { Aland: { unavailable: 5000 } } };
+  const ledger = { manpower: [{ name: "Aland", drawn: 240000, returned: 30000 }] };
+  assert.equal(withFrontPersonnel(world, ledger), world, "a manpower receipt alone does not assert the service state");
+  const next = withFrontPersonnel(world, { personnel: [{ name: "Aland", unavailable: 9000 }] });
+  assert.deepEqual(next.frontPersonnel, { Aland: { unavailable: 9000 } });
+  assert.deepEqual(next.countryStats, world.countryStats, "recruitment cannot change the census");
+  assert.deepEqual(world.frontPersonnel, { Aland: { unavailable: 5000 } }, "the original world is untouched");
+  assert.deepEqual(withFrontPersonnel(next, { personnel: [] }).frontPersonnel, {}, "demobilization releases reservations");
 });

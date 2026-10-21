@@ -973,7 +973,7 @@ export const runTurnFronts = async ({
     });
   }
   let strikes = [];
-  const nothing = (battlefields) => ({ events: list, battlefields, unitChanges: [], notes, flips: [], stats: null, news: [], joins: [], starts: [], transports: null, voyages: [], strikes });
+  const nothing = (battlefields) => ({ events: list, battlefields, unitChanges: [], notes, flips: [], stats: null, news: [], joins: [], starts: [], transports: null, voyages: [], strikes, personnel: null });
 
   const saved = normalizeBattlefields(world?.battlefields);
   const stages = asArray(warStages).length ? asArray(warStages).map(asArray) : [asArray(world?.wars)];
@@ -1180,6 +1180,7 @@ export const runTurnFronts = async ({
       regionTypes: asArray(regionTypes),
       strengthOf: readers.strengthOf,
       peopleOf: readers.peopleOf,
+      frontPersonnel: world?.frontPersonnel,
       // (A run may be told to charge nobody for the troops it raises.)
       ...(manpower === false ? { manpower: false } : {}),
       // Who is played by a person: on a side of several countries nobody's order stands in for theirs.
@@ -1386,6 +1387,7 @@ export const runTurnFronts = async ({
     starts: asArray(result.starts),
     // What recruitment drew from each country's people and what came home, in men: for frontApply.js withFrontManpower.
     manpower: asArray(result.manpower),
+    personnel: Array.isArray(result.personnel) ? result.personnel.map((row) => ({ ...row, name: nameOf(row.name) })) : null,
     // How much each country's formations advanced, which its war resources pay for (runtime/warResources.js).
     effort: asArray(result.effort),
     // What the weather and being cut off took from each country, besides the fighting (runtime/fronts/attrition.js).
