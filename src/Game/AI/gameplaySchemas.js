@@ -1,6 +1,7 @@
 import { DEMAND_CHECK_OUTCOMES } from "../../runtime/demandCheck.js";
 import { STATS_BACKEND_FIELD, STATS_BACKEND_KEYS } from "../../runtime/statsBackend.js";
 import { EVENT_TAG_ENUM, MAX_EVENT_TAGS } from "../../runtime/eventTags.js";
+import { validateGeneratedStatsEconomicAccounting } from "../../runtime/statsEconomicEventAccounting.js";
 import { normalizeEventPresentation } from "../../runtime/eventQuote.js";
 import {
   TERRITORY_BASIS_DESCRIPTION,
@@ -129,7 +130,7 @@ const regionClaimSchema = {
 const statPct = (description) => ({ type: "integer", minimum: 0, maximum: 100, description });
 const statsUpdateSchema = {
   type: "object",
-  description: "Only the fields that changed this period; every omitted field keeps its value. Absolute values, not deltas.",
+  description: "Legacy absolute fields for older events and explicit corrections. In generated time skips, do not submit economy GDP, growth, inflation, unemployment, debt, budget, GDP sectors or population as absolute Stats values; use native dated statsEffects when supported. Strategic indices and custom national readings retain their separate authorized paths.",
   properties: {
     capital: textSchema("Capital, only when it changes."),
     continent: textSchema("Continent / broad region, only when it changes."),
@@ -277,6 +278,41 @@ const polityChangeSchema = {
     ),
     note: textSchema("Brief reason."),
     stats: statsUpdateSchema,
+    statsEffects: {
+      type: "object",
+      description: "Optional bounded native national change from this accepted event; never inferred from war alone.",
+      properties: {
+        populationChange: { type: "integer", description: "Signed residents, max 20% of existing population." },
+        populationCause: { type: "string", enum: ["births", "deaths", "immigration", "emigration"] },
+        gdpChangePercent: { type: "number", description: "Signed percentage of current GDP, -90 to +100." },
+        gdpCause: { type: "string", enum: ["production", "destruction", "trade", "policy"] },
+        annualRealGrowthDelta: { type: "number", description: "Finite change to annual real-output growth in percentage POINTS (-20..20), only if supported by the event; use for a timed disruption/recovery, not a permanent GDP loss." },
+        durationDays: { type: "integer", description: "Required with annualRealGrowthDelta, 1..730 days. Exact duration of the dated effect." },
+        economicShockEstimate: {
+          type: "object",
+          description: "Explicitly uncertain crisis estimate, never measured GDP. Requires sourceStorylineId, finite NEGATIVE annualRealGrowthDelta, a directly affected polity, and concrete exposure evidence; maximum 90 days. Only one active estimated pressure per crisis and country.",
+          properties: {
+            basis: { type: "string", enum: ["simulation-estimate"] },
+            channel: { type: "string", enum: ["credit", "trade", "production", "logistics", "labor"] },
+            exposure: { type: "string", enum: ["direct", "dependent"] },
+            evidence: { type: "string", description: "32..240 chars identifying the concrete in-world disruption/dependency for this polity, not a fabricated observed GDP percentage." },
+          },
+          required: ["basis", "channel", "exposure", "evidence"],
+          additionalProperties: false,
+        },
+        resolveGrowthInfluenceEventId: { type: "string", description: "End an existing, still-active dated annualRealGrowthDelta influence early by referencing its EXACT canonical source event ID. Only if the source event ID and verified end of its cause are known. This is a standalone effect and changes future accrual, not past GDP." },
+        sourceStorylineId: { type: "string", description: "Optional exact active canonical storyline ID that this event is explicitly linked to, with the target country among its participants. Records causal provenance only, not an extra numeric penalty." },
+        recoveryOfEventId: { type: "string", description: "For a measured recovery of previously lost national stability, strategic index or independent custom resource: exact original accepted Stats event ID. Restore only documented lost amounts, bounded by all prior recoveries; never use for GDP or residents." },
+        debtFinancedOutlayPercentGdp: { type: "number", minimum: 0.0001, maximum: 5, description: "One-off NEW BORROWING for an explicitly quantified procurement, mobilization, relief or reconstruction outlay, as percent of current GDP (0.0001..5; up to 4 decimals). Requires dated, evidenced borrowing; never infer expenses from war, strength, or military spending rating. Increases public debt only, NOT GDP or annual budget balance." },
+        debtFinancedOutlayCause: { type: "string", enum: ["procurement", "mobilization", "relief", "reconstruction"] },
+        stabilityDelta: { type: "integer", minimum: -20, maximum: 20, description: "Signed national stability points, nonzero; requires an initialized reading and result 0..100. Not an absolute value." },
+        indexDeltas: { type: "object", description: "Signed point changes only for existing country indices, max 12 keys, each nonzero -20..20, result 0..100. Never invent a missing index.", maxProperties: 12, additionalProperties: { type: "integer", minimum: -20, maximum: 20 } },
+        customStatDeltas: { type: "object", description: "Only on a custom national Stats sheet: signed changes to initialized independent scenario-defined metric keys. Existing values, author ranges and display precision are mandatory; do not change native-bound display cards.", maxProperties: 60, additionalProperties: { type: "number" } },
+        reason: textSchema("Specific evidence for the national change, max 240 characters."),
+      },
+      required: ["reason"],
+      additionalProperties: false,
+    },
   },
   required: ["operation", "code"],
   additionalProperties: false,
@@ -1043,6 +1079,9 @@ const JUMP_COMPACT_IMPACT_DESCRIPTIONS = new Set([
   "markerOps",
   "institutionLifecycleOps",
   "groupOps",
+  // The jump's [Levers] guidance already explains polity changes. Keep the
+  // native/GM schema constraints, not duplicative nested annotations.
+  "polityChanges",
 ]);
 
 const jumpImpactsSchema = {
@@ -1161,6 +1200,17 @@ const eventSchema = {
     importance: textSchema("Importance, normally minor or major."),
     kind: textSchema("Event category, such as world, player, diplomacy, or military."),
     tags: eventTagsSchema,
+    // New generated economic events must explicitly account for their
+    // consequences. This declaration is evidence, never itself a Stats writer.
+    economicAccounting: {
+      type: "object",
+      properties: {
+        status: { type: "string", enum: ["applied", "unquantified", "none"] },
+        reason: { type: "string", description: "Concrete reason or measurement limitation." },
+      },
+      required: ["status", "reason"],
+      additionalProperties: false,
+    },
     // Where the event happens, for its card's links and the camera
     // (AI/eventPlaces.js). Each entry carries its kind; the long form of the
     // rule is in the skip's own rules, so this only says what the field is.
@@ -3759,6 +3809,7 @@ export const STATS_BACKEND_PATCH_SCHEMA = Object.freeze({
 
 const customStatsProperties = (rows) => Object.fromEntries(
   (Array.isArray(rows) ? rows : [])
+    .filter((row) => !row?.nativeMetric)
     .map((row) => [String(row?.key || "").trim(), statSchemaForDefinition(row)])
     .filter(([key]) => key),
 );
@@ -3778,7 +3829,8 @@ export const getGameplayToolForCustomStatSheet = (taskKey, rows, { custom = fals
 
   const properties = customStatsProperties(rows);
   const keys = Object.keys(properties);
-  if (!keys.length) return tool;
+  // Even an all-native custom presentation must never fall back to the
+  // standard tool's writable economy/population schema.
 
   if (taskKey === "countryStatSheet") {
     return {
@@ -3815,15 +3867,17 @@ export const getGameplayToolForCustomStatSheet = (taskKey, rows, { custom = fals
   if (taskKey === "gameMaster") {
     const keyList = keys.join(", ");
     const sampleKey = keys[0];
-    const patchDescription =
-      `JSON array text for authoritative country Stats patches in this custom-sheet scenario. `
+    const patchDescription = !keys.length
+      ? "JSON array text for a scenario with only native-bound national cards. No independently writable customStats keys exist; use explicit backend corrections only where authorized."
+      : `JSON array text for authoritative country Stats patches in this custom-sheet scenario. `
       + `Numeric Stats MUST be written only as patch.customStats using these exact machine keys: ${keyList}. `
       + `Do not use population, economy, indices, stability, or gdpBreakdown. `
       + `The hidden backend the game's own arithmetic reads may be corrected in the same patch, as patch.${STATS_BACKEND_FIELD}: {"population":0,"gdp":0,"budgetBalance":0,"publicDebt":0}, any of the four. `
       + `Example: [{"country":"Full Polity Name","patch":{"customStats":{"${sampleKey}":1}},"eventIndexes":[],"reason":""}]. `
       + "Use only the requested customStats keys; values are absolute, not deltas.";
-    const eventDescription =
-      `JSON array text for canonical event objects. This scenario uses a custom National Stats sheet. `
+    const eventDescription = !keys.length
+      ? "JSON array text for canonical events. The custom national dashboard has no independent writable metrics: never write customStats or customStatDeltas."
+      : `JSON array text for canonical event objects. This scenario uses a custom National Stats sheet. `
       + `If an event changes Stats through impacts.polityChanges[].stats, numeric Stats MUST be under customStats `
       + `using only these exact machine keys: ${keyList}. Do not use population, economy, indices, stability, or gdpBreakdown. `
       + "Use [] when there are no events.";
@@ -3852,6 +3906,18 @@ export const getGameplayToolForCustomStatSheet = (taskKey, rows, { custom = fals
   const rewrite = (value, parentKey = "") => {
     if (Array.isArray(value)) return value.map((entry) => rewrite(entry));
     if (!value || typeof value !== "object") return value;
+
+    if (parentKey === "customStatDeltas") {
+      return {
+        ...value,
+        properties: Object.fromEntries((Array.isArray(rows) ? rows : [])
+          .filter((row) => !row.nativeMetric)
+          .map((row) => [row.key, { type: row.kind === "index" ? "integer" : "number",
+            description: `Signed change to initialized ${row.label}; must respect its authored numerical bounds and precision.` }])),
+        additionalProperties: false,
+        maxProperties: keys.length,
+      };
+    }
 
     if (parentKey === "customStats") {
       return {
@@ -4539,6 +4605,8 @@ export const validateGameplayPayload = (taskKey, value) => {
         }
       }
     }
+    const accountingError = validateGeneratedStatsEconomicAccounting(value.events);
+    if (accountingError) return { valid: false, error: accountingError };
     const hasEvents = value.events.length > 0;
     const hasSummary = value.summary.trim().length > 0;
     if (!hasEvents && !hasSummary) {

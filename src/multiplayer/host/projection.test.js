@@ -80,6 +80,16 @@ const state = () => ({
       [LATVIA]: { capital: "Riga", stability: 70, customStats: { prestige: 5151 }, indices: { sovereignty: 60 } },
     },
     countryStatsHistory: { [RUSSIA]: [{ date: "2014-01-01", stability: 58 }] },
+    statsEventReceipts: [{ eventId: "CANARY-STATS-RECEIPT", polity: RUSSIA, date: "2014-01-15", reason: "CANARY-CAUSAL-REASON", changes: [{ metric: "economy.gdp", before: 500, after: 400 }] }],
+    militaryExpenditureCommitments: [{
+      id: "CANARY-MILITARY-AUTHORIZATION", polity: RUSSIA, projectId: "proj-ru",
+      milestoneId: "CANARY-MILITARY-MILESTONE", authorizedAt: "2014-01-15",
+      amountGdpEquivalent: 80000000, financing: "debt", budgetTreatment: "incremental", authority: "scenario",
+    }],
+    migrationFlows: [{ id: "CANARY-MIGRATION-PRIVATE", fromPolity: RUSSIA, toPolity: LATVIA,
+      sourceDate: "2014-01-01", endDate: "2015-01-01", lastDate: "2014-01-01",
+      baseSourcePopulation: 1000, baseDestinationPopulation: 1000, totalPeople: 20,
+      creditedPeople: 0, reason: "CANARY-MIGRATION-AUTHOR-REASON" }],
     intelligence: { [RUSSIA]: 88, [LATVIA]: 36 },
     playerGoals: { [RUSSIA]: { text: "CANARY-RU-GOAL" }, [LATVIA]: { text: "Riga's goal" } },
     politicalActors: {
@@ -172,6 +182,17 @@ test("every world key is public, filtered for the viewer, or the host's alone, a
   assert.deepEqual(missing, [], "classify these world keys in projection.js");
 });
 
+test("scenario military expenditure authorization stays in host accounting, not any player's view", () => {
+  assert.ok(HOST_ONLY_WORLD_KEYS.includes("militaryExpenditureCommitments"));
+  const raw = state();
+  assert.equal(normalizeWorldState(raw.world).militaryExpenditureCommitments[0].id, "CANARY-MILITARY-AUTHORIZATION");
+  for (const viewer of [LATVIA, RUSSIA, ESTONIA]) {
+    const projected = projectForViewer(raw, viewer);
+    assert.equal(Object.hasOwn(projected.world, "militaryExpenditureCommitments"), false, `ledger leaked to ${viewer}`);
+    assert.equal(text(projected).includes("CANARY-MILITARY-AUTHORIZATION"), false, `authorization leaked to ${viewer}`);
+  }
+});
+
 test("nothing private of the second player reaches the host's view", () => {
   const view = text(projectForViewer(state(), LATVIA));
   for (const canary of [
@@ -208,6 +229,9 @@ test("the narrator's own never reaches any view, the host's included", () => {
       "CANARY-STORYLINE", "story-1", "CANARY-JUMP-SUMMARY", "CANARY-RAW-RESPONSE", "CANARY-GM-AUDIT", "CANARY-GM-NOTES",
       "CANARY-TURN-SUMMARY", "CANARY-RECEIPT-NOTE", "CANARY-TRANSACTION", "CANARY-LV-SUGGESTION",
       "CANARY-SPYOP", "CANARY-PROJECTOP", "CANARY-EVENT-DOCUMENT", "CANARY-NPC-CHAT",
+      "CANARY-STATS-RECEIPT", "CANARY-CAUSAL-REASON",
+      "CANARY-MIGRATION-PRIVATE", "CANARY-MIGRATION-AUTHOR-REASON",
+      "CANARY-MILITARY-AUTHORIZATION", "CANARY-MILITARY-MILESTONE",
     ]) assert.equal(view.includes(canary), false, `${canary} reached ${seat}'s view`);
   }
 });

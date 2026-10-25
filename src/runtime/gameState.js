@@ -1,5 +1,5 @@
 /*! Open Historia — portions (troop deployments + era troop types) © 2026 Nicholas Krol, AGPL-3.0-or-later (see LICENSE). */
-import { JSON_URLS, getPrimedScenarioRegionCatalog, loadTurnRestorePoint, primeJson, publishJsonWriteBatch, readJson, reportPerfOperation, writeJson } from "./assets.js";
+import { JSON_URLS, getPrimedScenarioRegionCatalog, loadRegionCatalog, loadTurnRestorePoint, primeJson, publishJsonWriteBatch, readJson, reportPerfOperation, writeJson } from "./assets.js";
 import { withMapClaims } from "./mapClaims.js";
 import { populationFigureOf } from "./populationFigure.js";
 import { normalizeNaviesRaised, normalizeSeaBattles } from "./naval/record.js";
@@ -8,6 +8,7 @@ import { normalizeCallsToArms } from "./alliances.js";
 import { normalizePeaceOffers, normalizePeaceTreaties, normalizeReparations } from "./peaceTerms.js";
 import { normalizeWarWeariness } from "./warWeariness.js";
 import { normalizeWarResources } from "./warResources.js";
+import { normalizeMilitaryExpenditureCommitments, settleMilitaryMilestonePayments } from "./militaryExpenditureCommitments.js";
 import { normalizeFrontPersonnel } from "./fronts/personnelReserve.js";
 import { normalizeAttrition } from "./attrition.js";
 import { eraSettingOf, normalizeWarSettings } from "./warSettings.js";
@@ -24,6 +25,7 @@ import { dedupeEventLog, eventCanonicalKey } from "./eventDedup.js";
 import { normalizeEventTags } from "./eventTags.js";
 import { normalizeEventPlaces } from "./eventPlaces.js";
 import { normalizeEventPresentation } from "./eventQuote.js";
+import { normalizeStatsEconomicEventAccounting } from "./statsEconomicEventAccounting.js";
 import { normalizeEventAgency } from "./eventAgency.js";
 import { buildOwnerAliasMap, createOwnerResolver, isRealCountryName, toCountryName } from "./ownerNames.js";
 import { foundPolityIfUnknown } from "./polityFounding.js";
@@ -37,7 +39,11 @@ import { normalizeInteractiveOffer } from "./interactiveOffer.js";
 import { normalizeSpyOp } from "./spycraft.js";
 import { eventsFromLegacyChat, normalizeChatEvents, projectChatThread, withUnloggedMessages } from "./chatThreads.js";
 import { latestTurnEventIds, unseenEvents, withoutUnseenChats, withoutUnseenEvents, withoutUnseenReports } from "./unseenEvents.js";
-import { COUNTRY_STATS_EVENT_RESCALE_LIMIT, mergeCountryStatPatch, normalizeCountryStatSheet } from "./countryStats.js";
+import { COUNTRY_STATS_EVENT_RESCALE_LIMIT, mergeCountryStatPatch, normalizeCountryStatSheet, normalizeCountryStatDemographicClock } from "./countryStats.js";
+import { planStatsEventEffect } from "./statsEventEffects.js";
+import { loadStatSheetDefinition } from "./statsSheet.js";
+import { planLegalTerritorialStatsTransfers } from "./territorialStatsReconciliation.js";
+import { appendAcceptedStatsReceipt, normalizeStatsEventReceipts } from "./statsEventReceipts.js";
 import {
   canonicalInstitutionIdentity,
   institutionChannelParticipants,
@@ -64,7 +70,7 @@ import {
   stepToward,
   wrapLng,
 } from "./unitMotion.js";
-import { compareGameDates, normalizeGameDate } from "./gameDates.js";
+import { addGameDays, compareGameDates, isCanonicalGameDate, normalizeGameDate } from "./gameDates.js";
 import { normalizeBattlefields } from "./fronts/record.js";
 import { normalizeTransports } from "./fronts/transports.js";
 import { normalizeStrikes } from "./strikes.js";
@@ -130,6 +136,8 @@ export const WORLD_DEFAULTS = {
   // and thereafter changed ONLY by the AI (polityChanges.stats), so a country's stats
   // stop regenerating/drifting every date change.
   countryStats: {},
+  // Host-private accepted-event numeric observations. Not a second Stats writer.
+  statsEventReceipts: [],
   // Continuum canonical political substrate. These are native world-state ledgers,
   // not editable Stats aliases: UI/AI consumers project from them through bounded
   // political knowledge/context seams.
@@ -285,6 +293,8 @@ export const WORLD_DEFAULTS = {
   // What each country has left to fight with, 0 to 100 (warResources.js): spent
   // by advancing and building fortified lines, refilled by its funding.
   warResources: [],
+  // Scenario-priced military project obligations; not a second national debt ledger.
+  militaryExpenditureCommitments: [],
   // What the weather and being cut off have cost each country at war (attrition.js).
   attrition: [],
   // How the scenario's wars are fought (warSettings.js): null where it says nothing.
@@ -1267,6 +1277,9 @@ const normalizePolityChange = (entry) => {
     operation,
     reputation,
     stats,
+    // Keep even malformed proposed effects intact until the native applier can
+    // reject the complete detached turn rather than silently discard the op.
+    ...(Object.hasOwn(entry, "statsEffects") ? { statsEffects: entry.statsEffects } : {}),
     tags,
   };
 };
@@ -3688,6 +3701,8 @@ export const normalizeEventEntry = (entry, index = 0) => {
     kind: normalizeRenamedKind(entry.kind) || "world",
     // Category tags for the timeline's filter chips (runtime/eventTags.js).
     tags: normalizeEventTags(entry.tags),
+    ...(normalizeStatsEconomicEventAccounting(entry.economicAccounting)
+      ? { economicAccounting: normalizeStatsEconomicEventAccounting(entry.economicAccounting) } : {}),
     notable: Boolean(entry.notable),
     playerRelated: Boolean(entry.playerRelated),
     // Persistent storylines this event advances (AI/nativeWorldDirector.js).
@@ -4332,6 +4347,7 @@ export const normalizeWorldState = (world) => {
     ...nextWorld,
     countryTags,
     countryStats,
+    statsEventReceipts: normalizeStatsEventReceipts(nextWorld.statsEventReceipts),
     ...(Object.hasOwn(nextWorld, "frontPersonnel") ? { frontPersonnel: normalizeFrontPersonnel(nextWorld.frontPersonnel) } : {}),
     politicalActors: normalizePoliticalActors(nextWorld.politicalActors),
     politicalSimulation: normalizePoliticalSimulationClock(nextWorld.politicalSimulation),
@@ -4447,6 +4463,7 @@ export const normalizeWorldState = (world) => {
     // and no colour — and where the renamed polity is the PLAYER'S, it is their own
     // programme sitting in the Foreign column with both of its controls gone. Idempotent,
     // so a board already correct reads back unchanged.
+    militaryExpenditureCommitments: normalizeMilitaryExpenditureCommitments(nextWorld.militaryExpenditureCommitments),
     projects: normalizeProjects(nextWorld.projects).map((project) => {
       const owner = resolveOwner(project.ownerCode);
       return owner === project.ownerCode ? project : { ...project, ownerCode: owner };
@@ -5194,14 +5211,26 @@ export const viewAsSeen = async ({ world, events, chats, game } = {}, { unseen =
     .map((id) => byId.get(id))
     .filter(Boolean);
   let seenWorld = null;
+  let hasRestorePoint = false;
   try {
     // The one restore point the turn started from, shared, not the archive of
     // twelve: only its world is copied, since applying events to it may change it.
     const snap = await loadTurnRestorePoint({ fromDate: turn.fromDate, toDate: turn.toDate || turn.date });
     if (snap) {
+      hasRestorePoint = true;
+      // A custom effect is authorized by the active scenario definition, not
+      // by the saved numeric sheet. The reveal must use the same definition as
+      // the canonical turn writer or replay may fail and expose future state.
+      const hasCustomEffects = seenTurnEvents.some((event) =>
+        (event?.impacts?.polityChanges ?? []).some((change) =>
+          Object.hasOwn(change?.statsEffects ?? {}, "customStatDeltas")));
+      const statSheetDefinition = hasCustomEffects ? await loadStatSheetDefinition() : null;
       const staged = applyEventImpactsToWorld({
         colors: {},
         events: normalizeEvents(seenTurnEvents),
+        statSheetDefinition,
+        regionCatalog: seenTurnEvents.some((entry) => entry?.impacts?.regionTransfers?.length
+          || entry?.impacts?.projectOps?.length) ? await loadRegionCatalog() : null,
         motion: { originDate: snap.fromDate || turn.fromDate || "", round: Number(turn.round) || Number(snap.round) || 0, tick: 0 },
         world: normalizeWorldState(cloneValue(snap.state.world)),
       }).world;
@@ -5214,7 +5243,15 @@ export const viewAsSeen = async ({ world, events, chats, game } = {}, { unseen =
           : report)),
       };
     }
-  } catch { /* no restore point to stage from: the finished world, less the unseen papers */ }
+  } catch (error) {
+    // A missing restore point still uses the established limited fallback.
+    // If a restore point exists but replay is invalid, never silently return
+    // the finished world while unrevealed events still exist: that would leak
+    // future canonical state to the advisor and other player-facing readers.
+    if (hasRestorePoint) {
+      throw new Error("Could not reconstruct the visible world from the turn restore point", { cause: error });
+    }
+  }
   const seenDate = normalizeOptionalString(seenTurnEvents.at(-1)?.date) || normalizeOptionalString(turn.fromDate);
   return {
     world: seenWorld ?? { ...world, reports: withoutUnseenReports(world?.reports, hidden) },
@@ -5354,7 +5391,7 @@ const writeRegionSovereign = (world, regionId, sovereign) => {
 const POLITY_LIFECYCLE_STORES = ["countryStats", "countryTags", "internationalReputation", "intelligence", "frontPersonnel"];
 
 const applyPolityAndTerritoryImpacts = ({
-  colors, eventDate = "", eventId = "", polityChanges = [], regionClaims = [], regionControlOps = [], regionTransfers = [], resolveOwner, world,
+  colors, eventDate = "", eventId = "", polityChanges = [], regionClaims = [], regionControlOps = [], regionTransfers = [], regionCatalog = null, statSheetDefinition = null, eventStorylineIds = [], statsSourceStorylines = [], resolveOwner, world,
 }) => {
   // The net under the turn validator (runtime/territoryBasis.js). A transfer or
   // a control flip that says its own basis is a claim, a threat or a raid moves
@@ -5421,6 +5458,25 @@ const applyPolityAndTerritoryImpacts = ({
     // one dispute, not a region striped four times in the same colour.
     if (current.some((entry) => samePolity(entry, claimant))) continue;
     writeRegionClaimants(world, claim.regionId, [...current, claimant]);
+  }
+
+  // Plan territorial account succession *before* applying any title changes.
+  // A missing or contradictory map crosswalk must not leave a border moved
+  // without its residents and territorial GDP. The outer reducer owns an
+  // unpublished detached world, so throwing here cancels the entire event.
+  const legalStatsTouched = new Set();
+  if (regionTransfers.length) {
+    const planned = planLegalTerritorialStatsTransfers(world, regionTransfers, regionCatalog, {
+      resolveOwner, effectiveDate: eventDate,
+      dissolvingPolities: polityChanges.filter(({ change }) => change.operation === "dissolve").map(({ code }) => code),
+    });
+    if (planned) {
+      world.countryStats = planned.countryStats;
+      for (const movement of planned.movements) {
+        legalStatsTouched.add(movement.fromPolity);
+        legalStatsTouched.add(movement.toPolity);
+      }
+    }
   }
 
   // A transfer is a change of LEGAL SOVEREIGNTY (cession, annexation, sale,
@@ -5619,10 +5675,40 @@ const applyPolityAndTerritoryImpacts = ({
     // changes them (not every date); the event is recorded as accounted for so a
     // later reassessment does not apply it twice. The reputation index mirrors
     // into the authoritative store.
-    if (change.stats && typeof change.stats === "object") {
-      const merged = applyCountryStatPatchToWorld(world, code, change.stats, {
+    if (Object.hasOwn(change, "statsEffects") || (change.stats && typeof change.stats === "object")) {
+      // Relative numeric effects and legacy absolute patches pass through the
+      // same canonical merger. Capture actual before/after only after success.
+      const before = world.countryStats?.[code];
+      const effect = Object.hasOwn(change, "statsEffects")
+        ? planStatsEventEffect({ effect: change.statsEffects, sheet: before,
+          absoluteStats: change.stats, statSheetDefinition, eventId, eventDate,
+          eventStorylineIds, storylines: [
+            ...normalizeArray(world.storylines),
+            // New same-turn storylines are projected by the World Director but
+            // remain UNWRITTEN here. Only a dated, accepted-event-linked source
+            // may authorize Statistics provenance; never admit future sources.
+            ...normalizeArray(statsSourceStorylines).filter((row) => row?.status === "active"
+              && isCanonicalGameDate(row.startedDate) && isCanonicalGameDate(eventDate)
+              && compareGameDates(row.startedDate, eventDate) <= 0
+              && normalizeArray(row.sourceEventIds).includes(eventId)
+              && normalizeArray(eventStorylineIds).includes(row.id)
+              && !normalizeArray(world.storylines).some((current) => current?.id === row.id)),
+          ], polity: code, receipts: world.statsEventReceipts })
+        : null;
+      if (effect && world.statsEventReceipts?.some((receipt) => receipt.eventId === eventId && receipt.polity === code)) {
+        throw new Error("Statistics event has already been applied to this polity");
+      }
+      const patch = effect ? {
+        ...(change.stats || {}), ...effect.patch,
+        ...(change.stats?.economy ? { economy: { ...change.stats.economy, ...effect.patch.economy } } : {}),
+      } : change.stats;
+      const merged = applyCountryStatPatchToWorld(world, code, patch, {
         continuity: eventId ? { accountedEventIds: [eventId] } : null,
         maxAggregateRescale: COUNTRY_STATS_EVENT_RESCALE_LIMIT,
+      });
+      if (effect) appendAcceptedStatsReceipt(world, {
+        eventId, polity: code, date: eventDate, reason: effect.reason, before, after: merged, process: effect.process, resolution: effect.resolution,
+        sourceStorylineId: effect.sourceStorylineId, recoveryOfEventId: effect.recoveryOfEventId,
       });
       const rep = Number(merged?.indices?.internationalReputation);
       if (Number.isFinite(rep)) {
@@ -5722,6 +5808,25 @@ const applyPolityAndTerritoryImpacts = ({
     delete colors[code];
     console.info(`[polity lifecycle] dissolved "${code}".`);
   }
+
+  // The event can also carry an explicitly authorized population effect after
+  // the legal transfer. Its final resident count, not the intermediate title
+  // transfer count, is the base for the next *uncredited* demographic day.
+  // Do this only for accounts whose territory moved in THIS accepted event.
+  for (const previous of legalStatsTouched) {
+    const name = currentKey(previous);
+    const sheet = normalizeCountryStatSheet(world.countryStats?.[name]);
+    const clock = sheet?.continuity?.demographicClock;
+    const lastRebase = clock?.rebases?.at(-1);
+    if (!lastRebase || !sheet?.population?.total) continue;
+    if (lastRebase.effectiveDate !== addGameDays(clock.lastDate, 1)) continue;
+    if (lastRebase.basePopulation === sheet.population.total) continue;
+    const rebases = clock.rebases.map((row, index) =>
+      index === clock.rebases.length - 1 ? { ...row, basePopulation: sheet.population.total } : row);
+    const nextClock = normalizeCountryStatDemographicClock({ ...clock, rebases });
+    if (!nextClock) throw new Error(`Failed to reanchor same-event Statistics for ${name}`);
+    applyCountryStatPatchToWorld(world, name, { continuity: { demographicClock: nextClock } });
+  }
   return renamed;
 };
 
@@ -5731,7 +5836,8 @@ const applyPolityAndTerritoryImpacts = ({
 // not stamped into an entry's activity, which lists timeline events only.
 export const applyEventImpactsToWorld = ({
   colors = {}, events = [], world, motion = null, round = 0, boardOnlyEventIds = [],
-  statsChronology = null,
+  statsChronology = null, regionCatalog = null, statSheetDefinition = null,
+  statsSourceStorylines = [],
 }) => {
   const boardOnly = new Set(normalizeArray(boardOnlyEventIds).map(normalizeOptionalString).filter(Boolean));
   let nextColors = cloneValue(colors) ?? {};
@@ -5781,6 +5887,10 @@ export const applyEventImpactsToWorld = ({
     }
     nextWorld.countryStats = updated.countryStats;
     if (Object.hasOwn(updated, "countryStatsHistory")) nextWorld.countryStatsHistory = updated.countryStatsHistory;
+    // Migration's balanced resident movements and its exactly-once cursor
+    // share this detached authoritative publication seam. Dropping the cursor
+    // here would save the new populations but replay the transfer next turn.
+    if (Object.hasOwn(updated, "migrationFlows")) nextWorld.migrationFlows = updated.migrationFlows;
   };
   for (let eventIndex = 0; eventIndex < acceptedEvents.length; eventIndex += 1) {
     const event = acceptedEvents[eventIndex];
@@ -5822,6 +5932,10 @@ export const applyEventImpactsToWorld = ({
       regionClaims: [...event.impacts.regionClaims, ...released.regionClaims],
       regionControlOps: event.impacts.regionControlOps,
       regionTransfers: [...event.impacts.regionTransfers, ...released.regionTransfers],
+      regionCatalog,
+      statSheetDefinition,
+      eventStorylineIds: event.storylineIds,
+      statsSourceStorylines,
       resolveOwner,
       world: nextWorld,
     });
@@ -5995,11 +6109,19 @@ export const applyEventImpactsToWorld = ({
     // activity feed and dates a project the event has just started, without the
     // model having to restate either.
     if (event.impacts.projectOps?.length) {
+      const beforeMilestoneWorld = { projects: nextWorld.projects };
       nextWorld.projects = applyProjectOps(
         nextWorld.projects,
         event.impacts.projectOps.map((op) => resolveProjectOpOwner(op, resolveOwner)),
         { date: event.date, eventId: boardOnly.has(event.id) ? "" : event.id, round },
       );
+      // The milestone transition is the delivery evidence. Only prior
+      // scenario-authorized pricing can turn it into a treasury payment.
+      if (nextWorld.militaryExpenditureCommitments?.length) {
+        const settled = settleMilitaryMilestonePayments(beforeMilestoneWorld, nextWorld,
+          { eventId: event.id, date: event.date, event });
+        Object.assign(nextWorld, settled);
+      }
     }
   }
   if (useStatsBoundary) settleStatsBoundary("afterEvents", acceptedEvents.length);

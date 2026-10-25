@@ -214,7 +214,7 @@ export const peaceImpacts = (world, war, territory) => {
 //   by           how it came about: "offer" (a person took one), "proposal" (a
 //                person's own terms were taken), "settled" (two countries nobody plays)
 // The same world when the war is not being fought.
-export const makePeace = (world, { warId = "", from = "", to = "", terms = null, date = "", round = 0, by = "offer" } = {}) => {
+export const makePeace = (world, { warId = "", from = "", to = "", terms = null, date = "", round = 0, by = "offer", regionCatalog = null } = {}) => {
   const war = list(world?.wars).find((entry) => clean(entry?.id) === clean(warId));
   if (!war || !settleable(war)) return world;
   const read = normalizeTerms(terms);
@@ -224,6 +224,7 @@ export const makePeace = (world, { warId = "", from = "", to = "", terms = null,
   if (impacts.regionTransfers.length > 0 || impacts.regionControlOps.length > 0) {
     next = applyEventImpactsToWorld({
       world: next,
+      regionCatalog,
       round: turn,
       events: [{
         id: `peace-${clean(warId)}-${clean(date)}`,
@@ -289,7 +290,7 @@ const withReparationsPaid = (world, days) => {
 //   players     the countries people play
 //   fronts      what the land and sea war came to (frontTurn.js runTurnFronts), or null
 //   held        how many regions each country holds now (regionHoldingsFromWorld, or the map's count)
-export const turnWarAndPeace = ({ world = {}, baseWorld = {}, days = 0, date = "", round = 0, players = [], fronts = null, held = null } = {}) => {
+export const turnWarAndPeace = ({ world = {}, baseWorld = {}, days = 0, date = "", round = 0, players = [], fronts = null, held = null, regionCatalog = null } = {}) => {
   const holdings = held instanceof Map ? held : regionHoldingsFromWorld(world);
   const turn = Math.max(0, Math.round(figure(round)));
   let next = withReparationsPaid(world, days);
@@ -382,7 +383,7 @@ export const turnWarAndPeace = ({ world = {}, baseWorld = {}, days = 0, date = "
   // ---- peace ----
   const wearyOf = (name) => wearinessOf(weariness, name);
   for (const settled of settledBetweenOthers({ wars: next.wars, players, wearinessOf: wearyOf, groundOf: groundReader(next, holdings) })) {
-    next = makePeace(next, { ...settled, date, round: turn, by: "settled" });
+    next = makePeace(next, { ...settled, date, round: turn, by: "settled", regionCatalog });
   }
   next = { ...next, peaceOffers: withTurnPeaceOffers(next.peaceOffers, { wars: next.wars, players, wearinessOf: wearyOf, groundOf: groundReader(next, holdings), round: turn, date }) };
   return next;
@@ -397,10 +398,10 @@ export const turnDays = (baseGame, nextGame) => {
 // ---- a person's answers -------------------------------------------------------------------
 
 // A world with an offer of peace taken: the war ends on its terms. The same world when the offer is not open.
-export const acceptPeaceOffer = (world, offerId, { date = "", round = 0 } = {}) => {
+export const acceptPeaceOffer = (world, offerId, { date = "", round = 0, regionCatalog = null } = {}) => {
   const offer = normalizePeaceOffers(world?.peaceOffers).find((entry) => entry.id === clean(offerId, 80));
   if (!offer || offer.status !== "open") return world;
-  const made = makePeace(world, { warId: offer.warId, from: offer.from, to: offer.to, terms: offer.terms, date, round, by: "offer" });
+  const made = makePeace(world, { warId: offer.warId, from: offer.from, to: offer.to, terms: offer.terms, date, round, by: "offer", regionCatalog });
   if (made === world) return world;
   return { ...made, peaceOffers: normalizePeaceOffers(list(made.peaceOffers).map((entry) => (entry.id === offer.id ? { ...entry, status: "accepted", answeredRound: Math.max(1, Math.round(figure(round))) } : entry))) };
 };
@@ -418,7 +419,7 @@ export const declinePeaceOffer = (world, offerId, { round = 0 } = {}) => {
 //   players   the countries people play: a side with one of them on it is theirs to answer, and is not answered here
 //   held      how many regions each country holds
 // Returns { world, accepted, to, reason }: `reason` says why nothing happened ("" when the terms were put).
-export const proposePeace = (world, { warId = "", from = "", terms = null, players = [], date = "", round = 0, held = null } = {}) => {
+export const proposePeace = (world, { warId = "", from = "", terms = null, players = [], date = "", round = 0, held = null, regionCatalog = null } = {}) => {
   const war = list(world?.wars).find((entry) => clean(entry?.id) === clean(warId));
   if (!war || !settleable(war)) return { world, accepted: false, to: "", reason: "no-war" };
   const sides = sidesOf(war);
@@ -431,7 +432,7 @@ export const proposePeace = (world, { warId = "", from = "", terms = null, playe
   const ground = groundReader(world, held)(warId, to);
   const accepted = wouldAccept({ terms: read, country: to, standing: standingOf(ground), weariness: wearinessOf(world?.warWeariness, to) });
   if (!accepted) return { world, accepted: false, to, reason: "" };
-  return { world: makePeace(world, { warId, from, to, terms: read, date, round, by: "proposal" }), accepted: true, to, reason: "" };
+  return { world: makePeace(world, { warId, from, to, terms: read, date, round, by: "proposal", regionCatalog }), accepted: true, to, reason: "" };
 };
 
 // A world with a call to arms answered.
@@ -465,7 +466,7 @@ export const answerCallToArms = (world, callId, honour, { date = "", round = 0 }
 //   country   who is doing it: the offer or call must be theirs
 // Returns { world, error, accepted, to }: `error` is a word for why nothing was
 // done ("" when something was), `accepted` whether terms put were taken.
-export const playerDiplomacy = (world, { op = "", ref = "", terms = null, country = "", players = [], date = "", round = 0, held = null } = {}) => {
+export const playerDiplomacy = (world, { op = "", ref = "", terms = null, country = "", players = [], date = "", round = 0, held = null, regionCatalog = null } = {}) => {
   const who = fold(country);
   const nothing = (error) => ({ world, error, accepted: false, to: "" });
   if (!who) return nothing("nobody");
@@ -473,7 +474,7 @@ export const playerDiplomacy = (world, { op = "", ref = "", terms = null, countr
     const offer = normalizePeaceOffers(world?.peaceOffers).find((entry) => entry.id === clean(ref, 80));
     if (!offer || offer.status !== "open") return nothing("not-open");
     if (fold(offer.to) !== who) return nothing("not-yours");
-    const next = op === "accept" ? acceptPeaceOffer(world, offer.id, { date, round }) : declinePeaceOffer(world, offer.id, { round });
+    const next = op === "accept" ? acceptPeaceOffer(world, offer.id, { date, round, regionCatalog }) : declinePeaceOffer(world, offer.id, { round });
     return next === world ? nothing("not-open") : { world: next, error: "", accepted: op === "accept", to: offer.from };
   }
   if (op === "honour" || op === "refuse") {
@@ -483,7 +484,7 @@ export const playerDiplomacy = (world, { op = "", ref = "", terms = null, countr
     return { world: answerCallToArms(world, call.id, op === "honour", { date, round }), error: "", accepted: op === "honour", to: call.defender };
   }
   if (op === "propose") {
-    const put = proposePeace(world, { warId: ref, from: country, terms, players, date, round, held });
+    const put = proposePeace(world, { warId: ref, from: country, terms, players, date, round, held, regionCatalog });
     return { world: put.world, error: put.reason, accepted: put.accepted, to: put.to };
   }
   return nothing("unknown");

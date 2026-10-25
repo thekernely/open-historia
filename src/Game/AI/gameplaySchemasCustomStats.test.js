@@ -76,3 +76,28 @@ test("standard GM transport remains unchanged when no custom sheet is active", (
   assert.doesNotMatch(standard.schema.properties.countryStatPatchesJson.description, /patch\.customStats/);
 });
 
+
+test('custom turn exposes only the scenario independent keys for causal deltas, not native-bound readers', () => {
+  const definitionRows = [...rows, { key: 'gdpHero', label: 'GDP', kind: 'currency', nativeMetric: 'gdp' }];
+  const tool = getGameplayToolForCustomStatSheet('jumpForward', definitionRows, { custom: true });
+  const effectSchema = tool.schema.properties.events.items.properties.impacts.properties.polityChanges.items.properties.statsEffects;
+  const custom = effectSchema.properties.customStatDeltas;
+  assert.deepEqual(Object.keys(custom.properties), ['timber', 'silver', 'grainYield']);
+  assert.equal(custom.properties.timber.type, 'integer');
+  assert.equal(custom.properties.silver.type, 'number');
+  assert.equal(custom.additionalProperties, false);
+  assert.equal(custom.properties.gdpHero, undefined);
+});
+
+test('native-bound display cards are never exposed as absolute customStats writer keys', () => {
+  const rowsWithBinding = [...rows, { key: 'gdpHero', label: 'GDP', kind: 'currency', nativeMetric: 'gdp' }];
+  const tool = getGameplayToolForCustomStatSheet('jumpForward', rowsWithBinding, { custom: true });
+  const statUpdate = tool.schema.properties.events.items.properties.impacts.properties.polityChanges.items.properties.stats;
+  assert.deepEqual(Object.keys(statUpdate.properties.customStats.properties), ['timber', 'silver', 'grainYield']);
+  assert.equal(statUpdate.properties.customStats.properties.gdpHero, undefined);
+  const onlyBound = getGameplayToolForCustomStatSheet('jumpForward', [rowsWithBinding[3]], { custom: true });
+  const boundStatUpdate = onlyBound.schema.properties.events.items.properties.impacts.properties.polityChanges.items.properties.stats;
+  assert.deepEqual(Object.keys(boundStatUpdate.properties.customStats.properties), []);
+  assert.equal(boundStatUpdate.properties.economy, undefined);
+  assert.equal(onlyBound.schema.properties.events.items.properties.impacts.properties.polityChanges.items.properties.statsEffects.properties.customStatDeltas.maxProperties, 0);
+});

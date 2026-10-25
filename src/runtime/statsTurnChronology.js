@@ -25,12 +25,13 @@ const monthEnd = (date) => {
 // work fails CLOSED; it cannot quietly claim complete simulated history.
 // No state, GDP, budget, history, or event is mutated by this planner.
 export const planNativeStatsTurnChronology = ({
-  fromDate = "", toDate = "", events = [], blockadeDays = null,
+  fromDate = "", toDate = "", events = [], blockadeDays = null, dailyTicks = false, processDates = [],
 } = {}) => {
   const days = diffGameDays(fromDate, toDate);
   if (!isCanonicalGameDate(fromDate) || !isCanonicalGameDate(toDate)
     || !Number.isInteger(days) || days < 1 || days > MAX_SPAN_DAYS
-    || !Array.isArray(events) || events.length > MAX_EVENTS) return null;
+    || !Array.isArray(events) || events.length > MAX_EVENTS
+    || !Array.isArray(processDates) || processDates.length > 100) return null;
   const evidence = validateDatedBlockadeEvidence({ fromDate, toDate, blockadeDays });
   if (evidence === null) return null;
   const eventGroups = new Map();
@@ -49,9 +50,16 @@ export const planNativeStatsTurnChronology = ({
   const endDates = new Set([toDate]);
   let day = addGameDays(fromDate, 1);
   for (let index = 0; index < days; index++, day = addGameDays(day, 1)) {
-    if (monthEnd(day)) endDates.add(day);
+    if (dailyTicks || monthEnd(day)) endDates.add(day);
   }
   for (const date of eventGroups.keys()) endDates.add(date);
+  // Native migration begins/ends on authored dates, not arbitrary month ends.
+  // Without these exact boundaries its initial population anchor and
+  // long-vs-split chronology could disagree.
+  for (const date of processDates) {
+    if (!isCanonicalGameDate(date)) return null;
+    if (compareGameDates(date, fromDate) > 0 && compareGameDates(date, toDate) <= 0) endDates.add(date);
+  }
   const dates = [...endDates].sort(compareGameDates);
   const steps = [];
   let cursor = fromDate, rowIndex = 0;

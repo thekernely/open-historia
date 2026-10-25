@@ -32,6 +32,7 @@ export const applyBoardCarriers = ({
   provisionalIndexes = new Set(),
   date = "",
   round = 0,
+  regionCatalog = null,
 } = {}) => {
   let nextWorld = world;
   let nextColors = colors;
@@ -51,6 +52,7 @@ export const applyBoardCarriers = ({
     world: before,
     motion: null,
     round,
+    regionCatalog,
     boardOnlyEventIds: stamped ? [] : [event.id],
   });
   for (const carrier of carriers) {

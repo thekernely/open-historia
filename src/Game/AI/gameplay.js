@@ -2,6 +2,8 @@
 import { callAI, providerSupportsBatch, restoreAIBatch, retrieveAIBatch, sendDiplomaticMessageOnceOff, submitAIBatch } from "./main.jsx";
 import { forgetBatch, readStoredBatches, rememberBatch } from "./batchRegistry.js";
 import { jumpDayStep, jumpTargetDate } from "../../runtime/jumpDates.js";
+import { buildActiveEconomicInfluenceContext, buildRecoverableStatsLossContext } from "../../runtime/statsEconomicInfluenceContext.js";
+import { buildUnquantifiedEconomicAssessmentContext } from "../../runtime/statsUnquantifiedAssessmentContext.js";
 import { clampTimelineDates, validatePregameEvents, validateTimelineDates } from "./timelineDates.js";
 import { buildMilitaryFeasibilityText } from "./militaryFeasibility.js";
 import { looksLikeChatRequest } from "./chatHints.js";
@@ -96,6 +98,7 @@ import {
 import { buildCuratorInput, candidatesWorthJudging, curateGeneratedEventsWithHidden } from "./nativeTimelineCurator.js";
 import {
   applyWorldStorylineUpdates,
+  projectNewStatsStorylineSources,
   boardProvisionalConsequenceIndexes,
   assessRecentWorldConsequenceLiveness,
   bindNewStorylineEvents,
@@ -213,6 +216,8 @@ import { engineerLines } from "../../runtime/fronts/engineer.js";
 import { foreseeFronts } from "./foreseenFronts.js";
 import { offPageAvailable } from "./frontWorkerClient.js";
 import { planNativeStatsLiveTurn } from "../../runtime/statsLiveTurnClock.js";
+import { captureNativeEconomicExposureHistory } from "../../runtime/statsEconomicExposure.js";
+import { planNeutralStatsLiveTurn } from "../../runtime/statsNeutralTurnClock.js";
 import { applyTurnFronts, citiesFollowCountries, withBlockadeEconomy, turnBlockades, regionHoldingsOf, forecastTurnFronts, frontsListBlock, frontPlansBlock, frontPowers, frontRegionTest, frontWarJoins, frontWarStarts, frontsLiveBlock, openScenarioFronts, routesIntoOthers, transportWaysFor, readFrontCities, scenarioFrontsPending, warRoomChartFor, warRoomIntelText, withFrontUnits, withoutFrontPowers } from "./frontApply.js";
 import { withTurnStrikes } from "../../runtime/strikes.js";
 import { playerDiplomacy, turnDays, turnWarAndPeace } from "./warAndPeace.js";
@@ -437,6 +442,7 @@ import {
   normalizeCustomStatValues,
   statSheetKeys,
 } from "../../runtime/statsSheet.js";
+import { nationalStatsAuthoringContract, nationalStatsPresentationCoverage } from "../../runtime/statsMetricBindings.js";
 import { difficultyDirective, difficultyScopeForTask, taskReadsDifficultyDirective } from "../../runtime/difficulty.js";
 import { MAP_SETTING_KEYS, getMapSetting, getMapSettingDefaultOn } from "../../runtime/mapSettings.js";
 import { AI_FIRST_BYTE_TIMEOUT_MS, AI_IDLE_TIMEOUT_MS, createIdleDeadline, runWithIdleDeadline } from "./idleDeadline.js";
@@ -1450,6 +1456,25 @@ const buildTemplateVariables = async (bundle, options = {}) => {
   // functions carry the detail); with the setting off it gets the full one.
   const lookups = Boolean(options?.lookups) && lookupFunctionsEnabled();
   const variables = await buildPromptContext(bundle, { ...options, lookups, requiredKeys, taskKey });
+  // Finite causes and unquantified economic declarations already live in
+  // canonical continuity/history. Reuse those durable IDs in a bounded jump
+  // briefing; never mint a second assessment ledger or schedule another AI call.
+  // An unquantified declaration is a review obligation, NOT permission to
+  // backdate GDP loss, invent exposure, or relabel an old event as applied.
+  if (taskKey === "jumpForward") {
+    const activeEffects = [
+      buildActiveEconomicInfluenceContext(bundle.world, bundle.game?.gameDate),
+      buildRecoverableStatsLossContext(bundle.world, bundle.game?.gameDate),
+      buildUnquantifiedEconomicAssessmentContext(bundle.world, bundle.events, bundle.game?.gameDate),
+    ].filter(Boolean).join("\n\n");
+    if (activeEffects) {
+      for (const key of ["worldSummaryNoCity", "worldSummary"]) {
+        if (typeof variables[key] === "string" && variables[key]) {
+          variables[key] += `\n\n${activeEffects}`;
+        }
+      }
+    }
+  }
   // The diplomatic slice is bounded to the player plus, for a chat task, the
   // polities in the thread; wars are few enough to show whole.
   const focusActors = normalizeArray(options?.chat?.countries)
@@ -1523,6 +1548,9 @@ const JUMP_LEVERS = [
   "Everything you change rides on an event's impacts, and no event's text may claim a change its impacts do not make. The output function describes each field; these need a word more:",
   "• polityChanges {\"code\":\"<current full name>\",\"name\":\"<new full name, only for a rename>\",\"color\":\"#RRGGBB\",\"aliases\":[],\"reputation\":0-100,\"intelligence\":0-100,\"tags\":[\"<the complete new list>\"],\"stats\":{\"<only the fields that changed>\":\"\"},\"note\":\"\"}. After a rename the country IS the new name everywhere, so address the change to its current name, never the new one. A better intelligence service is built over time: open it as a project, never as an instant rating.",
   "• politicalActorOps {\"op\":\"<operation>\",\"polityKey\":\"<current full name; the new one if this event also renames it>\",\"argsJson\":\"<one JSON object, as a string>\"}: set-government, replace-leader, form-coalition / leave-coalition, create / update / set-party-*, create / update / set-power-bloc-*, set-political-system, set-strategy, set-traits, set-perceptions / remove-perception. Never guess the decoded argsJson shape: use the one given for the op below. Every change of government, leader or party carries these ops, or it changes only the story; stats.leader and stats.government never carry it.",
+  "• polityChanges[].statsEffects: if an event establishes a measurable national GDP or population consequence, give the signed change, typed cause and evidence-based reason. A TEMPORARY strike, supply disruption or enacted economic policy may instead use annualRealGrowthDelta (-20..20 percentage-points of real growth) with durationDays (1..730), gdpCause production/trade/policy, and reason. When the underlying cause demonstrably ENDS earlier, a separate event may resolve the still-active influence using resolveGrowthInfluenceEventId with its exact original canonical event ID and a specific reason. Do not invent IDs or resolve from hopeful announcements; resolution changes only future accrual, never past GDP. The dated native clock applies it only during that period. One-off debt-financed expenditure may use debtFinancedOutlayPercentGdp (0.0001..5 percent of GDP, four decimals) and debtFinancedOutlayCause ONLY when a dated event establishes a quantified NEW borrowing for procurement, mobilization, relief, or reconstruction. It increases debt, not GDP or the standing annual deficit; never convert a military spending rating, troop strength, battle, or general wartime expense into borrowed funds. No event may claim an economic change without the matching typed effect; don't fabricate a percentage from narrative adjectives, proposed budgets, or war alone. Never use polityChanges[].stats to write absolute GDP, growth, inflation, unemployment, debt, budget, population, or GDP-sector figures during generated time skips. A documented partial restoration of a past stability, strategic index or custom national resource loss may use recoveryOfEventId with the EXACT original accepted Statistics event ID; never exceed the remaining unrecovered loss, and do not use this to reverse GDP, population or unmeasured damage. For supported national stability or an existing strategic index, use stabilityDelta or indexDeltas with bounded signed point changes and evidence-based reason; never invent a missing index or change a derived macro reading. For custom scenario-owned numeric metrics, use customStatDeltas for bounded, signed changes to already initialized, independent keys; a native-bound presentation card is never writable. Use the scenario sheet units, bounds, and precision; never combine relative custom deltas and absolute customStats in one event.",
+  "• For concrete country-specific material disruption from an existing active storyline OR a new active storyline explicitly linked to this accepted event, you MAY propose a finite negative annualRealGrowthDelta as an explicitly labeled economicShockEstimate. Give sourceStorylineId, gdpCause, durationDays and the specific credit/trade/production/logistics/labor exposure evidence; estimated direct effects are limited to -12pp, dependent -5pp, at most 90 days, never GDP stock loss. Never infer exposure from storyline pressure or assume all participants are affected. If exposure is unknown, use unquantified; do not invent a measured percentage.",
+  "• economicAccounting: every event tagged Economy must state {status,reason}: applied ONLY with polityChanges[].statsEffects; unquantified for genuine economic consequences without trustworthy numerical evidence; none for discussion/proposals with no enacted economic change. Give a specific reason, do not invent percentages. An event with GDP/population/growth or measured debt-financed outlay statsEffects must declare applied even without Economy tag; strategic-only typed changes do not require economicAccounting unless Economy-tagged. This is an explicit audit, not permission to claim a numerical effect without a typed mutation.",
   "• Always return politicalClaims: transient validation only, never world state. One line per event that COMPLETES a national Political World structural change: eventNumber~polity~effectsCSV. Effects: election (final national result), government, coalition, leadership, system, parties (founding/split/merger/reorganization). Use the same polityKey as that event's politicalActorOps (new key after a same-event rename). No line for campaigns, policy, subnational politics, references or later consequences. Empty string when none. Claims never replace politicalActorOps.",
   POLITICAL_ACTOR_GENERATED_ARG_GUIDANCE,
   `When an election or a new government is the first settled politics of a young polity, set up its parties, governing force, system, goals and traits in the same event; while results are still being counted, narrate the count, not a result. Traits use only these keys: ${POLITICAL_TRAIT_KEYS.join(", ")}. Never use set-political-pressures or set-behavioral-disposition.`,
@@ -1865,6 +1893,19 @@ const validateStatContract = (taskKey, parsed, contract = {}) => {
   for (let eventIndex = 0; eventIndex < normalizeArray(parsed.events).length; eventIndex += 1) {
     const changes = normalizeArray(parsed.events[eventIndex]?.impacts?.polityChanges);
     for (let changeIndex = 0; changeIndex < changes.length; changeIndex += 1) {
+      const customDeltas = changes[changeIndex]?.statsEffects?.customStatDeltas;
+      if (customDeltas !== undefined) {
+        const path = `$.events[${eventIndex}].impacts.polityChanges[${changeIndex}].statsEffects.customStatDeltas`;
+        if (!customDeltas || typeof customDeltas !== "object" || Array.isArray(customDeltas)
+          || !Object.keys(customDeltas).length || Object.keys(customDeltas).length > customStatKeys.length) {
+          return `${path} needs a nonempty bounded map of existing scenario metric changes.`;
+        }
+        const unexpected = Object.keys(customDeltas).filter((key) => !customStatKeys.includes(key));
+        if (unexpected.length) return `${path} targets undefined or native-bound stat keys: ${unexpected.join(", ")}.`;
+        if (Object.values(customDeltas).some((delta) => typeof delta !== "number" || !Number.isFinite(delta) || delta === 0)) {
+          return `${path} needs finite nonzero numeric changes.`;
+        }
+      }
       const stats = changes[changeIndex]?.stats;
       if (!stats) continue;
       if (stats.indices || stats.economy || stats.population || stats.gdpBreakdown || stats.stability != null) {
@@ -8978,6 +9019,16 @@ const applySimulationResult = async ({
     round: (baseGame.round || 1) + 1,
   });
   const freshEvents = canonicalEventIdentity.events;
+  if ((result.mode === "jump" || result.mode === "auto") && freshEvents.some((event) => event.economicAccounting)) {
+    const rows = freshEvents.filter((event) => event.economicAccounting);
+    const counts = Object.fromEntries(["applied", "unquantified", "none"].map((status) =>
+      [status, rows.filter((event) => event.economicAccounting.status === status).length]));
+    logDebugEvent("turn", "Generated event Statistics accountability.", {
+      ...counts,
+      deferred: rows.filter((event) => event.economicAccounting.status === "unquantified")
+        .slice(0, 8).map((event) => ({ eventId: event.id, reason: event.economicAccounting.reason })),
+    }, { problem: counts.unquantified > 0 });
+  }
   const warUpdates = remapLedgerEventIds(normalizeArray(keptWarUpdates), canonicalEventIdentity.idMap);
   const relationUpdates = remapLedgerEventIds(normalizeArray(keptRelationUpdates), canonicalEventIdentity.idMap);
   const agreementUpdates = remapLedgerEventIds(normalizeArray(keptAgreementUpdates), canonicalEventIdentity.idMap);
@@ -9074,6 +9125,7 @@ const applySimulationResult = async ({
   // until GDP and fiscal blockade settlement have one agreed dated owner.
   // Custom scenario stat sheets retain their existing runtime authority.
   let nativeStatsChronology = null;
+  let nativeStatsRegionCatalog = null;
   if ((result.mode === "jump" || result.mode === "auto") && Object.keys(baseWorld?.countryStats || {}).length) {
     // Reject event identity that the canonical reducer would normalize into
     // a different ID/date. Otherwise a missing generated ID could fail the
@@ -9082,23 +9134,69 @@ const applySimulationResult = async ({
     const stableIdentity = canonicalStatsEvents.length === freshEvents.length
       && canonicalStatsEvents.every((event, i) =>
         event.id === freshEvents[i]?.id && event.date === freshEvents[i]?.date);
-    const candidate = stableIdentity ? planNativeStatsLiveTurn({
+    const statsTurnArgs = {
       baseWorld, turnFronts, warUpdates, fromDate: baseGame.gameDate,
       toDate: nextGame.gameDate, events: canonicalStatsEvents, round: nextGame.round,
-    }) : null;
+      // A dated coastal capture needs a canonical geographic join for
+      // occupation exposure. Unknown geography keeps the guarded scoped path.
+      regionCatalog: turnFronts?.flips?.length || canonicalStatsEvents.some((event) =>
+        event?.impacts?.regionControlOps?.length)
+        ? await loadRegionCatalog().catch(() => null) : null,
+    };
+    let neutralRefusal = "";
+    statsTurnArgs.onReject = (reason) => { neutralRefusal = reason; };
+    const candidate = stableIdentity
+      ? (planNativeStatsLiveTurn(statsTurnArgs) || planNeutralStatsLiveTurn(statsTurnArgs)) : null;
+    let selection = stableIdentity ? (candidate ? "candidate" : `refused:${neutralRefusal || "unknown"}`)
+      : "refused:noncanonical-event-identity";
     if (candidate) {
       try {
         const definition = await loadStatSheetDefinition();
-        if (definition && definition.custom !== true) nativeStatsChronology = candidate;
+        if (definition && definition.custom !== true) {
+          nativeStatsChronology = candidate;
+          // Keep the exact geographic evidence used for this canonical cutover.
+          // End-of-turn history must not erase its dated occupation receipts.
+          nativeStatsRegionCatalog = candidate.partial ? null : statsTurnArgs.regionCatalog;
+          selection = candidate.partial ? "native-scoped" : "native-full";
+        } else {
+          selection = "refused:custom-or-unavailable-scenario-sheet";
+        }
       } catch (error) {
+        selection = "refused:scenario-sheet-read";
         console.warn("[stats native] scenario sheet unavailable; keeping legacy turn path.", error);
       }
     }
+    // This must be visible in saved diagnostics: the fallback merely records a
+    // final snapshot and is NOT evidence that the GDP/population clocks ran.
+    logDebugEvent("turn", `Statistics settlement: ${selection}.`, {
+      fromDate: baseGame.gameDate, toDate: nextGame.gameDate,
+      scopedCountries: nativeStatsChronology?.scopedCountries?.length ?? 0,
+      sourceSheets: Object.keys(baseWorld.countryStats).length,
+      eventCount: canonicalStatsEvents.length,
+    }, { problem: !nativeStatsChronology });
   }
 
+  const customStatsEffectsPresent = freshEvents.some((event) =>
+    (event?.impacts?.polityChanges ?? []).some((change) =>
+      Object.hasOwn(change?.statsEffects ?? {}, "customStatDeltas")));
+  const customStatDefinitionForEffects = customStatsEffectsPresent
+    ? await loadStatSheetDefinition() : null;
+  // Project source identities without moving the canonical storyline merge
+  // ahead of event, diplomacy or war settlement. Stats alone may consume these
+  // event-dated, director-validated candidate identities.
+  const statsSourceStorylines = projectNewStatsStorylineSources({
+    world: baseWorld, updates: storylineUpdates, events: freshEvents,
+    stopDate: nextGame.gameDate, round: nextGame.round,
+  });
   const impactMerge = applyEventImpactsToWorld({
+    statsSourceStorylines,
+    statSheetDefinition: customStatDefinitionForEffects,
     colors: baseColors,
     events: freshEvents,
+    // Resolve legal Stats components against the same canonical map catalog
+    // used to validate region IDs. This is read-only and never saved into world.
+    regionCatalog: freshEvents.some((event) => event?.impacts?.regionTransfers?.length
+      || event?.impacts?.projectOps?.length) ? await loadRegionCatalog() : null,
     statsChronology: nativeStatsChronology,
     // Give every unit op a travel budget of the days between the previous event
     // and its own, so a move op advances a formation as far as it could actually
@@ -9221,7 +9319,7 @@ const applySimulationResult = async ({
   impactedWorld = withFrontPersonnel(impactedWorld, turnFronts);
   // And what a blockade cost the country it was laid on, off its economy
   // (runtime/naval/blockade.js): "make blockades affect the economy".
-  if (!nativeStatsChronology) impactedWorld = withBlockadeEconomy(impactedWorld, turnFronts, applyCountryStatPatchToWorld);
+  if (!nativeStatsChronology || nativeStatsChronology.partial) impactedWorld = withBlockadeEconomy(impactedWorld, turnFronts, applyCountryStatPatchToWorld);
   // Ground a side has taken on a battlefield is controlled by it, not disputed:
   // the claimants an earlier turn wrote for such a region come off it
   // (runtime/fronts/heldRegions.js). Nothing is touched with fronts off.
@@ -9489,6 +9587,7 @@ const applySimulationResult = async ({
     players: humanCountriesOf(nextGame),
     fronts: turnFronts,
     held: await regionHoldingsOf(worldWithImpacts, nextGame, campaignId),
+    regionCatalog: await loadRegionCatalog(),
   });
   // A war's end and a country's fall clear the map (nativeUnitDirector.js
   // pruneWarUnits): the counters raised for a war that has ended, and the units
@@ -9683,6 +9782,7 @@ const applySimulationResult = async ({
         provisionalIndexes,
         date: nextGame.gameDate,
         round: nextGame.round,
+        regionCatalog: await loadRegionCatalog(),
       });
       worldWithImpacts = boardPass.world;
       // A Project the board completed can rename or recolour a polity through
@@ -9861,7 +9961,8 @@ const applySimulationResult = async ({
   // interval is due, and one compact AI batch for every initialised tracked
   // country. A failure never invalidates the completed turn.
   try {
-    if (!nativeStatsChronology) nextWorld = await refreshTrackedCountryStatsIfDue({
+    if (!nativeStatsChronology || nativeStatsChronology.partial) nextWorld = await refreshTrackedCountryStatsIfDue({
+      excludePolities: nativeStatsChronology?.scopedCountries || [],
       bundle: {
         actions: nextActions,
         chats: nextChats,
@@ -9883,7 +9984,7 @@ const applySimulationResult = async ({
   // read only on a turn when some country is due.
   nextWorld = await citiesFollowCountries({ world: nextWorld, baseWorld, game: nextGame, campaignId, loadRegions: createRenderedRegionsReader() });
   // And a country the player has come into conflict with is asked for its sheet, so that the war has its people and its economy to go by.
-  if (!nativeStatsChronology) requestConflictSheets(nextWorld, nextGame);
+  if (!nativeStatsChronology || nativeStatsChronology.partial) requestConflictSheets(nextWorld, nextGame);
 
   const lifecycleEventIds = [];
   // Native institution lifecycle clock: withdrawal notice periods and other
@@ -9951,6 +10052,19 @@ const applySimulationResult = async ({
     date: nextGame.gameDate || nextGame.startDate || "",
     round: nextGame.round || 0,
   });
+  // The final generic same-date capture replaces the native month-end sample.
+  // Reattach VERIFIED territorial exposure from the original cutover catalog:
+  // otherwise March's occupation/return-to-control reading disappears from
+  // saved history even though January/February survived the native reducer.
+  // Without a verified geographic join, leave the fields unknown, not zero.
+  if (nativeStatsChronology && !nativeStatsChronology.partial
+    && Array.isArray(nativeStatsRegionCatalog) && nativeStatsRegionCatalog.length) {
+    nextWorld = captureNativeEconomicExposureHistory(nextWorld, {
+      date: nextGame.gameDate || nextGame.startDate || "",
+      round: nextGame.round || 0,
+      regionCatalog: nativeStatsRegionCatalog,
+    });
+  }
 
   // Power tiers follow the turn's live Stats (two-round hysteresis). CPU-only.
   try {
@@ -12396,6 +12510,11 @@ const refreshTrackedCustomStatsIfDue = async ({ bundle, signal, definition, requ
   const currentDate = normalizeString(game?.gameDate || game?.startDate);
   if (!parseIsoDate(currentDate)) return world;
 
+  // The legacy periodic AI auditor writes absolute custom values and a hidden
+  // economy backend. A mixed native/custom sheet must not enter that writer:
+  // it would create a second authority for GDP/debt despite read-only cards.
+  // Such scenarios continue through their accepted native event/clock paths.
+  if (nationalStatsAuthoringContract(definition).boundRows.length) return world;
   const keys = statSheetKeys(definition);
   const rows = flattenStatSheetRows(definition);
   if (!keys.length) return world;
@@ -12529,6 +12648,7 @@ Each country also has a HIDDEN BACKEND the player never sees, which the game's o
 
 const refreshTrackedCountryStatsIfDue = async ({
   bundle,
+  excludePolities = [],
   signal,
   // The time skip this refresh rides on (createJumpRequests), so its one request
   // asks the skip's budget first. Refused, the refresh stays due.
@@ -12575,6 +12695,7 @@ const refreshTrackedCountryStatsIfDue = async ({
 
   for (const rawPolity of tracking.trackedPolities.slice(0, COUNTRY_STATS_TRACKING_MAX_POLITIES)) {
     const polity = canonicalStatsPolity(rawPolity, world) || normalizeString(rawPolity);
+    if (excludePolities.includes(polity)) continue;
     const previous = normalizeCountryStatSheet(world?.countryStats?.[polity]);
     if (!isTrackedStatSheetReady(previous)) {
       pendingBaseline.push(polity);
@@ -14036,10 +14157,16 @@ export const ensureCountryStatSheet = (target, { reason = "", rateIntelligence =
       loadStatSheetDefinition(),
     ]);
     const persisted = normalizeCountryStatSheet(world.countryStats?.[name]);
-    const complete = definition.custom
-      ? isCompleteCustomCountryStatSheet(persisted, statSheetKeys(definition))
-      : isCompleteCountryStatSheet(persisted);
+    const nativeBound = definition.custom && nationalStatsAuthoringContract(definition).boundRows.length > 0;
+    const complete = nativeBound
+      ? nationalStatsPresentationCoverage(definition, persisted).ready
+      : definition.custom
+        ? isCompleteCustomCountryStatSheet(persisted, statSheetKeys(definition))
+        : isCompleteCountryStatSheet(persisted);
     if (complete && (!needBackend || hasStatsBackend(persisted))) return persisted;
+    // Do not use AI reassessment to manufacture a missing battlefield backend
+    // for a scenario with native-bound presentation rows.
+    if (nativeBound && needBackend && complete) throw new Error(`National Statistics backend for ${name} is unavailable; author/native data review is required.`);
     await waitForSimulationIdle();
     const rate = rateIntelligence && !isIntelligenceRated(world, name);
     const campaign = activeCampaignId();
@@ -14079,9 +14206,12 @@ export const readCountryForPlayer = (target) => {
       loadStatSheetDefinition(),
     ]);
     const persisted = normalizeCountryStatSheet(world.countryStats?.[name]);
-    const complete = definition.custom
-      ? isCompleteCustomCountryStatSheet(persisted, statSheetKeys(definition))
-      : isCompleteCountryStatSheet(persisted);
+    const nativeBound = definition.custom && nationalStatsAuthoringContract(definition).boundRows.length > 0;
+    const complete = nativeBound
+      ? nationalStatsPresentationCoverage(definition, persisted).ready
+      : definition.custom
+        ? isCompleteCustomCountryStatSheet(persisted, statSheetKeys(definition))
+        : isCompleteCountryStatSheet(persisted);
     if (complete) return persisted;
     await waitForSimulationIdle();
     const rate = !isIntelligenceRated(world, name);
@@ -14274,6 +14404,16 @@ export const generateCountryStatSheet = async ({ code, name, forceReassess = fal
   // over a custom-stats scenario.
   const statSheetDefinition = await loadStatSheetDefinition();
   if (statSheetDefinition.custom) {
+    // Native-bound cards are projections, not instructions for the AI to
+    // regenerate a country. Preserve an existing reviewed canonical sheet or
+    // fail closed when a required reading/conflicting legacy copy is present.
+    if (nationalStatsAuthoringContract(statSheetDefinition).boundRows.length) {
+      const existing = normalizeCountryStatSheet(worldAtStart?.countryStats?.[statCode]);
+      if (!existing || !nationalStatsPresentationCoverage(statSheetDefinition, existing).ready) {
+        throw new Error(`Scenario-defined native Statistics for ${statCode || target} are missing or require author review; gameplay cannot regenerate canonical national values.`);
+      }
+      return existing;
+    }
     return generateScenarioCustomStatSheet({
       bundle,
       definition: statSheetDefinition,
@@ -15758,6 +15898,7 @@ export const answerDiplomacy = async ({ op = "", ref = "", terms = null } = {}) 
   if (isSimulationBusy()) throw new Error("A turn is being generated; wait for it to finish.");
   const game = await readGameData();
   const held = await regionHoldingsOf(await readWorldStateView(), game, activeCampaignId());
+  const regionCatalog = await loadRegionCatalog();
   let outcome = { error: "unknown", accepted: false, to: "" };
   await mutateWorldState((world) => {
     outcome = playerDiplomacy(world, {
@@ -15769,6 +15910,7 @@ export const answerDiplomacy = async ({ op = "", ref = "", terms = null } = {}) 
       date: normalizeString(game?.gameDate || game?.startDate),
       round: game?.round,
       held,
+      regionCatalog,
     });
     return outcome.error ? null : outcome.world;
   });
@@ -19310,9 +19452,21 @@ export const applyGameMasterPreview = async (preview) => {
     const duplicateId = events.find((event) => existingIds.has(normalizeString(event?.id)));
     if (duplicateId) throw new Error(`Authored GM event id ${duplicateId.id} already exists. Nothing was applied; regenerate the preview.`);
 
+    const customStatsEffectsPresent = events.some((event) =>
+      (event?.impacts?.polityChanges ?? []).some((change) =>
+        Object.hasOwn(change?.statsEffects ?? {}, "customStatDeltas")));
+    const gmStatsSources = projectNewStatsStorylineSources({
+      world: liveWorld, updates: transaction.storylineUpdates, events,
+      stopDate: bundle.game.gameDate || bundle.game.startDate || "",
+      round: bundle.game.round || 0,
+    });
     const impactMerge = applyEventImpactsToWorld({
+      statsSourceStorylines: gmStatsSources,
+      statSheetDefinition: customStatsEffectsPresent ? await loadStatSheetDefinition() : null,
       colors,
       events,
+      regionCatalog: events.some((event) => event?.impacts?.regionTransfers?.length
+        || event?.impacts?.projectOps?.length) ? await loadRegionCatalog() : null,
       round: bundle.game.round || 0,
       world: liveWorld,
     });

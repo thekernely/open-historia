@@ -75,6 +75,53 @@ test('malformed generation is fail-closed rather than fabricating provinces or i
   assert.throws(()=>sheet({agriculture:10,industry:10,services:10}),/exactly 100/);
 });
 
+test('a printed M1 or JSON string 1 is the same native bucket, without changing map authority', () => {
+  const canonical = sheet();
+  const labelled = sheet({ macro: [
+    { ...proposed().macro[0], index: 'M1' },
+    { ...proposed().macro[1], index: '2' },
+  ] });
+  assert.deepEqual(labelled.territorialComponents, canonical.territorialComponents);
+  assert.equal(labelled.population.total, canonical.population.total);
+  // The one-bucket rejection observed for El Salvador/Bukhara/Jabal Shammar
+  // must not be caused merely by the provider serializing the printed ID.
+  const soleBasis = {
+    plan: [{ geography: 'Mapped country' }],
+    macroPlan: [{ index: 1, members: [{ geography: 'Mapped country', weight: 1 }] }],
+  };
+  for (const index of [1, '1', 'M1']) {
+    const generated = createReviewedScenarioStatsSheet({
+      row: proposed({ macro: [{ index, group: 'core', population: 10000, gdpPerCapita: 5000 }] }),
+      basis: soleBasis, date: '1912-01-01',
+    });
+    assert.equal(generated.population.total, 10000);
+    assert.equal(generated.territorialComponents[0].geography, 'Mapped country');
+  }
+});
+
+test('untrusted territorial indices remain fail-closed and diagnose actual IDs', () => {
+  for (const index of ['M2', '2', 2, 0, '0', null, undefined, 'M01', '01', '1.0', 1.5, 'Riga', 'M9999999999999999999']) {
+    assert.throws(
+      () => sheet({ macro: [{ ...proposed().macro[0], index }, proposed().macro[1]] }),
+      (error) => /Territorial bucket identity/.test(error.message)
+        && error.message.includes('Expected [1,2]')
+        && error.message.includes('received'),
+      `must not accept ${String(index)}`,
+    );
+  }
+  assert.throws(() => sheet({ macro: [
+    { ...proposed().macro[0], index: 'M1' },
+    { ...proposed().macro[1], index: '1' },
+  ] }), /duplicated/);
+  const before = proposed();
+  const snapshot = JSON.stringify(before);
+  sheet({ macro: [
+    { ...before.macro[0], index: 'M1' },
+    { ...before.macro[1], index: '2' },
+  ] });
+  assert.equal(JSON.stringify(before), snapshot, 'review normalization must not mutate the AI response');
+});
+
 test('uninhabited native regional buckets are valid; negative, fractional and entirely empty populations fail closed',()=>{
   // The live British/French errors do not include raw rejected bucket values.
   // Zero-population territory is supported by the native expansion contract.
@@ -238,4 +285,85 @@ test('actual scenario GeoJSON is the only source of region identities for author
   assert.deepEqual(reviewed.territorialComponents.map(row=>row.geography),['Latvia']);
   assert.equal(reviewed.population.total,1800000);
   assert.equal(reviewed.territorialComponents.some(row=>row.geography==='Tallinn'),false);
+});
+
+// C2B2A: binding-aware authoring is opt-in and does not change legacy custom
+// country sheet semantics before an author chooses a native source.
+const bindingFixture = (rows) => ({ custom: true, sections: [{ key: 'national', label: 'National', stats: rows }] });
+const metric = (key, kind, nativeMetric) => ({ key, kind, label: key, ...(nativeMetric ? { nativeMetric } : {}) });
+
+test('native-bound GDP and public debt cards need no independent AI generated customStats copies', () => {
+  const customDefinition = bindingFixture([
+    metric('gdpHero', 'currency', 'gdp'),
+    metric('gdpMini', 'currency', 'gdp'),
+    metric('debtCard', 'percentage', 'publicDebt'),
+    metric('grain', 'number'),
+  ]);
+  const result = createReviewedScenarioStatsSheet({
+    row: { macro: proposed().macro, publicDebt: 45, budgetBalance: -2, customStats: { grain: 300 } },
+    basis, date: '2026-01-01', customDefinition,
+  });
+  assert.ok(result.economy.gdp > 0);
+  assert.equal(result.economy.publicDebt, 45);
+  assert.deepEqual(result.customStats, { grain: 300 });
+  assert.equal(scenarioStatsRequiredReady(result, null, customDefinition), true);
+  assert.equal(scenarioStatsRequiredReady({ customStats: { grain: 300 } }, null, customDefinition), false);
+  assert.deepEqual(scenarioStatsCoverage({ countryStats: { Latvia: result } }, [{ code: 'Latvia' }], { customDefinition })[0].status, 'ready');
+});
+
+test('custom sheet with only native display cards does not require invented custom values', () => {
+  const customDefinition = bindingFixture([metric('totalGDP', 'currency', 'gdp'), metric('population', 'number', 'totalPopulation')]);
+  const result = createReviewedScenarioStatsSheet({
+    row: { macro: proposed().macro, publicDebt: 0, budgetBalance: 0 },
+    basis, date: '2026-01-01', customDefinition,
+  });
+  assert.equal(result.customStats, undefined);
+  assert.equal(scenarioStatsRequiredReady(result, null, customDefinition), true);
+  assert.equal(result.economy.publicDebt, 0);
+});
+
+test('review gate rejects duplicate AI values and old conflicting values without selecting a winner', () => {
+  const customDefinition = bindingFixture([metric('gdp', 'currency', 'gdp'), metric('grain', 'number')]);
+  const source = { macro: proposed().macro, publicDebt: 45, budgetBalance: -2, customStats: { gdp: 3000000, grain: 5 } };
+  assert.throws(() => createReviewedScenarioStatsSheet({ row: source, basis, date: '2026-01-01', customDefinition }), /review its migration/);
+  const legacy = sheet({ customStats: { gdp: 200000000, grain: 5 } }, { customKeys: ['gdp', 'grain'] });
+  const original = plain(legacy);
+  assert.throws(() => createReviewedScenarioStatsSheet({
+    row: { ...source, customStats: { grain: 5 } }, basis, date: '2026-01-01', customDefinition, existing: legacy,
+  }), /review its migration/);
+  assert.deepEqual(legacy, original);
+});
+
+test('manual authoring updates independent custom numbers and native budget without writing native-bound custom keys', () => {
+  const customDefinition = bindingFixture([metric('gdpHero', 'currency', 'gdp'), metric('grain', 'number')]);
+  const original = sheet({ customStats: { grain: 5 } }, { customKeys: ['grain'] });
+  const fields = scenarioStatsEditorValues(original, ['grain']);
+  fields.customStats.grain = 17;
+  fields.gdp = original.economy.gdp + 2000000;
+  fields.publicDebt = 0;
+  const edited = applyScenarioStatsManualEdits({ sheet: original, edits: fields, date: '2026-01-01', customDefinition });
+  assert.deepEqual(edited.customStats, { grain: 17 });
+  assert.equal(edited.economy.publicDebt, 0);
+  assert.notEqual(edited.economy.gdp, original.economy.gdp);
+  assert.equal(scenarioStatsRequiredReady(edited, null, customDefinition), true);
+  assert.throws(() => applyScenarioStatsManualEdits({
+    sheet: original, edits: { ...fields, customStats: { grain: 17, gdpHero: 1 } }, date: '2026-01-01', customDefinition,
+  }), /review its migration/);
+});
+
+test('standard definition cannot masquerade as a custom native-binding authoring request', () => {
+  const standard = { custom: false, sections: [] };
+  assert.throws(() => createReviewedScenarioStatsSheet({ row: proposed(), basis, date: '2026-01-01', customDefinition: standard }), /requires a custom national/);
+});
+
+test('AI custom generation may not fabricate native inflation/stability as implicit zeros for a bound card', () => {
+  const customDefinition = bindingFixture([metric('prices', 'percentage', 'inflation')]);
+  const row = { macro: proposed().macro, publicDebt: 45, budgetBalance: -2 };
+  assert.throws(() => createReviewedScenarioStatsSheet({ row, basis, date: '2026-01-01', customDefinition }), /no reviewed starting value/);
+  const previous = sheet({}, { existing: null });
+  // A previously authored numeric zero is explicit and meaningful, unlike
+  // the custom-generator's fallback zero with no scenario provenance.
+  assert.equal(previous.economy.inflation, 2.4);
+  const next = createReviewedScenarioStatsSheet({ row, basis, date: '2026-01-01', customDefinition, existing: previous });
+  assert.equal(next.economy.inflation, 2.4);
 });

@@ -92,7 +92,14 @@ test("a sheet keeps both layers, and the war reads the one under the scenario's 
   assert.ok(militaryFunding(kept) > 0 && fundingFactor(kept) < 1, "a deficit tells");
   assert.ok(readers.strengthOf("Roma") > 4 && readers.strengthOf("Roma") < 4.6);
   // The stats pane of such a scenario shows the scenario's own sheet and nothing of the backend.
-  assert.ok(read("../Game/GameUI/stats.jsx").includes("{statSheetDefinition.custom ? ("));
+  const pane = read("../Game/GameUI/stats.jsx");
+  // The resolved dashboard supplies the modern standard preset, while a custom
+  // sheet without an authored dashboard still renders its own fields, not hidden backend.
+  assert.match(pane, /const visibleNationalDashboard = nationalDashboardForDisplay\(statSheetDefinition\)/);
+  assert.match(pane, /\{visibleNationalDashboard \? \(/);
+  assert.match(pane, /\)\s*:\s*statSheetDefinition\.custom\s*\?\s*\(/);
+  assert.match(pane, /<CustomStatsSheet\s+definition=\{statSheetDefinition\}/);
+  assert.match(pane, /hiddenKeys=\{intelligence !== null \? LIVE_INTELLIGENCE_STAT_KEYS : \[\]\}/);
 });
 
 // ---- the countries a player comes into conflict with ------------------------------------
@@ -133,9 +140,13 @@ test("legacy turns request missing conflict backends; front setup and routes sti
   assert.ok(turn.includes('if (names.length > 0) void ensureConflictBackends(names, { reason: "in conflict with the player" });'));
   // And every other country at war whose people or figures nobody knows is rated against the others (militaryRating.js).
   assert.ok(turn.includes('const others = militaryTargets(world, { skip: names });\n  if (others.length > 0) void ensureMilitaryFigures(others, { reason: "at war" });'));
-  // Native economic turns have no new Statistics AI; legacy war/backends must still be requested.
-  assert.ok(turn.includes("  if (!nativeStatsChronology) requestConflictSheets(nextWorld, nextGame);\n"),
-    "after a legacy turn, while native turns never request a new AI Stats backend");
+  // Fully native turns must not request another AI Stats backend. Partial
+  // neutral chronology still needs missing war/conflict backends for excluded
+  // belligerents. This is not a reassessment of already native-scoped sheets.
+  assert.ok(turn.includes("  if (!nativeStatsChronology || nativeStatsChronology.partial) requestConflictSheets(nextWorld, nextGame);\n"),
+    "legacy and partial-native turns still request missing conflict backends, unlike fully native turns");
+  assert.ok(turn.includes("excludePolities: nativeStatsChronology?.scopedCountries || []"),
+    "the tracked Stats AI refresh must exclude countries advanced by the partial-native clock");
   assert.ok(turn.includes("    if (written) requestConflictSheets({ ...world, battlefields: built.battlefields }, bundle.game);"), "when a scenario's fronts are built");
   assert.ok(turn.includes("    if (attacked.length > 0) requestConflictSheets(world, game, attacked);"), "when a route is drawn into a country");
   // A sheet wanted for the war is one with a backend: a scenario's own sheet written before it kept one is written again.

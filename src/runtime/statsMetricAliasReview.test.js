@@ -61,3 +61,62 @@ test("population, stability, sector and derived per-capita references are read w
   assert.deepEqual(report.map((row) => row.status), ["same-reading", "different", "different", "native-unset"]);
   assert.equal(report[3].nativeValue, null); // no fabricated GDP/person using a possibly different scope
 });
+
+test("scenario-wide review counts matching duplicates and numeric disagreements without changing readiness or state", async () => {
+  const { summarizeScenarioNationalMetricAliasReviews, serializeScenarioNationalMetricReviewCsv } = await import("./statsMetricAliasReview.js");
+  const def = definition([metric("gdp"), metric("inflation"), metric("publicDebt"), metric("foodAutonomy")]);
+  const world = { countryStats: {
+    Latvia: { economy: { gdp: 100, inflation: 0, publicDebt: 30 }, customStats: { gdp: 100, inflation: 5, publicDebt: 30, foodAutonomy: 60 } },
+    Estonia: { economy: { gdp: 80, inflation: 2 }, customStats: { gdp: 90, inflation: 2 } },
+    Lithuania: { economy: { gdp: 250 }, customStats: { foodAutonomy: 80 } },
+  } };
+  const original = structuredClone(world);
+  const roster = [{ code: "Estonia", name: "Estonia" }, { code: "Latvia", name: "Latvia" }, { code: "Latvia", name: "Duplicate seat" }, { code: "Lithuania", name: "Lithuania" }];
+  const report = summarizeScenarioNationalMetricAliasReviews(def, world, roster);
+  assert.deepEqual([report.countries, report.matching, report.conflicting, report.rows.length], [2, 3, 2, 5]);
+  assert.deepEqual(report.rows.map((r) => [r.countryCode, r.key, r.status]), [
+    ["Estonia", "gdp", "different"], ["Estonia", "inflation", "same-reading"],
+    ["Latvia", "gdp", "same-reading"], ["Latvia", "inflation", "different"], ["Latvia", "publicDebt", "same-reading"],
+  ]);
+  assert.deepEqual(world, original);
+  const csv = serializeScenarioNationalMetricReviewCsv(report);
+  assert.equal(csv.trimEnd().split("\r\n").length, 6);
+  assert.match(csv, /"Latvia","Latvia","inflation","economy.inflation","0","customStats.inflation","5","different","yes"/);
+});
+
+test("native-bound renamed cards disclose orphan legacy copies, without multiplying a duplicate through repeat GDP cards", () => {
+  const def = { custom: true, sections: [{ key: "overview", label: "Overview", stats: [
+    { key: "gdpHero", label: "GDP headline", nativeMetric: "gdp", kind: "currency" },
+    { key: "gdpDetails", label: "GDP details", nativeMetric: "gdp", kind: "currency" },
+  ] }] };
+  const sheet = { economy: { gdp: 100 }, customStats: { gdp: 80, gdpHero: 100 } };
+  const original = structuredClone(sheet);
+  const report = reviewScenarioNationalMetricAliases(def, sheet);
+  assert.deepEqual(report.map((r) => [r.key, r.status]), [["gdpHero", "same-reading"], ["gdp", "different"]]);
+  assert.ok(report.every((r) => r.reviewRequired));
+  assert.deepEqual(sheet, original);
+  assert.deepEqual(reviewScenarioNationalMetricAliases(def, { economy: { gdp: 100 }, customStats: { foodAutonomy: 50 } }), []);
+});
+
+test("CSV export escapes spreadsheet formulas, commas and quotes in authored country names without rounding numeric evidence", async () => {
+  const { serializeScenarioNationalMetricReviewCsv } = await import("./statsMetricAliasReview.js");
+  const report = { rows: [{ countryCode: "=SUM(1)", countryName: '+cmd,"bad"', key: "gdp", nativePath: "economy.gdp",
+    nativeValue: 297500000000, customPath: "customStats.gdp", customValue: 300000000000, status: "different", reviewRequired: true }] };
+  const csv = serializeScenarioNationalMetricReviewCsv(report);
+  assert.match(csv, /^"Country code","Country"/);
+  assert.match(csv, /"'=SUM\(1\)","'\+cmd,""bad"""/);
+  assert.match(csv, /"297500000000"/);
+  assert.match(csv, /"300000000000"/);
+  assert.equal(csv.split("\r\n").length, 3); // includes final blank line
+});
+
+
+test("CSV preserves negative and zero numeric statistics without mistaking them for spreadsheet expressions", async () => {
+  const { serializeScenarioNationalMetricReviewCsv } = await import("./statsMetricAliasReview.js");
+  const csv = serializeScenarioNationalMetricReviewCsv({ rows: [{
+    countryCode: "Latvia", countryName: "Latvia", key: "budgetBalance", nativePath: "economy.budgetBalance", nativeValue: -5,
+    customPath: "customStats.budgetBalance", customValue: 0, status: "different", reviewRequired: true,
+  }] });
+  assert.match(csv, /"economy.budgetBalance","-5","customStats.budgetBalance","0","different"/);
+  assert.doesNotMatch(csv, /"'-5"/);
+});

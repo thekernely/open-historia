@@ -1,6 +1,7 @@
 /*! Open Historia — reviewed, scenario-owned starting Statistics. Pure validation and assembly. */
 import {
   DEFAULT_STAT_INDEX_KEYS,
+  NATIONAL_NATIVE_METRICS,
 } from "./statIndexDefinitions.js";
 import {
   expandTerritorialMacroEstimates,
@@ -11,6 +12,11 @@ import {
 } from "./countryStats.js";
 import { addGameDays, isCanonicalGameDate } from "./gameDates.js";
 import { resolvePolityIdentity } from "./polityIdentity.js";
+import {
+  assertNoLegacyNativeStatCopies,
+  nationalStatsAuthoringContract,
+  nationalStatsPresentationCoverage,
+} from "./statsMetricBindings.js";
 
 const clean = (value) => String(value ?? "").trim();
 const plain = (value) => value && typeof value === "object" && !Array.isArray(value);
@@ -50,6 +56,10 @@ const indicesOf = (value) => {
   return indices;
 };
 const customValuesOf = (value, keys) => {
+  // An all-native presentation has no independent values to generate. Do not
+  // manufacture a customStats entry merely to satisfy the old custom-sheet
+  // completeness check. A malformed supplied object is still rejected.
+  if (!keys.length && (value === undefined || value === null)) return {};
   if (!plain(value)) throw new Error("Custom values are missing.");
   const customStats = {};
   for (const key of keys) customStats[key] = valueOf(value[key], [-1e18, 1e18], key);
@@ -67,17 +77,32 @@ export const scenarioStatsPolityKey = (code, world) => {
   return clean(resolved?.resolved) || raw;
 };
 
-export const scenarioStatsCoverage = (world, options, { customKeys = null } = {}) => {
+export const scenarioStatsCoverage = (world, options, { customKeys = null, customDefinition = null } = {}) => {
   const rows = (Array.isArray(options) ? options : []).map((option) => {
     const code = scenarioStatsPolityKey(option?.code, world);
     const sheet = world?.countryStats?.[code] ?? world?.countryStats?.[option?.code];
-    const complete = Array.isArray(customKeys)
-      ? isCompleteCustomCountryStatSheet(sheet, customKeys)
-      : isCompleteCountryStatSheet(sheet);
+    const complete = customDefinition && nationalStatsAuthoringContract(customDefinition).custom
+      ? nationalStatsPresentationCoverage(customDefinition, sheet).ready
+      : Array.isArray(customKeys)
+        ? isCompleteCustomCountryStatSheet(sheet, customKeys)
+        : isCompleteCountryStatSheet(sheet);
     return { code, name: clean(option?.name) || code, status: complete ? "ready" : sheet ? "incomplete" : "missing" };
   });
   const unique = new Map(rows.filter((row) => row.code).map((row) => [row.code, row]));
   return [...unique.values()];
+};
+
+// This marker is written ONLY by the scenario-authoring acceptance/edit paths.
+// A generated-but-unapplied proposal does not enter the scenario world.
+const markScenarioReviewedBaseline = (sheet, date) => {
+  if (!isCanonicalGameDate(date)) return normalizeCountryStatSheet(sheet);
+  return normalizeCountryStatSheet({
+    ...sheet,
+    continuity: {
+      ...(sheet?.continuity || {}),
+      scenarioBaseline: { version: 1, source: "scenario-author-reviewed", date },
+    },
+  });
 };
 
 export const createScenarioDemographicBaseline = (date, population, values) => {
@@ -96,6 +121,38 @@ export const createScenarioDemographicBaseline = (date, population, values) => {
     creditedBirths: 0, creditedDeaths: 0, birthFraction: 0, deathFraction: 0,
     influences: [],
   };
+};
+
+const authoringKeys = (customKeys, customDefinition) => {
+  if (!customDefinition) return customKeys;
+  // Do not reinterpret the default national sheet as an empty custom sheet
+  // because a caller accidentally passed a standard-mode definition.
+  const contract = nationalStatsAuthoringContract(customDefinition);
+  if (!contract.custom) throw new Error("Native metric authoring requires a custom national Statistics definition.");
+  return contract.customKeys;
+};
+
+const assertNoProposedBoundCopies = (row, customDefinition) => {
+  if (!customDefinition) return;
+  assertNoLegacyNativeStatCopies(customDefinition, { customStats: row?.customStats });
+};
+
+// The custom-sheet proposal transport produces mapped population/GDP and
+// explicitly typed debt/budget readings. It currently initializes other
+// economic rates to zero. A native-bound inflation or stability card must NOT
+// turn one of those compatibility zeros into an allegedly authored baseline.
+const GENERATED_NATIVE_FIELDS = new Set(["gdp", "gdpPerCapita", "totalPopulation", "publicDebt", "budgetBalance"]);
+const assertNoInventedBoundNativeValues = (customDefinition, existing) => {
+  if (!customDefinition) return;
+  const { boundRows } = nationalStatsAuthoringContract(customDefinition);
+  for (const row of boundRows) {
+    if (GENERATED_NATIVE_FIELDS.has(row.nativeMetric)) continue;
+    const path = NATIONAL_NATIVE_METRICS[row.nativeMetric]?.path ?? [];
+    const prior = path.reduce((value, key) => value?.[key], existing);
+    if (typeof prior !== "number" || !Number.isFinite(prior)) {
+      throw new Error(`Native ${row.nativeMetric} has no reviewed starting value; custom-sheet generation cannot invent one. Author that national field explicitly first.`);
+    }
+  }
 };
 
 const proposedCommonFields = (row, { customKeys = null } = {}) => {
@@ -129,19 +186,48 @@ const proposedCommonFields = (row, { customKeys = null } = {}) => {
   return data;
 };
 
+// Only canonical numeric IDs or the exact M-prefixed prompt labels are accepted.
+// Numbers supplied as JSON strings are an encoding difference, not a new bucket.
+// Zero, negative, fractional, ambiguous, leading-zero and foreign IDs fail closed.
+export const parseNativeMacroBucketIndex = (value) => {
+  if (typeof value === "number") return Number.isSafeInteger(value) && value > 0 ? value : null;
+  if (typeof value !== "string") return null;
+  const label = value.trim();
+  if (!/^(?:M)?[1-9][0-9]*$/.test(label)) return null;
+  const parsed = Number(label.replace(/^M/, ""));
+  return Number.isSafeInteger(parsed) ? parsed : null;
+};
+
 // All geography is supplied by the existing native territorial planner.
 // AI provides ONLY bounded values for those exact buckets. It never creates
 // geography, sovereignty, or arbitrary total GDP overrides.
-export const createReviewedScenarioStatsSheet = ({ row, basis, date, customKeys = null, existing = null } = {}) => {
+export const createReviewedScenarioStatsSheet = ({ row, basis, date, customKeys = null, customDefinition = null, existing = null } = {}) => {
   if (!plain(row)) throw new Error("No country proposal was provided.");
+  const expectedCustomKeys = authoringKeys(customKeys, customDefinition);
+  // Fail BEFORE assembling map/economic state if the model attempts to write
+  // through an explicitly native-bound presentation key.
+  assertNoProposedBoundCopies(row, customDefinition);
+  if (customDefinition) assertNoLegacyNativeStatCopies(customDefinition, existing);
+  assertNoInventedBoundNativeValues(customDefinition, existing);
   const mapped = Array.isArray(basis?.plan) && basis.plan.length > 0;
   if (!mapped) throw new Error("This polity has no authoritative mapped Statistics scope. Review its nonterritorial status manually; do not fabricate territory.");
   const expected = Array.isArray(basis.macroPlan) ? basis.macroPlan : [];
-  const received = Array.isArray(row.macro) ? row.macro : [];
-  if (expected.length === 0 || received.length !== expected.length) throw new Error(`Expected ${expected.length} exact native territorial bucket(s).`);
+  const receivedRaw = Array.isArray(row.macro) ? row.macro : [];
+  if (expected.length === 0 || receivedRaw.length !== expected.length) throw new Error(`Expected ${expected.length} exact native territorial bucket(s).`);
   const expectedIndices = new Set(expected.map((item) => item.index));
-  if (new Set(received.map((item) => item.index)).size !== expected.length || received.some((item) => !expectedIndices.has(item.index))) {
-    throw new Error("Territorial bucket identity is missing, duplicated, or outside the actual map.");
+  // The native planner defines the identity. A model may repeat the visible
+  // prompt label M1 or JSON-encode 1 as a string; these are the same exact ID.
+  // Never use array position, model-defined geography or a missing ID to guess.
+  const received = receivedRaw.map((item) => ({
+    ...item,
+    index: parseNativeMacroBucketIndex(item?.index),
+  }));
+  const actualIndices = received.map((item) => item.index);
+  if (new Set(actualIndices).size !== expected.length || actualIndices.some((index) => !expectedIndices.has(index))) {
+    // Bounded diagnostic: the planner has at most 12 buckets. These are IDs,
+    // not private model prose or any user-authored numerical readings.
+    const supplied = receivedRaw.map((item) => typeof item?.index === "string" ? item.index.slice(0, 32) : item?.index ?? null);
+    throw new Error(`Territorial bucket identity is missing, duplicated, or outside the actual map. Expected ${JSON.stringify([...expectedIndices])}; received ${JSON.stringify(supplied)}.`);
   }
   for (const entry of received) {
     nonnegativeWhole(entry.population, `Population of regional bucket ${entry.index}`);
@@ -157,7 +243,7 @@ export const createReviewedScenarioStatsSheet = ({ row, basis, date, customKeys 
   if (canonicalGeographies.length !== receivedGeographies.length || canonicalGeographies.some((name, i) => name !== receivedGeographies[i])) {
     throw new Error("The proposed ledger does not cover the exact current map.");
   }
-  const proposed = proposedCommonFields(row, { customKeys });
+  const proposed = proposedCommonFields(row, { customKeys: expectedCustomKeys });
   const total = expanded.components.reduce((sum, component) => sum + component.population, 0);
   const generated = mergeCountryStatPatch(null, {
     ...proposed,
@@ -208,16 +294,18 @@ export const createReviewedScenarioStatsSheet = ({ row, basis, date, customKeys 
         if (previous.continuity.demographicClock) delete mergedContinuity.demographicEvolution;
         filled = normalizeCountryStatSheet({ ...filled, continuity: mergedContinuity });
       }
-      return filled;
+      return markScenarioReviewedBaseline(filled, date);
     }
   }
-  return normalizeCountryStatSheet(generated);
+  return markScenarioReviewedBaseline(generated, date);
 };
 
-export const scenarioStatsRequiredReady = (sheet, customKeys = null) => (
-  Array.isArray(customKeys)
-    ? isCompleteCustomCountryStatSheet(sheet, customKeys)
-    : isCompleteCountryStatSheet(sheet)
+export const scenarioStatsRequiredReady = (sheet, customKeys = null, customDefinition = null) => (
+  customDefinition && nationalStatsAuthoringContract(customDefinition).custom
+    ? nationalStatsPresentationCoverage(customDefinition, sheet).ready
+    : Array.isArray(customKeys)
+      ? isCompleteCustomCountryStatSheet(sheet, customKeys)
+      : isCompleteCountryStatSheet(sheet)
 );
 
 // Strictly reconstruct editable country fields from existing canonical entries.
@@ -248,12 +336,15 @@ export const scenarioStatsEditorValues = (sheet, customKeys = null) => {
 
 // Update one existing complete sheet without overwriting its map ledger.
 // New sheets MUST first go through the map-aware generated proposal path.
-export const applyScenarioStatsManualEdits = ({ sheet, edits, date, customKeys = null } = {}) => {
+export const applyScenarioStatsManualEdits = ({ sheet, edits, date, customKeys = null, customDefinition = null } = {}) => {
   const before = normalizeCountryStatSheet(sheet);
+  const expectedCustomKeys = authoringKeys(customKeys, customDefinition);
+  assertNoProposedBoundCopies({ customStats: edits?.customStats }, customDefinition);
+  if (customDefinition) assertNoLegacyNativeStatCopies(customDefinition, before);
   if (!before || !Array.isArray(before.territorialComponents) || !before.territorialComponents.length) {
     throw new Error("This country needs a mapped starting baseline first. Generate and review one, then edit it here.");
   }
-  const custom = Array.isArray(customKeys);
+  const custom = Array.isArray(expectedCustomKeys);
   const proposed = {
     ...(!custom ? {
       capital: requiredText(edits.capital, "Capital"), continent: requiredText(edits.continent, "Continent"),
@@ -265,7 +356,7 @@ export const applyScenarioStatsManualEdits = ({ sheet, edits, date, customKeys =
         industry: valueOf(edits.industry, NUMERIC.industry, "Industry"),
         services: valueOf(edits.services, NUMERIC.services, "Services"),
       },
-    } : { customStats: customValuesOf(edits.customStats, customKeys) }),
+    } : { customStats: customValuesOf(edits.customStats, expectedCustomKeys) }),
     population: { total: positiveWhole(edits.population, "Population") },
     economy: {
       gdp: valueOf(edits.gdp, [1, 1e18], "GDP"),
@@ -302,8 +393,8 @@ export const applyScenarioStatsManualEdits = ({ sheet, edits, date, customKeys =
     delete continuity.demographicEvolution;
     candidate = normalizeCountryStatSheet({ ...candidate, continuity });
   }
-  if (!scenarioStatsRequiredReady(candidate, customKeys)) throw new Error("The edited country sheet remains incomplete; no changes were saved.");
-  return candidate;
+  if (!scenarioStatsRequiredReady(candidate, expectedCustomKeys, customDefinition)) throw new Error("The edited country sheet remains incomplete; no changes were saved.");
+  return markScenarioReviewedBaseline(candidate, date);
 };
 
 // The author can supply aggregate totals without pretending to know a precise

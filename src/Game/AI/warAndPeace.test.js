@@ -285,3 +285,26 @@ test("a war under an armistice can still be settled, and the ground it leaves ea
   assert.notEqual(put.reason, "no-war");
   assert.equal(proposePeace(world({ wars: [{ ...WAR, status: "ended" }] }), { warId: "war-1", from: "Aland", terms: { territory: TERRITORY_AS_HELD } }).reason, "no-war");
 });
+
+// Measured national sheets must settle with the treaty, not only change map title.
+test("a peace settlement conserves the existing mapped residents and territorial GDP", () => {
+  const component = (geography, population, gdpPerCapita) => ({ geography, population, gdpPerCapita, group: "core" });
+  const mapped = (territorialComponents) => ({ territorialScope: "mapped", statsSchemaVersion: 1, territorialComponents });
+  const transferCatalog = [8, 9, 10].map((index) => ({
+    id: `b${index}`, name: `Border District ${index}`, country: "Borduria",
+  }));
+  const source = world({ countryStats: {
+    Aland: mapped([component("Aland Core", 500, 100)]),
+    Borduria: mapped(transferCatalog.map((entry) => component(entry.name, 100, 200))),
+  } });
+  assert.throws(() => makePeace(source, { warId: "war-1", terms: { territory: TERRITORY_AS_HELD },
+    date: "1915-01-10", round: 9 }), /requires the canonical region catalog/);
+  const settled = makePeace(source, { warId: "war-1", terms: { territory: TERRITORY_AS_HELD },
+    date: "1915-01-10", round: 9, regionCatalog: transferCatalog });
+  assert.equal(settled.countryStats.Borduria.population.total, 0);
+  assert.equal(settled.countryStats.Aland.population.total, 800);
+  assert.equal(settled.countryStats.Aland.economy.gdp, 110000);
+  assert.equal(settled.wars.find((entry) => entry.id === "war-1").status, "ended");
+  assert.equal(source.countryStats.Borduria.population.total, 300,
+    "failed preflight and accepted settlement leave the original state untouched");
+});

@@ -50,6 +50,7 @@ import FactionCreator from "./FactionCreator.jsx";
 import { groupRegions, normalizeGroupAreas, normalizeGroups } from "../../runtime/groups.js";
 import FeaturesSectionEditor from "./FeaturesSectionEditor.jsx";
 import StatsSheetEditor, { normalizeStatsEditorValue } from "./StatsSheetEditor.jsx";
+import StatsDashboardEditor from "./StatsDashboardEditor.jsx";
 import InstitutionAuthoringPanel from "./InstitutionAuthoringPanel.jsx";
 import PrehistoryPanel from "./PrehistoryPanel.jsx";
 import ScenarioFrontsPanel from "./ScenarioFrontsPanel.jsx";
@@ -1946,6 +1947,7 @@ const EditorDrawer = ({
   statsDefinitionDirty = false,
   statsDefinitionUnavailable = false,
   onStatsAuthoringDirtyChange,
+  onSaveStatsDefinition,
   communityCard = null,
   onSuggestChanges = null,
   countryOptions = [],
@@ -2433,12 +2435,11 @@ const EditorDrawer = ({
               statsDefinitionUnavailable={statsDefinitionUnavailable}
               onDetailsChange={onDetailsChange}
               onDirtyChange={onStatsAuthoringDirtyChange}
+              onSaveStatsDefinition={onSaveStatsDefinition}
             />
           </Suspense>
-          <details style={{ marginTop: "1rem", border: "1px solid rgba(255,255,255,0.12)", borderRadius: "12px", padding: "0.85rem" }}>
-            <summary style={{ cursor: "pointer", color: "#e4e4e7", fontWeight: 750 }}>Advanced - Customize full Statistics sheet</summary>
-            <div style={{ marginTop: "0.8rem" }}><StatsSheetEditor value={statsValue} onChange={onStatsChange} /></div>
-          </details>
+          <StatsDashboardEditor value={statsValue} onChange={onStatsChange}
+            advancedEditor={<StatsSheetEditor value={statsValue} onChange={onStatsChange} />} />
         </div>
       )}
 
@@ -3667,13 +3668,58 @@ const LibraryTopBar = ({ onOpenSettings }) => {
     }));
   };
 
+  // The Stats definition is an independent scenario asset. Saving it must not
+  // automatically apply or discard country-level AI proposals held by the Stats
+  // authoring panel. Keep this path shared with the ordinary scenario Save.
+  const persistScenarioStatsDefinition = async (scenarioId, details) => {
+    if (editorStatsFailed) throw new Error("The Statistics sheet definition did not load. Reopen the scenario before saving it.");
+    if (editorStats.custom || editorStats.dashboard) {
+      if (editorStats.custom && (editorStats.sections || []).some((section) => !Array.isArray(section?.stats) || section.stats.length === 0)) {
+        throw new Error("Each custom Stats section needs at least one statistic before saving.");
+      }
+      const definition = normalizeStatSheetDefinition(editorStats, { fallbackStandard: false });
+      if (editorStats.custom && (!definition.custom || !flattenStatSheetRows(definition).length)) {
+        throw new Error("A custom Stats sheet needs at least one valid statistic.");
+      }
+      const blob = new Blob([JSON.stringify(serializeStatSheet(definition), null, 2)], { type: "application/json" });
+      const saved = await uploadScenarioAsset(scenarioId, "stats", blob);
+      adoptSavedStats(normalizeStatsEditorValue(definition));
+      return saved;
+    }
+    let saved = details;
+    if (details.assetStatus?.stats) saved = await clearScenarioAsset(scenarioId, "stats");
+    adoptSavedStats(normalizeStatsEditorValue(null));
+    return saved;
+  };
+
+  // Dedicated Save for an edited display definition when approved country
+  // proposals are still pending. It changes only the stats asset, not world,
+  // game date, map ownership or the proposal selections.
+  const handleSaveStatsDefinitionOnly = async () => {
+    if (editorKind !== "scenario" || !editorDetails?.scenario?.id || !editorState) {
+      throw new Error("Open the scenario editor before saving its Statistics definition.");
+    }
+    if (editorStatsFailed) throw new Error("The Statistics definition could not be loaded; reopen the editor.");
+    const scenarioId = editorDetails.scenario.id;
+    const fresh = await loadScenarioDetails(scenarioId);
+    const issue = editorDetailsIssue({ kind: "scenario", expectedId: scenarioId, details: fresh });
+    if (issue) throw new Error(`Scenario editor details could not be verified (${issue}).`);
+    if (JSON.stringify(fresh.assetStatus?.stats ?? null) !== JSON.stringify(editorDetails.assetStatus?.stats ?? null)) {
+      throw new Error("The Statistics definition changed elsewhere. Reopen the scenario before saving.");
+    }
+    const saved = await persistScenarioStatsDefinition(scenarioId, fresh);
+    const savedIssue = editorDetailsIssue({ kind: "scenario", expectedId: scenarioId, details: saved });
+    if (savedIssue) throw new Error(`Saved Statistics definition could not be verified (${savedIssue}).`);
+    setEditorDetails(saved);
+  };
+
   const handleSave = async () => {
     if (!editorKind || !editorDetails || !editorState) {
       return;
     }
 
     if (editorKind === "scenario" && editorStatsAuthoringDirty) {
-      setEditorError("Save or discard the unsaved country Statistics edits and AI proposals before saving the scenario.");
+      setEditorError("Country Statistics drafts remain pending. Use 'Save Statistics sheet definition (keep proposals)' to save only the definition, or 'Apply selected reviewed baselines' to approve country values. The main Save does not apply AI proposals.");
       return;
     }
     setEditorError(null);
@@ -3722,25 +3768,7 @@ const LibraryTopBar = ({ onOpenSettings }) => {
               : {}),
           },
         });
-        if (editorStatsFailed) {
-          // Never loaded, so never written: see openScenarioEditor.
-        } else if (editorStats.custom) {
-          if ((editorStats.sections || []).some((section) => !Array.isArray(section?.stats) || section.stats.length === 0)) {
-            throw new Error("Each custom Stats section needs at least one statistic before saving.");
-          }
-          const definition = normalizeStatSheetDefinition(editorStats, { fallbackStandard: false });
-          if (!definition.custom || !flattenStatSheetRows(definition).length) {
-            throw new Error("A custom Stats sheet needs at least one valid statistic.");
-          }
-          const blob = new Blob([JSON.stringify(serializeStatSheet(definition), null, 2)], { type: "application/json" });
-          details = await uploadScenarioAsset(editorDetails.scenario.id, "stats", blob);
-          adoptSavedStats({ custom: true, version: definition.version, sections: definition.sections });
-        } else {
-          if (editorDetails.assetStatus?.stats || details.assetStatus?.stats) {
-            details = await clearScenarioAsset(editorDetails.scenario.id, "stats");
-          }
-          adoptSavedStats(normalizeStatsEditorValue(null));
-        }
+        if (!editorStatsFailed) details = await persistScenarioStatsDefinition(editorDetails.scenario.id, details);
         const issue = editorDetailsIssue({ kind: "scenario", expectedId: editorDetails.scenario.id, details });
         if (issue) throw new Error(`Saved scenario details could not be verified (${issue}). Reopen the editor.`);
         setEditorDetails(details);
@@ -5512,6 +5540,7 @@ const LibraryTopBar = ({ onOpenSettings }) => {
         onFileSelect={handleEditorAssetSelect}
         onOpenFileDialog={(assetKey) => assetFileInputsRef.current[assetKey]?.click()}
         onSave={handleSave}
+        onSaveStatsDefinition={handleSaveStatsDefinitionOnly}
         promptSectionKey={promptSectionKey}
         setEditorSection={navigateEditorSection}
         setPromptSectionKey={setPromptSectionKey}

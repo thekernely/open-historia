@@ -1,3 +1,4 @@
+import { normalizeStatsCrisisEstimate, estimateGrowthLimit } from "./statsCrisisEstimate.js";
 import { addGameDays, astronomicalYear, compareGameDates, diffGameDays, isCanonicalGameDate, isGameDate, parseGameDate } from "./gameDates.js";
 import { STATS_BACKEND_FIELD, statsBackendPatch } from "./statsBackend.js";
 import { normalizeMilitaryStats } from "./militaryStats.js";
@@ -412,6 +413,36 @@ export const normalizeCountryStatGdpRamps = (value) => {
 // scenario has not established the entire dated process.
 export const COUNTRY_STATS_DEMOGRAPHIC_MAX_DAYS = 1461;
 export const COUNTRY_STATS_DEMOGRAPHIC_MAX_RATE = 80;
+export const COUNTRY_STATS_DEMOGRAPHIC_MAX_REBASES = 32;
+
+// A legal territorial transfer changes the population *base* for future
+// births/deaths without erasing already credited births or deaths. The old
+// finite clock remains unchanged when no rebases are authored. Each rebase
+// starts with the next unaccounted civil day, and stores the cumulative
+// receipts at that boundary. This history is an accounting cursor, not an
+// autonomous migration model or a retrospective recomputation.
+export const demographicClockCumulative = (clock, date) => {
+  if (!clock || !isCanonicalGameDate(date)) return null;
+  let fromDate = clock.sourceDate;
+  let base = clock.basePopulation;
+  let births = 0, deaths = 0;
+  for (const rebase of clock.rebases || []) {
+    const prior = addGameDays(rebase.effectiveDate, -1);
+    if (compareGameDates(date, prior) < 0) break;
+    const days = diffGameDays(fromDate, prior);
+    births += Math.round(base * clock.birthsPerThousand / 1000 * days / 365.2425);
+    deaths += Math.round(base * clock.deathsPerThousand / 1000 * days / 365.2425);
+    if (births !== rebase.creditedBirthsAtStart || deaths !== rebase.creditedDeathsAtStart) return null;
+    fromDate = prior;
+    base = rebase.basePopulation;
+  }
+  const days = diffGameDays(fromDate, date);
+  if (days < 0) return null;
+  births += Math.round(base * clock.birthsPerThousand / 1000 * days / 365.2425);
+  deaths += Math.round(base * clock.deathsPerThousand / 1000 * days / 365.2425);
+  return Number.isSafeInteger(births) && Number.isSafeInteger(deaths) ? { births, deaths } : null;
+};
+
 export const normalizeCountryStatDemographicClock = (value) => {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const { sourceDate, endDate, lastDate, basePopulation,
@@ -424,12 +455,27 @@ export const normalizeCountryStatDemographicClock = (value) => {
     || ![birthsPerThousand, deathsPerThousand].every((rate) =>
       typeof rate === "number" && Number.isFinite(rate) && rate >= 0 && rate <= COUNTRY_STATS_DEMOGRAPHIC_MAX_RATE)
     || ![creditedBirths, creditedDeaths].every((count) => Number.isSafeInteger(count) && count >= 0)) return null;
-  const elapsed = diffGameDays(sourceDate, lastDate);
-  const maxBirths = Math.round(basePopulation * birthsPerThousand / 1000 * elapsed / 365.2425);
-  const maxDeaths = Math.round(basePopulation * deathsPerThousand / 1000 * elapsed / 365.2425);
-  if (creditedBirths !== maxBirths || creditedDeaths !== maxDeaths) return null;
-  return { sourceDate, endDate, lastDate, basePopulation,
-    birthsPerThousand, deathsPerThousand, creditedBirths, creditedDeaths };
+  const rebases = value.rebases ?? [];
+  if (!Array.isArray(rebases) || rebases.length > COUNTRY_STATS_DEMOGRAPHIC_MAX_REBASES) return null;
+  let previous = sourceDate;
+  for (const row of rebases) {
+    if (!row || typeof row !== "object" || Array.isArray(row)
+      || Object.keys(row).some((key) => !["effectiveDate", "basePopulation", "creditedBirthsAtStart", "creditedDeathsAtStart"].includes(key))
+      || !isCanonicalGameDate(row.effectiveDate)
+      || compareGameDates(row.effectiveDate, previous) <= 0
+      || compareGameDates(row.effectiveDate, endDate) > 0
+      || compareGameDates(row.effectiveDate, addGameDays(lastDate, 1)) > 0
+      || !Number.isSafeInteger(row.basePopulation) || row.basePopulation < 1 || row.basePopulation > 1e12
+      || ![row.creditedBirthsAtStart, row.creditedDeathsAtStart].every((count) => Number.isSafeInteger(count) && count >= 0)) return null;
+    previous = row.effectiveDate;
+  }
+  const normalized = { sourceDate, endDate, lastDate, basePopulation,
+    birthsPerThousand, deathsPerThousand, creditedBirths, creditedDeaths,
+    ...(rebases.length ? { rebases: rebases.map((row) => ({ ...row })) } : {}),
+  };
+  const targets = demographicClockCumulative(normalized, lastDate);
+  if (!targets || creditedBirths !== targets.births || creditedDeaths !== targets.deaths) return null;
+  return normalized;
 };
 
 // Opt-in, scenario-initialized demographic evolution. These are *rates*, not
@@ -509,6 +555,58 @@ export const normalizeCountryStatNativeEconomyClock = (value) => {
   return { ...value };
 };
 
+// Accepted economic interruptions are finite rate changes tied to dated,
+// explicitly quantified events. They are NOT inferred from event prose.
+export const COUNTRY_STATS_MAX_ECONOMIC_INFLUENCES = 24;
+export const normalizeCountryStatEconomicInfluences = (value) => {
+  if (!Array.isArray(value) || value.length > COUNTRY_STATS_MAX_ECONOMIC_INFLUENCES) return null;
+  const seen = new Set();
+  const out = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)
+      || Object.keys(entry).some((key) => !["eventId", "startDate", "endDate", "annualRealGrowthDelta", "cause", "reason", "resolvedDate", "resolvedByEventId", "sourceStorylineId", "economicShockEstimate"].includes(key))
+      || typeof entry.eventId !== "string" || !entry.eventId.trim() || entry.eventId.length > 128
+      || seen.has(entry.eventId)
+      || (Object.hasOwn(entry, "sourceStorylineId") && (typeof entry.sourceStorylineId !== "string"
+        || !entry.sourceStorylineId.trim() || entry.sourceStorylineId.length > 128))
+      || !isCanonicalGameDate(entry.startDate)
+      || !isCanonicalGameDate(entry.endDate)
+      || diffGameDays(entry.startDate, entry.endDate) < 1
+      || diffGameDays(entry.startDate, entry.endDate) > 730
+      || typeof entry.annualRealGrowthDelta !== "number" || !Number.isFinite(entry.annualRealGrowthDelta)
+      || entry.annualRealGrowthDelta === 0 || Math.abs(entry.annualRealGrowthDelta) > 20
+      || !["production", "trade", "policy"].includes(entry.cause)
+      || (Object.hasOwn(entry, "economicShockEstimate") && (() => {
+        const estimate = normalizeStatsCrisisEstimate(entry.economicShockEstimate);
+        return !estimate || !Object.hasOwn(entry, "sourceStorylineId")
+          || entry.annualRealGrowthDelta >= -0.25
+          || entry.annualRealGrowthDelta < -estimateGrowthLimit(estimate)
+          || diffGameDays(entry.startDate, entry.endDate) > 90
+          || (estimate.channel === "credit" || estimate.channel === "trade"
+            ? entry.cause !== "trade" : entry.cause !== "production");
+      })())
+      || (Object.hasOwn(entry, "resolvedDate") !== Object.hasOwn(entry, "resolvedByEventId"))
+      || (Object.hasOwn(entry, "resolvedDate") && (
+        !isCanonicalGameDate(entry.resolvedDate)
+        || compareGameDates(entry.resolvedDate, entry.startDate) < 0
+        || compareGameDates(entry.resolvedDate, entry.endDate) > 0
+        || typeof entry.resolvedByEventId !== "string" || !entry.resolvedByEventId.trim()
+        || entry.resolvedByEventId.length > 128 || entry.resolvedByEventId === entry.eventId))
+      || typeof entry.reason !== "string" || !entry.reason.trim() || entry.reason.length > 240) return null;
+    seen.add(entry.eventId);
+    out.push({ eventId: entry.eventId, startDate: entry.startDate, endDate: entry.endDate,
+      annualRealGrowthDelta: entry.annualRealGrowthDelta, cause: entry.cause, reason: entry.reason,
+      ...(Object.hasOwn(entry, "sourceStorylineId") ? { sourceStorylineId: entry.sourceStorylineId } : {}),
+      ...(Object.hasOwn(entry, "economicShockEstimate")
+        ? { economicShockEstimate: normalizeStatsCrisisEstimate(entry.economicShockEstimate) } : {}),
+      ...(Object.hasOwn(entry, "resolvedDate") ? {
+        resolvedDate: entry.resolvedDate, resolvedByEventId: entry.resolvedByEventId,
+      } : {}),
+    });
+  }
+  return out;
+};
+
 const MAX_ACCOUNTED_ECONOMIC_EVENTS = 64;
 const MAX_SEMANTIC_SPLIT_COMPONENTS = 64;
 
@@ -530,6 +628,20 @@ export const normalizeCountryStatContinuity = (value) => {
   if (territorialFingerprint) out.territorialFingerprint = territorialFingerprint;
   if (Number.isInteger(populationCalibrationVersion) && populationCalibrationVersion > 0) {
     out.populationCalibrationVersion = populationCalibrationVersion;
+  }
+  // An author-approved scenario baseline is a provenance marker, NOT a claim
+  // that a native population calibration has run. It never sets or upgrades
+  // populationCalibrationVersion. The AI provider schema cannot author it.
+  const scenarioBaseline = value.scenarioBaseline;
+  if (scenarioBaseline?.version === 1
+    && scenarioBaseline.source === "scenario-author-reviewed"
+    && isCanonicalGameDate(scenarioBaseline.date)
+    && Object.keys(scenarioBaseline).length === 3) {
+    out.scenarioBaseline = {
+      version: 1,
+      source: "scenario-author-reviewed",
+      date: scenarioBaseline.date,
+    };
   }
   // Old-save opt-in compatibility provenance. Not a reviewed current GDP
   // assessment, and never an authorization to extrapolate past annual rates.
@@ -583,6 +695,11 @@ export const normalizeCountryStatContinuity = (value) => {
   if (nativeEconomyClock) out.nativeEconomyClock = nativeEconomyClock;
   const gdpRamps = normalizeCountryStatGdpRamps(value.gdpRamps);
   if (gdpRamps) out.gdpRamps = gdpRamps;
+  // A present but malformed finite plan must not gain economic authority. The
+  // event applier validates before writing; normalizing legacy corrupt state
+  // drops it rather than quietly turning it into an infinite rate.
+  const economicInfluences = normalizeCountryStatEconomicInfluences(value.economicInfluences);
+  if (economicInfluences) out.economicInfluences = economicInfluences;
 
   // Components whose share of their macro bucket the model set in a per-component
   // split (see decodeTerritorialComponentSplit), with how many map regions the

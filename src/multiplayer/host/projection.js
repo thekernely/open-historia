@@ -97,7 +97,10 @@ export const HOST_ONLY_WORLD_KEYS = Object.freeze([
   "actionSuggestions", "boardReviewedRound", "chargedRefusals", "chatKnowledgeCursors", "consolidatedHistory",
   "gmAudit", "gmChanges", "historyDocument", "idlePulseTick", "lastJumpSummary", "naviesRaised", "notes",
   "pendingEventOutreach", "politicalSimulation", "seatBoards", "simulationReminders",
-  "storylines",
+  "storylines", "statsEventReceipts", "migrationFlows",
+  // Scenario-authorized military prices, pending deliveries and payment identities
+  // are host accounting records, not public project or treasury information.
+  "militaryExpenditureCommitments",
 ]);
 
 // The host seat's single-player features (a scene in progress, the key its own

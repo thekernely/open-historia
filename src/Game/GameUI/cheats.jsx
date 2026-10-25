@@ -113,8 +113,9 @@ const noteGmChange = async (kind, summary, step = null) => {
 // Through the event-impact seam, as the Region Inspector's edits and a
 // time skip's annexations go: the title moves, old claims are settled
 // and the sovereign is the new owner (runtime/gmAnnex.js).
-const annexByHand = (world, impacts, game) => applyEventImpactsToWorld({
+const annexByHand = (world, impacts, game, regionCatalog) => applyEventImpactsToWorld({
     world,
+    regionCatalog,
     round: game?.round || 0,
     events: [{
         id: `admin-annex-${Date.now().toString(36)}`,
@@ -138,9 +139,10 @@ const annexByHand = (world, impacts, game) => applyEventImpactsToWorld({
 // Returns how many regions moved; none moved writes nothing.
 const transferWholeCountry = async (source, owner, game) => {
     const world = await readWorldState({ force: true });
-    const held = regionsHeldBy(await loadRegionCatalog(), { ...world.regionOwnershipOverrides }, source);
+    const regionCatalog = await loadRegionCatalog();
+    const held = regionsHeldBy(regionCatalog, { ...world.regionOwnershipOverrides }, source);
     if (held.length === 0) return 0;
-    await writeWorldState(annexByHand(world, annexationImpacts(world, held.map((region) => ({ ...region, from: source })), owner), game));
+    await writeWorldState(annexByHand(world, annexationImpacts(world, held.map((region) => ({ ...region, from: source })), owner), game, regionCatalog));
     return held.length;
 };
 
@@ -4575,7 +4577,7 @@ const ToolView = ({ tool, header, busy, status, game, polities, refresh, runBusy
                                 const label = String(props.NAME_1 || props.GID_1);
                                 const from = regionOwnerNow({ id: regionId, country: props.owner, countryCode: props.GID_0 || props.gid0 }, overrides);
                                 if (from !== owner) {
-                                    await writeWorldState(annexByHand(world, annexationImpacts(world, [{ id: regionId, name: label, from }], owner), game));
+                                    await writeWorldState(annexByHand(world, annexationImpacts(world, [{ id: regionId, name: label, from }], owner), game, await loadRegionCatalog()));
                                     await noteGmChange("territory", "", {
                                         group: `regions→${owner}`,
                                         template: `Moved {items} to ${nameOf(owner)} by hand.`,
@@ -4767,6 +4769,7 @@ const ToolView = ({ tool, header, busy, status, game, polities, refresh, runBusy
             const world = await readWorldState({ force: true });
             const result = applyEventImpactsToWorld({
                 world,
+                regionCatalog: await loadRegionCatalog(),
                 round: game?.round || 0,
                 events: [{
                     id: `admin-region-${Date.now().toString(36)}`,

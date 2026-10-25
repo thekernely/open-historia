@@ -2956,6 +2956,30 @@ export const applyWorldStorylineUpdates = ({
   };
 };
 
+// A newly born crisis is not yet in world.storylines while its event effects
+// settle. Reuse the canonical director's detached projection ONLY as a
+// Statistics provenance candidate. The ordinary storyline merge remains the
+// single writer later in the turn. Ambiguous duplicate updates, future-dated
+// origins, missing exact event links and dropped/coalesced ids fail closed.
+export const projectNewStatsStorylineSources = ({ world, updates, events = [], stopDate = "", round = 0 } = {}) => {
+  const existing = new Set(normalizeArray(world?.storylines).map((row) => normalizeString(row?.id)).filter(Boolean));
+  const decoded = decodeWorldStorylineUpdates(updates, { limit: Infinity });
+  const counts = new Map();
+  for (const row of decoded) {
+    const id = normalizeString(row?.id);
+    if (id) counts.set(id, (counts.get(id) || 0) + 1);
+  }
+  const newIds = new Set([...counts].filter(([id, count]) => count === 1 && !existing.has(id)).map(([id]) => id));
+  if (!newIds.size) return [];
+  const accepted = normalizeArray(events).filter((event) => parseIsoDate(event?.date) != null && normalizeString(event?.id));
+  if (!accepted.length) return [];
+  const projection = applyWorldStorylineUpdates({ world, updates: decoded, events: accepted, stopDate, round, limit: Infinity });
+  return normalizeArray(projection.storylines).filter((row) => newIds.has(row?.id)
+    && row.status === "active" && parseIsoDate(row.startedDate) != null
+    && accepted.some((event) => normalizeArray(event.storylineIds).includes(row.id)
+      && normalizeArray(row.sourceEventIds).includes(event.id)
+      && compareIso(row.startedDate, event.date) <= 0));
+};
 
 const resolveCountryStatEntry = (worldLike, token) => {
   const world = worldLike && typeof worldLike === "object" ? worldLike : {};

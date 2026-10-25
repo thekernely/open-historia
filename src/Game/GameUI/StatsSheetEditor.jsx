@@ -4,6 +4,7 @@ import {
   MAX_CUSTOM_STATS,
   MAX_STAT_SECTIONS,
   MAX_STATS_PER_SECTION,
+  NATIONAL_NATIVE_METRICS,
   STAT_KINDS,
   defaultCustomStatSheetDefinition,
   flattenStatSheetRows,
@@ -14,6 +15,11 @@ import { useTouchPrimary } from "../../runtime/mobileUi.js";
 import { useIsMobile } from "../../runtime/useIsMobile.js";
 
 const clean = (value) => String(value ?? "").trim();
+const NATIVE_CARD_LABELS = Object.freeze({
+  gdp: "Existing national GDP", gdpPerCapita: "Existing national GDP per person", totalPopulation: "Existing national Population",
+  gdpGrowth: "Existing national GDP growth", inflation: "Existing national Inflation", unemployment: "Existing national Unemployment",
+  publicDebt: "Existing national Public debt", budgetBalance: "Existing national Budget balance", nationalStability: "Existing national National stability",
+});
 
 const buttonStyle = (accent = false) => ({
   alignItems: "center",
@@ -133,6 +139,7 @@ const statsEditorControlCss = `
 `;
 
 const deepCloneDefinition = (definition) => ({
+  ...(definition?.dashboard ? { dashboard: definition.dashboard } : {}),
   custom: Boolean(definition?.custom),
   version: definition?.version || 2,
   sections: (definition?.sections || []).map((section) => ({
@@ -206,8 +213,19 @@ const StatEditor = ({ stat, onPatch }) => (
       <input value={stat.label} maxLength={60} onChange={(event) => onPatch({ label: event.target.value })} style={inputStyle} />
     </div>
     <div>
+      <label style={labelStyle}>Value source</label>
+      <select aria-label="Value source" value={stat.nativeMetric || ""} onChange={(event) => {
+        const metric = event.target.value;
+        const native = NATIONAL_NATIVE_METRICS[metric];
+        onPatch(native ? { nativeMetric: metric, kind: native.kind, minimum: native.minimum, maximum: native.maximum } : { nativeMetric: undefined });
+      }} style={inputStyle}>
+        <option value="">Independent custom value</option>
+        {Object.keys(NATIONAL_NATIVE_METRICS).map((metric) => <option key={metric} value={metric}>{NATIVE_CARD_LABELS[metric]}</option>)}
+      </select>
+    </div>
+    <div>
       <label style={labelStyle}>Type</label>
-      <select value={stat.kind || "index"} onChange={(event) => onPatch({ kind: event.target.value })} style={inputStyle}>
+      <select value={stat.kind || "index"} disabled={Boolean(stat.nativeMetric)} onChange={(event) => onPatch({ kind: event.target.value })} style={inputStyle}>
         <option value="index">0–100 index</option>
         <option value="number">Number</option>
         <option value="percentage">Percentage</option>
@@ -244,15 +262,18 @@ const StatEditor = ({ stat, onPatch }) => (
         </div>
         <div>
           <label style={labelStyle}>Minimum</label>
-          <input type="number" value={stat.minimum ?? ""} onChange={(event) => onPatch({ minimum: event.target.value === "" ? undefined : Number(event.target.value) })} placeholder="unbounded" style={inputStyle} />
+          <input type="number" value={stat.minimum ?? ""} disabled={Boolean(stat.nativeMetric)} onChange={(event) => onPatch({ minimum: event.target.value === "" ? undefined : Number(event.target.value) })} placeholder="unbounded" style={inputStyle} />
         </div>
         <div>
           <label style={labelStyle}>Maximum</label>
-          <input type="number" value={stat.maximum ?? ""} onChange={(event) => onPatch({ maximum: event.target.value === "" ? undefined : Number(event.target.value) })} placeholder="unbounded" style={inputStyle} />
+          <input type="number" value={stat.maximum ?? ""} disabled={Boolean(stat.nativeMetric)} onChange={(event) => onPatch({ maximum: event.target.value === "" ? undefined : Number(event.target.value) })} placeholder="unbounded" style={inputStyle} />
         </div>
       </>
     )}
 
+    {stat.nativeMetric && <div style={{ color: "#fcd34d", fontSize: "0.68rem", gridColumn: "1 / -1", lineHeight: 1.45 }}>
+      This card reads the existing national value. It never creates or updates a separate custom statistic. If the scenario already stores a conflicting custom copy, review that legacy data before using this binding.
+    </div>}
     <div style={{ gridColumn: "1 / -1" }}>
       <label style={labelStyle}>What it tracks / AI guidance</label>
       <textarea value={stat.description || ""} maxLength={360} rows={2} onChange={(event) => onPatch({ description: event.target.value })} placeholder="Explain what this value means in this scenario and what kinds of events should move it." style={{ ...inputStyle, resize: "vertical" }} />
@@ -291,13 +312,23 @@ const StatsSheetEditor = ({ value, onChange }) => {
   // sheet" brings this back rather than the default layout.
   const lastCustomSectionsRef = useRef(null);
 
-  const emitSections = (nextSections) => onChange?.({ custom: true, version: 2, sections: nextSections });
+  const emitSections = (nextSections) => {
+    // Removing a custom reading must also remove its presentation references;
+    // do not leave an invalid widget that crashes the Scenario Editor on render.
+    const keys = new Set(nextSections.flatMap((section) => section.stats || []).map((stat) => stat.key));
+    const dashboard = value?.dashboard && { ...value.dashboard, widgets: value.dashboard.widgets.filter(
+      (widget) => widget.source.startsWith("native:") || keys.has(widget.source.slice(7)),
+    ) };
+    onChange?.({ custom: true, version: 2, sections: nextSections,
+      ...(dashboard ? { dashboard } : {}) });
+  };
 
   const enableCustom = () => {
     setEditingStatKey("");
     setEditingSectionKey("");
     const restored = lastCustomSectionsRef.current;
-    onChange?.(restored ? { custom: true, version: 2, sections: restored } : defaultCustomStatSheetDefinition());
+    const next = restored ? { custom: true, version: 2, sections: restored } : defaultCustomStatSheetDefinition();
+    onChange?.({ ...next, ...(value?.dashboard ? { dashboard: value.dashboard } : {}) });
   };
 
   // Replaces every section, stat, description and AI guidance at once: asked first.
@@ -310,7 +341,12 @@ const StatsSheetEditor = ({ value, onChange }) => {
     lastCustomSectionsRef.current = sections;
     setEditingStatKey("");
     setEditingSectionKey("");
-    onChange?.({ custom: false, version: 2, sections: defaultCustomStatSheetDefinition().sections });
+    // A custom widget cannot outlive its deleted authoring metric. Preserve
+    // native views; discard only the custom-source cards now without owners.
+    const dashboard = value?.dashboard && { ...value.dashboard,
+      widgets: value.dashboard.widgets.filter((widget) => widget.source.startsWith("native:")) };
+    onChange?.({ custom: false, version: 2, sections: defaultCustomStatSheetDefinition().sections,
+      ...(dashboard ? { dashboard } : {}) });
   };
 
   const patchSection = (sectionKey, patch) => {
@@ -401,6 +437,19 @@ const StatsSheetEditor = ({ value, onChange }) => {
             candidate.minimum = 0;
             candidate.maximum = 100;
             candidate.decimals = 0;
+          }
+          // A generic type switch above uses percentage's 0..100 display
+          // preset. An explicitly bound national percentage (e.g. debt) has
+          // different authoritative bounds: restore those instead of keeping
+          // an accidental clamp, including when switching from an index card.
+          if (candidate.nativeMetric) {
+            const native = NATIONAL_NATIVE_METRICS[candidate.nativeMetric];
+            if (native) {
+              if (native.minimum === undefined) delete candidate.minimum;
+              else candidate.minimum = native.minimum;
+              if (native.maximum === undefined) delete candidate.maximum;
+              else candidate.maximum = native.maximum;
+            }
           }
           nextKey = candidate.key;
           return candidate;
@@ -661,7 +710,8 @@ export const normalizeStatsEditorValue = (raw) => {
   const definition = normalizeStatSheetDefinition(raw);
   return definition.custom
     ? deepCloneDefinition(definition)
-    : { custom: false, version: 2, sections: defaultCustomStatSheetDefinition().sections };
+    : { custom: false, version: 2, sections: defaultCustomStatSheetDefinition().sections,
+      ...(definition.dashboard ? { dashboard: definition.dashboard } : {}) };
 };
 
 export default StatsSheetEditor;

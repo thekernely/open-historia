@@ -36,11 +36,11 @@ import { WarReportsList } from "./afterAction.jsx";
 import { institutionPortfolioForPolity } from "../../runtime/institutionLifecycleCore.js";
 import { TURN_RUNNING_NOTE, isSimulationBusy } from "../AI/simulationStatus.js";
 import { useTurnRunning } from "./useTurnRunning.js";
-import { validateGameplayPayload } from "../AI/gameplaySchemas.js";
+import { validatePlayerCountryStatSheet } from "./statsPanelSheetValidation.js";
+import { needsLegacyComponentCapAudit, needsStartPopulationCalibrationAudit } from "../../runtime/statsStartingBaselineAuthority.js";
 import {
     appendCountryStatHistorySample,
     buildCountryStatHistorySample,
-    COUNTRY_STATS_POPULATION_CALIBRATION_VERSION,
     COUNTRY_STATS_TRACKING_INTERVALS,
     COUNTRY_STATS_TRACKING_MAX_POLITIES,
     finalizeCountryStatSheet,
@@ -62,6 +62,9 @@ import {
     statSheetKeys,
 } from "../../runtime/statsSheet.js";
 import { onMemoryPressure } from "../../runtime/memoryPressure.js";
+import { nationalStatsAuthoringContract, nationalStatsPresentationCoverage, resolveNationalStatReading } from "../../runtime/statsMetricBindings.js";
+import StatsDashboard from "./StatsDashboard.jsx";
+import { nationalDashboardForDisplay } from "../../runtime/statsDashboardLayout.js";
 
 // Sheets are regenerated when the game date moves; within a date they persist
 // across reloads so flipping between countries stays instant.
@@ -116,50 +119,22 @@ const storeTrackingSettingsFallback = (gameKey, value, playerCountry = "") => {
     }
 };
 
-// A sheet as the model's schema (gameplaySchemas.js countryStatSheet) knows it: without the military figures the
-// game keeps on it in the backend (runtime/militaryStats.js), which the schema does not list. Checked with them, every
-// sheet that had them "failed validation: $.military is not allowed" and the Economy tab could not open.
-const withoutBackendFields = (sheet) => {
-    if (!sheet || typeof sheet !== "object" || !("military" in sheet)) return sheet;
-    const checked = { ...sheet };
-    delete checked.military;
-    return checked;
-};
-
 const isValidStatSheet = (value, definition) => {
     const sheet = finalizeCountryStatSheet(value);
     if (definition?.custom) {
-        return isCompleteCustomCountryStatSheet(sheet, statSheetKeys(definition));
+        // Legacy unbound sheets keep their established validation semantics.
+        // Explicit native views require the stricter shared binding resolver.
+        return nationalStatsAuthoringContract(definition).boundRows.length
+            ? nationalStatsPresentationCoverage(definition, sheet).ready
+            : isCompleteCustomCountryStatSheet(sheet, statSheetKeys(definition));
     }
-    return isCompleteCountryStatSheet(sheet) && validateGameplayPayload("countryStatSheet", withoutBackendFields(sheet)).valid;
+    return validatePlayerCountryStatSheet(sheet).valid;
 };
 
-// 8B.2.16 compatibility repair: one older Stats path could plan >64 live-map
-// components correctly and then silently persist only the first 64. A cached sheet
-// with exactly 64 components therefore needs one native territorial audit before the
-// UI trusts it. A sheet that has already passed 8B.2.18.1 regional causal calibration no longer
-// needs this legacy ambiguity check.
-const populationCalibrationVersion = (value) =>
-    Math.max(0, Math.trunc(Number(value?.continuity?.populationCalibrationVersion) || 0));
-
-const needsLegacyComponentCapAudit = (value) =>
-    Array.isArray(value?.territorialComponents) &&
-    value.territorialComponents.length === 64 &&
-    populationCalibrationVersion(value) < COUNTRY_STATS_POPULATION_CALIBRATION_VERSION;
-
-// 8B.2.18 start-state migration. Old full-component sheets can be structurally valid
-// yet have a bad national scale because hundreds of province estimates or one opaque
-// whole-polity anchor were used. Rebuild those once through bounded regional calibration
-// automatically ONLY at Round One/start date. Mature alternate-history campaigns are
-// never silently re-anchored; they keep their persisted canon unless the user asks for
-// a hard audit.
-const needsStartPopulationCalibrationAudit = (value, player) => Boolean(
-    value &&
-    player?.startDate &&
-    player?.date === player.startDate &&
-    Number(player?.round) <= 1 &&
-    populationCalibrationVersion(value) < COUNTRY_STATS_POPULATION_CALIBRATION_VERSION
-);
+// Scenario-reviewed starting baselines and older native calibration migrations
+// are separated by statsStartingBaselineAuthority. Opening a valid authored
+// start sheet is a read, not permission for the AI to re-estimate its values.
+// The legacy 64-row truncation guard remains independent of author provenance.
 
 // One native mutation path: the same merge semantics are used by normal world
 // simulation, future GM/editor writes, and this cache-overlay fallback. Derived
@@ -335,20 +310,24 @@ const EconomyCard = ({ label, value, sub, tone }) => (
     </div>
 );
 
-const CustomStatCard = ({ stat, value }) => {
-    const numeric = Number(value);
-    const formatted = formatCustomStatValue(stat, numeric);
+const CustomStatCard = ({ stat, reading }) => {
+    // The native resolver distinguishes absent from literal zero, and refuses
+    // to display an ambiguous independent legacy copy as authoritative.
+    const valid = reading?.status === "ready";
+    const numeric = valid ? reading.value : null;
+    const formatted = valid ? formatCustomStatValue(stat, numeric) : "—";
     if (stat.kind === "index") {
-        const bounded = clamp01(numeric);
+        const bounded = valid ? clamp01(numeric) : 0;
         return (
             <div style={{ ...cardStyle, gridColumn: "1 / -1" }}>
                 <div style={{ alignItems: "center", display: "flex", justifyContent: "space-between", marginBottom: "0.4rem", gap: "0.5rem" }}>
                     <span style={{ color: "rgba(255,255,255,0.8)", fontSize: "0.76rem", minWidth: 0 }}>
                         {stat.icon} {stat.label}
                     </span>
-                    <span data-no-translate style={{ flexShrink: 0, fontSize: "0.78rem", fontWeight: 800 }}>{Number.isFinite(numeric) ? `${bounded}/100` : "—"}</span>
+                    <span data-no-translate style={{ flexShrink: 0, fontSize: "0.78rem", fontWeight: 800 }}>{valid ? `${bounded}/100` : "—"}</span>
                 </div>
                 <Bar value={bounded} color={stat.color || "#a1a1aa"} />
+                {!valid && stat.nativeMetric && <div style={{ color: "#fca5a5", fontSize: "0.64rem", marginTop: "0.35rem" }}>{reading?.status === "review-required" ? "Legacy value requires author review" : "National value unavailable"}</div>}
             </div>
         );
     }
@@ -360,6 +339,7 @@ const CustomStatCard = ({ stat, value }) => {
             <div data-no-translate style={{ color: stat.color || "#e7e7e9", fontSize: "1.05rem", fontWeight: 800, overflowWrap: "anywhere" }}>
                 {formatted}
             </div>
+            {!valid && stat.nativeMetric && <div style={{ color: "#fca5a5", fontSize: "0.64rem", marginTop: "0.35rem" }}>{reading?.status === "review-required" ? "Legacy value requires author review" : "National value unavailable"}</div>}
         </div>
     );
 };
@@ -372,7 +352,6 @@ const LIVE_INTELLIGENCE_STAT_KEYS = Object.freeze(["intelligenceService"]);
 
 // `hiddenKeys`: stat keys not to draw. A section left with nothing is skipped.
 const CustomStatsSheet = ({ definition, sheet, hiddenKeys = [] }) => {
-    const values = sheet?.customStats || {};
     const sections = definition.sections
         .map((section) => ({ ...section, stats: section.stats.filter((stat) => !hiddenKeys.includes(stat.key)) }))
         .filter((section) => section.stats.length > 0);
@@ -385,7 +364,7 @@ const CustomStatsSheet = ({ definition, sheet, hiddenKeys = [] }) => {
                     </div>
                     <div style={{ display: "grid", gap: "0.55rem", gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }}>
                         {section.stats.map((stat) => (
-                            <CustomStatCard key={stat.key} stat={stat} value={values[stat.key]} />
+                            <CustomStatCard key={stat.key} stat={stat} reading={resolveNationalStatReading(stat, sheet)} />
                         ))}
                     </div>
                 </React.Fragment>
@@ -1517,9 +1496,15 @@ const HistoricalTrackingModal = ({
         () => (statSheetDefinition?.custom ? statSheetKeys(statSheetDefinition) : null),
         [statSheetDefinition],
     );
+    const hasBoundStats = Boolean(statSheetDefinition?.custom && nationalStatsAuthoringContract(statSheetDefinition).boundRows.length);
     const sheetReady = useCallback(
-        (key) => isTrackedStatSheetReady(world?.countryStats?.[trackingCandidates.index.canonicalKey(key) || key], customSheetKeys),
-        [world, customSheetKeys, trackingCandidates],
+        (key) => {
+            const sheet = world?.countryStats?.[trackingCandidates.index.canonicalKey(key) || key];
+            return hasBoundStats
+                ? nationalStatsPresentationCoverage(statSheetDefinition, sheet).ready
+                : isTrackedStatSheetReady(sheet, customSheetKeys);
+        },
+        [world, customSheetKeys, trackingCandidates, statSheetDefinition, hasBoundStats],
     );
     // When the refresh last ran, per country and for the whole batch — written
     // by the scheduler after every skip, and shown nowhere until now.
@@ -1564,7 +1549,7 @@ const HistoricalTrackingModal = ({
                         <div style={{ minWidth: 0 }}>
                             <div style={{ color: "#f8fafc", fontSize: "1.15rem", fontWeight: 850 }}>Historical tracking</div>
                             <div style={{ color: "rgba(255,255,255,0.48)", fontSize: "0.75rem", marginTop: "0.12rem" }}>
-                                Choose how often Stats should re-check tracked countries, and which countries you want on your long-term graphs.
+                                {hasBoundStats ? "Follow countries in historical graphs. Native-bound values are updated by the simulation, not by automatic AI reassessment." : "Choose how often Stats should re-check tracked countries, and which countries you want on your long-term graphs."}
                             </div>
                         </div>
                     </div>
@@ -1967,6 +1952,8 @@ const StatsPaneBody = ({ active, mapRef, requestedTarget = "", onConsumeTarget }
     const [baseTags, setBaseTags] = useState({});
     const [politicalKnowledge, setPoliticalKnowledge] = useState({ target: "", view: null });
     const [statSheetDefinition, setStatSheetDefinition] = useState({ custom: false, sections: [] });
+    const visibleNationalDashboard = nationalDashboardForDisplay(statSheetDefinition);
+    const [dashboardPage, setDashboardPage] = useState("overview");
     const [statSheetDefinitionReady, setStatSheetDefinitionReady] = useState(false);
     const [statSheetDefinitionError, setStatSheetDefinitionError] = useState("");
     const [indexRows, setIndexRows] = useState(() => DEFAULT_STAT_INDEX_ROWS.map((row) => ({ ...row })));
@@ -2311,11 +2298,13 @@ const StatsPaneBody = ({ active, mapRef, requestedTarget = "", onConsumeTarget }
 
             const generated = await generateCountryStatSheet({ code, name: generationName, forceReassess, signal: controller.signal });
             if (statSheetDefinition.custom) {
-                if (!isCompleteCustomCountryStatSheet(generated, statSheetKeys(statSheetDefinition))) {
+                if (!(nationalStatsAuthoringContract(statSheetDefinition).boundRows.length
+                    ? nationalStatsPresentationCoverage(statSheetDefinition, generated).ready
+                    : isCompleteCustomCountryStatSheet(generated, statSheetKeys(statSheetDefinition)))) {
                     throw new Error("The scenario-defined stat sheet was incomplete.");
                 }
             } else {
-                const validation = validateGameplayPayload("countryStatSheet", withoutBackendFields(generated));
+                const validation = validatePlayerCountryStatSheet(generated);
                 if (!validation.valid) throw new Error(`The stat sheet failed validation: ${validation.error}`);
             }
             // generateCountryStatSheet already receives the previous persistent sheet as
@@ -2894,7 +2883,29 @@ const StatsPaneBody = ({ active, mapRef, requestedTarget = "", onConsumeTarget }
 
             {statsView === "economy" && !statSheetDefinitionError && sheet && state.status === "ready" && (
                 <>
-                {statSheetDefinition.custom ? (
+                {visibleNationalDashboard ? (
+                    <>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "0.5rem", marginTop: "1rem" }}>
+                        <strong style={{ color: "#edf2f1", fontSize: "0.85rem" }}>
+                            {dashboardPage === "overview" ? "Economy" : "National statistics"}
+                        </strong>
+                        <button type="button" className="oh-tap-row" onClick={() => setDashboardPage(dashboardPage === "overview" ? "details" : "overview")}
+                            style={{ background: "transparent", border: "none", color: "#bad4eb", fontSize: "0.74rem", cursor: "pointer", fontWeight: 650, padding: "0.3rem 0" }}>
+                            {dashboardPage === "overview" ? "Details ›" : "‹ Overview"}
+                        </button>
+                    </div>
+                    {sheet.continuity?.assessedDate && (
+                        <div data-no-translate style={{ color: "#9aa6a9", fontSize: "0.65rem", marginBottom: "0.6rem" }}>
+                            {formatHistoryDate(sheet.continuity.assessedDate)}
+                        </div>
+                    )}
+                    <StatsDashboard dashboard={visibleNationalDashboard} definition={statSheetDefinition}
+                        sheet={sheet} page={dashboardPage}
+                        history={worldSnapshot?.countryStatsHistory?.[resolvedTargetKey || targetCountry] || []}
+                        intelligence={intelligence}
+                        militaryCard={worldSnapshot ? <MilitaryCard world={worldSnapshot} country={resolvedTargetKey || targetCountry} /> : null} />
+                    </>
+                ) : statSheetDefinition.custom ? (
                     <>
                     {intelligence !== null && <IntelligenceServiceCard value={intelligence} style={{ marginTop: "1rem" }} />}
                     <CustomStatsSheet
@@ -3011,7 +3022,8 @@ const StatsPaneBody = ({ active, mapRef, requestedTarget = "", onConsumeTarget }
                 {/* Its military power and the figures it is read from, on the
                     standard sheet and on a scenario's own alike: the game works
                     them out for every country (MilitaryCard). */}
-                {worldSnapshot && (
+                {worldSnapshot && (!visibleNationalDashboard || (dashboardPage === "details"
+                  && !statSheetDefinition.dashboard.widgets.some(widget => widget.style === "military" && widget.page === "details"))) && (
                     <>
                     <div style={sectionTitleStyle}>⚔ Military</div>
                     <MilitaryCard world={worldSnapshot} country={resolvedTargetKey || targetCountry} />

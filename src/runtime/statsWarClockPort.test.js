@@ -97,6 +97,25 @@ test("occupation exposure is an observation, not a transfer of legal GDP", () =>
 });
 
 
+test("final generic Statistics save cannot be the last writer of wartime occupation history", () => {
+  const occupied = { ...baseline(), regionOwnershipOverrides: { a: "Borland", b: "Borland" } };
+  let observed = captureCountryStatsHistory(occupied, { date: "1912-02-29", round: 2 });
+  observed = captureNativeEconomicExposureHistory(observed, { date: "1912-02-29", round: 2, regionCatalog: catalog });
+  const released = { ...observed, regionOwnershipOverrides: { a: "Aland", b: "Borland" } };
+  // The native reducer samples March after liberation, then gameplay takes a
+  // final generic same-date reading. The final regional pass must restore the
+  // known ZERO rather than forget the history field.
+  let marched = captureCountryStatsHistory(released, { date: "1912-03-31", round: 2 });
+  marched = captureNativeEconomicExposureHistory(marched, { date: "1912-03-31", round: 2, regionCatalog: catalog });
+  assert.equal(marched.countryStatsHistory.Aland.at(-1).sovereignGdpUnderForeignControl, 0);
+  const genericAgain = captureCountryStatsHistory(marched, { date: "1912-03-31", round: 2 });
+  assert.equal(genericAgain.countryStatsHistory.Aland.at(-1).sovereignGdpUnderForeignControl, undefined,
+    "reproduces the actual overwriting danger when the generic writer runs last");
+  const final = captureNativeEconomicExposureHistory(genericAgain, { date: "1912-03-31", round: 2, regionCatalog: catalog });
+  assert.equal(final.countryStatsHistory.Aland.at(-1).sovereignGdpUnderForeignControl, 0);
+  assert.deepEqual(final.countryStats, released.countryStats, "history reconciliation never edits economic ledgers");
+});
+
 test("a malformed labor anchor cannot silently reset an already credited macro clock", () => {
   const advanced = tick(baseline(), start, "1912-06-30");
   const invalid = structuredClone(advanced);

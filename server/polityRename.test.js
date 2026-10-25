@@ -329,3 +329,17 @@ test("a country renamed in play no longer shows the label its old name had on th
   assert.equal(record.mapLabel, undefined);
   assert.equal(record.mapDistinctLabel, undefined);
 });
+
+// Finite migration is a canonical multi-polity plan; a sovereign rename must
+// not leave a dated ledger pointing at a disappeared old owner.
+test("migration endpoints and their credited cursor rekey with polity identity", () => {
+  const input = { ...world(), migrationFlows: [{ id: "moving", fromPolity: "Borduria", toPolity: "Syldavia",
+    sourceDate: "1919-01-01", endDate: "1920-01-01", lastDate: "1919-07-01",
+    baseSourcePopulation: 1000, baseDestinationPopulation: 2000, totalPeople: 100, creditedPeople: 50,
+    reason: "Author-approved movement" }] };
+  const after = renamePolityInWorld(input, "Borduria", "Bordurian Republic").world;
+  assert.equal(after.migrationFlows[0].fromPolity, "Bordurian Republic");
+  assert.equal(after.migrationFlows[0].toPolity, "Syldavia");
+  assert.equal(after.migrationFlows[0].creditedPeople, 50);
+  assert.equal(input.migrationFlows[0].fromPolity, "Borduria");
+});

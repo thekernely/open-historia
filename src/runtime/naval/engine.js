@@ -53,6 +53,7 @@ import { readMilitary, seaWorth } from "../fronts/military.js";
 import { weatherOn } from "../fronts/weather.js";
 import { kmBetween } from "../fronts/worldGrid.js";
 import { eraOf } from "../unitMotion.js";
+import { normalizeNavalControlChronology } from "./controlChronology.js";
 
 // How far apart hostile fleets can be and still fight, in km, by era (before
 // 1500, 1500 to 1849, 1850 to 1944, from 1945): oars and sail meet hull to
@@ -288,7 +289,7 @@ const placeOf = ({ lng, lat, seas, cities, km }) => {
 //               civil-day observations on (fromDate, fromDate+days]. Missing
 //               dates mean zero ONLY when this complete array is available.
 //               Null means unknown, never zero and never a GDP debit.
-export const runNaval = ({ fromDate = "", days = 0, seed = "", wars = [], units = [], strengthOf = null, controllerOf = null, grid = null, cities = [], seas = [], flat = false, scale = undefined, caps = {}, raised = [], era: setEra = null, militaryOf = null, weatherSeed = null, iced = [] } = {}) => {
+export const runNaval = ({ fromDate = "", days = 0, seed = "", wars = [], units = [], strengthOf = null, controllerOf = null, grid = null, cities = [], seas = [], flat = false, scale = undefined, caps = {}, raised = [], era: setEra = null, militaryOf = null, weatherSeed = null, iced = [], controlChanges = [] } = {}) => {
   const era = eraOf(fromDate, setEra);
   // Weighing the weather (fronts/weather.js): a storm keeps fleets apart and weakens a blockade. Fleets in the same
   // stretch of sea (five degrees by five) have the same weather; none without a seed.
@@ -317,13 +318,26 @@ export const runNaval = ({ fromDate = "", days = 0, seed = "", wars = [], units 
     return Number.isFinite(weight) && weight > 0 ? weight : 1;
   };
   const { enemies, warOf, hostile } = hostilities(wars);
+  // The coastline is allowed to change only under explicit, individually
+  // checked land-front control receipts. Missing geography remains UNKNOWN.
+  const controls = controlChanges.length
+    ? normalizeNavalControlChronology({ grid, controllerOf, changes: controlChanges, days }) : [];
+  const controlChronology = controls === null ? null : controls;
+  const ownerOverrides = new Map();
+  const controlOf = (id) => ownerOverrides.get(String(id)) || controllerOf?.(id);
+  let changeIndex = 0;
+
   // When each country's navy was last made or lost, by the country's name.
   const clock = new Map();
   for (const entry of list(raised)) if (clean(entry?.country) && clean(entry?.date)) clock.set(fold(entry.country), { country: clean(entry.country), date: clean(entry.date) });
   const clockNow = () => [...clock.values()].slice(-NAVIES_KEPT_MOST);
   // Missing coast geometry cannot support a dated pressure observation.
   // Peace, in contrast, establishes that no hostile blockade is possible.
-  const empty = { battles: [], unitChanges: [], commissioned: [], fleets: [], raised: clockNow(), blockades: [], blockadePeriods: grid || enemies.size === 0 ? [] : null, blockadeDays: grid || enemies.size === 0 ? [] : null };
+  const empty = { battles: [], unitChanges: [], commissioned: [], fleets: [], raised: clockNow(), blockades: [],
+    blockadePeriods: controls === null ? null : grid || enemies.size === 0 ? [] : null,
+    blockadeDays: controls === null ? null : grid || enemies.size === 0 ? [] : null,
+    ...(controlChanges.length && controlChronology ? { controlChronology } : {}),
+  };
   if (enemies.size === 0) return empty;
 
   const all = list(units);
@@ -349,7 +363,7 @@ export const runNaval = ({ fromDate = "", days = 0, seed = "", wars = [], units 
   // ---- a navy to fight with ---------------------------------------------------------
   const commissioned = [];
   const belligerents = new Set(enemies.keys());
-  const coasts = grid ? coastsOf(grid, belligerents, controllerOf, enemies) : new Map();
+  let coasts = grid ? coastsOf(grid, belligerents, controllerOf, enemies) : new Map();
   const names = new Map();
   for (const war of list(wars)) for (const name of [...list(war?.sideA), ...list(war?.sideB)]) if (clean(name) && !names.has(fold(name))) names.set(fold(name), clean(name));
   if (grid && days >= 0) {
@@ -414,6 +428,35 @@ export const runNaval = ({ fromDate = "", days = 0, seed = "", wars = [], units 
     if (!grid || cells.length === 0) continue;
     posts.set(key, { stations: stationsOf(cells.map((cell) => grid.centreOf(cell))), seaShare: seaShareOf(cells.length, coasts.borders?.get(key) ?? 0), sum: 0, covered: 0, days: 0, by: new Set(), periods: new Map() });
   }
+  // When a land frontier changes the coast, add an exposure row only if it
+  // eventually records positive pressure. Its zero days must still be counted.
+  const refreshCoasts = (day) => {
+    if (!controlChronology?.length) return;
+    let changed = false;
+    while (changeIndex < controlChronology.length && controlChronology[changeIndex].day <= day) {
+      const item = controlChronology[changeIndex++];
+      ownerOverrides.set(item.regionId, item.to);
+      changed = true;
+    }
+    if (!changed) return;
+    coasts = coastsOf(grid, belligerents, controlOf, enemies);
+    for (const key of belligerents) {
+      const cells = coasts.get(key) ?? [];
+      let post = posts.get(key);
+      if (!post) {
+        post = { stations: [], seaShare: 0, sum: 0, covered: 0, days: 0, by: new Set(), periods: new Map() };
+        posts.set(key, post);
+      }
+      post.stations = stationsOf(cells.map((cell) => grid.centreOf(cell)));
+      post.seaShare = seaShareOf(cells.length, coasts.borders?.get(key) ?? 0);
+    }
+    // Fleet shelter uses home waters at the current date; an occupied home
+    // port must not protect a withdrawing fleet for the rest of the turn.
+    for (const fleet of fleets) {
+      const cells = coasts.get(fleet.key) ?? [];
+      fleet.home = cells.length ? homeWater(grid, cells, { lng: fleet.lng, lat: fleet.lat }) : null;
+    }
+  };
 
   // Sparse civil-day economic observations stay ephemeral; no new writable
   // blockade ledger or save schema. Overflow is unknown, not partial evidence.
@@ -423,6 +466,7 @@ export const runNaval = ({ fromDate = "", days = 0, seed = "", wars = [], units 
   const battles = [];
   const live = (fleet) => !fleet.sunk && !fleet.broke;
   for (let day = 1; day <= days; day += 1) {
+    refreshCoasts(day);
     // ---- closing, and retiring -------------------------------------------------------
     if (grid) {
       for (const fleet of fleets) {
@@ -543,7 +587,12 @@ export const runNaval = ({ fromDate = "", days = 0, seed = "", wars = [], units 
       const month = date.slice(0, 7);
       let period = post.periods.get(month);
       if (!period) {
-        period = { fromDate: date, toDate: date, days: 0, activeDays: 0, sum: 0, covered: 0, by: new Set() };
+        // Every period starts at the first observed civil day of this run's
+        // month, including if coastline control was gained mid-month.
+        const first = addGameDays(fromDate, 1);
+        const firstDate = date.slice(0, 7) === first.slice(0, 7) ? first : `${date.slice(0, 7)}-01`;
+        const earlierZeroDays = Math.max(0, diffGameDays(firstDate, date));
+        period = { fromDate: firstDate, toDate: date, days: earlierZeroDays, activeDays: 0, sum: 0, covered: 0, by: new Set() };
         post.periods.set(month, period);
       }
       period.toDate = date;
@@ -603,12 +652,12 @@ export const runNaval = ({ fromDate = "", days = 0, seed = "", wars = [], units 
     }
   }
   blockadePeriods.sort((a, b) => a.fromDate.localeCompare(b.fromDate) || a.country.localeCompare(b.country));
-  const datedBlockades = !grid || blockadePeriods.length > BLOCKADE_PERIODS_MAX ? null : blockadePeriods;
+  const datedBlockades = !grid || blockadePeriods.length > BLOCKADE_PERIODS_MAX || controls === null ? null : blockadePeriods;
   // A chronological writer cannot infer a specific event-day loss from a
   // monthly average. This bounded exact daily evidence is the future input;
   // it must never be confused with the legacy whole-period GDP writer.
   blockadeDays.sort((a, b) => a.date.localeCompare(b.date) || a.country.localeCompare(b.country));
-  const datedBlockadeDays = !grid || blockadeDaysOverflow ? null : blockadeDays;
+  const datedBlockadeDays = !grid || blockadeDaysOverflow || controls === null ? null : blockadeDays;
 
   const unitChanges = [];
   for (const fleet of fleets) {
@@ -651,6 +700,7 @@ export const runNaval = ({ fromDate = "", days = 0, seed = "", wars = [], units 
     blockades,
     blockadePeriods: datedBlockades,
     blockadeDays: datedBlockadeDays,
+    ...(controlChanges.length ? { controlChronology } : {}),
     fleets: fleets.filter((fleet) => !fleet.sunk).map(({ id, name, owner, strength, posture, lng, lat }) => ({ id, name, owner, strength: Math.round(strength), posture, lng, lat, place: placeOf({ lng, lat, seas, cities, km }) })),
   };
 };

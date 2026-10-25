@@ -10,6 +10,7 @@ import {
   serializeStatSheet,
   statSheetKeys,
   toStatIndexKey,
+  statTileSpan,
 } from "./statIndexDefinitions.js";
 
 test("stat index compatibility still falls back to the stock six", () => {
@@ -128,4 +129,66 @@ test("legacy key generation and index bounding remain deterministic", () => {
   assert.equal(rows[0].key, "timber");
   assert.equal(rows[1].key, "timber2");
   assert.equal(toStatIndexKey("Horse & cart capacity"), "horseCartCapacity");
+});
+
+// C2B2B: a presentation reference is not an AI-writable custom-stat key.
+test("native-bound cards are excluded from the custom AI writer key set without changing legacy sheets", () => {
+  const hybrid = normalizeStatSheetDefinition({ sections: [{ label: "National", stats: [
+    { key: "gdpHero", label: "GDP headline", kind: "currency", nativeMetric: "gdp" },
+    { key: "gdpCompact", label: "GDP small", kind: "currency", nativeMetric: "gdp" },
+    { key: "grain", label: "Grain stocks", kind: "number" },
+  ] }] });
+  assert.deepEqual(statSheetKeys(hybrid), ["grain"]);
+  assert.deepEqual(normalizeCustomStatValues({ gdpHero: 1200, gdpCompact: 1200, grain: 8 }, hybrid), { grain: 8 });
+  const allNative = normalizeStatSheetDefinition({ sections: [{ label: "National", stats: [
+    { key: "population", label: "Population", kind: "number", nativeMetric: "totalPopulation" },
+  ] }] });
+  assert.deepEqual(statSheetKeys(allNative), []);
+  assert.deepEqual(statSheetKeys(normalizeStatSheetDefinition({ sections: [{ label: "National", stats: [
+    { key: "population", label: "Population", kind: "number" },
+  ] }] })), ["population"]);
+});
+
+// Statistics V2 layout: one persisted display choice, no new numeric ledger.
+test("national tile width is bounded, round-trips, and preserves every legacy default", () => {
+  const legacy = normalizeStatSheetDefinition({ sections: [{ label: "Overview", stats: [
+    { key: "cohesion", label: "Stability", kind: "index" },
+    { key: "gdp", label: "GDP", kind: "currency" },
+  ] }] });
+  assert.deepEqual(legacy.sections[0].stats.map(statTileSpan), [2, 1]);
+  assert.deepEqual(legacy.sections[0].stats.map((row) => row.tileSpan), [undefined, undefined]);
+  const configured = serializeStatSheet({ sections: [{ label: "Overview", stats: [
+    { key: "main", label: "Main GDP", kind: "currency", nativeMetric: "gdp", tileSpan: 2 },
+    { key: "cohesion", label: "Stability", kind: "index", tileSpan: 1 },
+  ] }] });
+  assert.deepEqual(configured.sections[0].stats.map(statTileSpan), [2, 1]);
+  assert.deepEqual(configured.sections[0].stats.map((row) => row.tileSpan), [2, 1]);
+  assert.equal(configured.sections[0].stats[0].nativeMetric, "gdp");
+  assert.throws(() => normalizeStatSheetDefinition({ sections: [{ label: "Overview", stats: [
+    { key: "bad", label: "Invalid", kind: "number", tileSpan: 9 },
+  ] }] }), /tile width must be one or two/);
+});
+
+test('native standard sheet preserves opted-in dashboard without custom GDP writers', () => {
+  const base={custom:false,version:2,sections:[],dashboard:{version:1,widgets:[
+    {id:'gdpHero',source:'native:gdp',style:'trend',page:'overview',x:0,y:0,w:6,h:2},
+    {id:'gdpAgain',source:'native:gdp',style:'value',page:'details',x:0,y:0,w:3,h:1},
+  ]}};
+  const normalized=normalizeStatSheetDefinition(base);
+  assert.equal(normalized.custom,false);
+  assert.deepEqual(statSheetKeys(normalized),statSheetKeys(normalizeStatSheetDefinition(null)));
+  assert.equal(normalized.dashboard.widgets.length,2);
+  const exported=serializeStatSheet(base);
+  assert.equal(exported.custom,false);
+  assert.deepEqual(exported.sections,[]);
+  assert.deepEqual(normalizeStatSheetDefinition(exported).dashboard,normalized.dashboard);
+});
+test('authored custom value cards cannot silently bind to nonexistent or native-bound custom keys',()=>{
+  const base={custom:true,sections:[{key:'economy',label:'Economy',stats:[
+    {key:'grain',label:'Grain reserve',kind:'number'},
+    {key:'gdpHero',label:'GDP',nativeMetric:'gdp',kind:'currency'},
+  ]}],dashboard:{version:1,widgets:[{id:'grainWidget',source:'custom:grain',style:'bar',page:'overview',x:0,y:0,w:3,h:1}]}};
+  assert.equal(normalizeStatSheetDefinition(base).dashboard.widgets[0].source,'custom:grain');
+  assert.throws(()=>normalizeStatSheetDefinition({...base,dashboard:{version:1,widgets:[
+    {...base.dashboard.widgets[0],source:'custom:gdpHero'}]}}));
 });

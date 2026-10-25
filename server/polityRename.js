@@ -262,12 +262,23 @@ export const renamePolityInWorld = (world, fromName, toName) => {
   put("storylines", mapRows(world?.storylines, (storyline) => ({ ...storyline, participants: mapList(storyline.participants, fromKey, to) })));
   put("puppets", mapRows(world?.puppets, (row) => renamePuppetRow(row, fromKey, to)));
   put("projects", mapRows(world?.projects, (project) => ({ ...project, ownerCode: one(project.ownerCode) })));
+  // Scenario-priced military obligations follow their existing project's owner
+  // through polity renames. Preserve the once-only payment identity unchanged.
+  put("militaryExpenditureCommitments", mapRows(world?.militaryExpenditureCommitments, (entry) => ({
+    ...entry, polity: one(entry.polity),
+  })));
   // The fortified lines it holds (runtime/warGeography.js): a wall keeps its owner.
   put("fortifications", mapRows(world?.fortifications, (line) => ({ ...line, owner: one(line.owner) })));
   // How weary of war it is, and what it has left to fight with (runtime/warWeariness.js, warResources.js).
   put("warWeariness", mapRows(world?.warWeariness, (row) => ({ ...row, country: one(row.country) })));
   put("warResources", mapRows(world?.warResources, (row) => ({ ...row, country: one(row.country) })));
   put("attrition", mapRows(world?.attrition, (row) => ({ ...row, country: one(row.country) })));
+  // Finite migration plans reference the same canonical polity names as Stats.
+  // A rename must carry both ends of the authored contract and its receipt
+  // cursor; otherwise the next month could debit a vanished old-country key.
+  put("migrationFlows", mapRows(world?.migrationFlows, (flow) => ({
+    ...flow, fromPolity: one(flow.fromPolity), toPolity: one(flow.toPolity),
+  })));
   for (const field of ["countryStats", "countryTags", "internationalReputation", "intelligence", "playerGoals", "frontPersonnel"]) {
     put(field, mapKeys(world?.[field], fromKey, to));
   }

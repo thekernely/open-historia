@@ -9,6 +9,8 @@ import assert from "node:assert/strict";
 
 import { JSON_URLS, primeJson } from "./assets.js";
 import { viewAsSeen } from "./gameState.js";
+import { mergeCountryStatPatch } from "./countryStats.js";
+import { resetStatSheetCache } from "./statsSheet.js";
 
 const FROM = "1930-01-01";
 const TO = "1930-03-01";
@@ -126,4 +128,47 @@ test("without a restore point the finished world is kept, less the unseen papers
   assert.equal(seen.world.regionOwnershipOverrides.r2, "Borduria", "nothing to stage from");
   assert.deepEqual(seen.world.reports.map((entry) => entry.id), ["report-1"]);
   assert.equal(seen.game.gameDate, "1930-01-15");
+});
+
+const grainDefinition = { custom: true, version: 2, sections: [{ key: "resources", label: "Resources", stats: [
+  { key: "grain", label: "Stored grain", kind: "number", minimum: 0, maximum: 200, decimals: 0 },
+  { key: "gdpDisplay", label: "GDP", kind: "currency", nativeMetric: "gdp" },
+] }] };
+const grainEvent = (id, date, delta) => ({
+  id, date, title: "Grain distribution", description: "Recorded distribution of grain.",
+  impacts: { polityChanges: [{ operation: "update", code: "Ruritania",
+    statsEffects: { customStatDeltas: { grain: delta }, reason: "Recorded removal from grain reserves" } }] },
+});
+
+test("a staged custom-resource event uses the active scenario definition and never reveals an unseen later change", async () => {
+  primeJson(JSON_URLS.stats, grainDefinition);
+  resetStatSheetCache();
+  const baseline = { ...before, countryStats: { Ruritania: mergeCountryStatPatch(null,
+    { customStats: { grain: 100 } }) } };
+  primeSnapshots([{ fromDate: FROM, toDate: TO, round: 3, state: { world: baseline } }]);
+  const e1 = grainEvent("e1", "1930-01-15", -10);
+  const e2 = grainEvent("e2", "1930-02-20", -20);
+  const finalWorld = { ...finished, countryStats: { Ruritania: mergeCountryStatPatch(null,
+    { customStats: { grain: 70 } }) } };
+  const seen = await viewAsSeen({ world: finalWorld, events: [events[0], e1, e2], game },
+    { unseen: new Set(["e2"]) });
+  assert.equal(seen.world.countryStats.Ruritania.customStats.grain, 90);
+  assert.equal(seen.world.statsEventReceipts.length, 1);
+  assert.equal(seen.world.statsEventReceipts[0].eventId, "e1");
+  assert.deepEqual(seen.events.map((row) => row.id), ["e0", "e1"]);
+  assert.equal(finalWorld.countryStats.Ruritania.customStats.grain, 70);
+});
+
+test("an invalid custom-scenario definition fails closed instead of exposing end-of-turn stats", async () => {
+  primeJson(JSON_URLS.stats, { custom: true, version: 2, sections: [{ key: "other", label: "Other", stats: [
+    { key: "timber", label: "Timber", kind: "number", minimum: 0, maximum: 200, decimals: 0 },
+  ] }] });
+  resetStatSheetCache();
+  const baseline = { ...before, countryStats: { Ruritania: mergeCountryStatPatch(null,
+    { customStats: { grain: 100 } }) } };
+  primeSnapshots([{ fromDate: FROM, toDate: TO, round: 3, state: { world: baseline } }]);
+  await assert.rejects(() => viewAsSeen({ world: { ...finished, countryStats: {
+    Ruritania: mergeCountryStatPatch(null, { customStats: { grain: 70 } }),
+  } }, events: [events[0], grainEvent("e1", "1930-01-15", -10), grainEvent("e2", "1930-02-20", -20)], game },
+  { unseen: new Set(["e2"]) }), /Could not reconstruct the visible world/);
 });

@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import {
   coalesceWorldStorylines,
   decodeWorldStorylineUpdates,
+  projectNewStatsStorylineSources,
   findWorldStorylineAntiStasisIssues,
   recentEventEligibleForInitiative,
   recommendedReviewDays,
@@ -328,4 +329,26 @@ test("final-attempt salvage strips only quiet deferred bookkeeping", () => {
   }]);
   assert.deepEqual(salvage.strippedIds, ["storyline-deferred-quiet-test"]);
   assert.deepEqual(decodeWorldStorylineUpdates(candidate.storylineUpdates).map((entry) => entry.id), ["storyline-selected-test"]);
+});
+
+test("same-turn Statistics source projection uses only unique, active, accepted-event-linked new stories", () => {
+  const world = { polityOverrides: { Alba: { code: "Alba", name: "Alba" } }, storylines: [] };
+  const event = { id: "event-first-crisis", date: "1912-02-20", title: "Bank crisis",
+    storylineIds: ["crisis-new"], impacts: {} };
+  const update = { id: "crisis-new", kind: "economy", status: "active", title: "Bank crisis",
+    participants: ["Alba"], startedDate: "1912-02-20", eventIndexes: [0],
+    state: "Banking failures now disrupt the local credit network." };
+  const project = (overrides = {}) => projectNewStatsStorylineSources({
+    world, updates: [update], events: [event], stopDate: "1912-03-20", round: 3, ...overrides,
+  });
+  const [source] = project();
+  assert.equal(source?.id, "crisis-new");
+  assert.equal(source?.status, "active");
+  assert.ok(source?.sourceEventIds.includes(event.id));
+  assert.deepEqual(world.storylines, [], "projection must not install a storyline early");
+  assert.deepEqual(project({ events: [{ ...event, storylineIds: [] }] }), []);
+  assert.deepEqual(project({ updates: [{ ...update, startedDate: "1912-03-01" }] }), []);
+  assert.deepEqual(project({ updates: [{ ...update, status: "dormant" }] }), []);
+  assert.deepEqual(project({ updates: [update, { ...update }] }), []);
+  assert.deepEqual(project({ world: { ...world, storylines: [source] } }), []);
 });

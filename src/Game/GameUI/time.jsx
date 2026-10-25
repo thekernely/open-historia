@@ -3794,6 +3794,7 @@ const DateWidget = ({
                     const { world: livePreview } = applyEventImpactsToWorld({
                         colors: {},
                         events: revealedLive,
+                        regionCatalog,
                         motion: { originDate: liveTurnRecord.fromDate || "", round: liveTurnRecord.round || 0, tick: 0 },
                         world: liveStageBase,
                     });
@@ -3839,9 +3840,12 @@ const DateWidget = ({
             return;
         }
         const revealed = record.events.slice(0, Math.max(1, visibleEventCount));
-        const { world: stagedWorld } = applyEventImpactsToWorld({
+        let stagedWorld;
+        try {
+            ({ world: stagedWorld } = applyEventImpactsToWorld({
             colors: {},
             events: revealed,
+            regionCatalog,
             // Same motion the persisted turn used (applySimulationResult), or the
             // reveal would show units teleporting to positions the saved world
             // never had. The residual advance past the last event is not replayed
@@ -3856,7 +3860,16 @@ const DateWidget = ({
                 tick: 0,
             },
             world: base,
-        });
+            }));
+        } catch (error) {
+            // Without a validated region catalog, never display a border that
+            // is missing its coupled canonical population/GDP mutation.
+            console.warn("[OH staged reveal] territorial Statistics preview unavailable", error);
+            setWorldStateOverride(null);
+            setUnitsOverride(null);
+            setFrontsOverride(null);
+            return;
+        }
         setWorldStateOverride(stagedWorld);
         setUnitsOverride(stagedWorld.units ?? [], stagedWorld.pendingUnitOrders ?? []);
         // The battlefields as they stood at the event being read: the map
@@ -3867,7 +3880,7 @@ const DateWidget = ({
             revealed[revealed.length - 1]?.date,
             revealed.length > 1 ? revealed[revealed.length - 2]?.date : record.fromDate,
         ));
-    }, [foreseen, latestTurnRecord, liveStageBase, liveTurnRecord, olderTurnRecord, openPanel, skipInFlight, stagedBase, totalVisibleEvents, visibleEventCount]);
+    }, [foreseen, latestTurnRecord, liveStageBase, liveTurnRecord, olderTurnRecord, openPanel, regionCatalog, skipInFlight, stagedBase, totalVisibleEvents, visibleEventCount]);
 
     // Never leave a stale override behind when this widget unmounts.
     useEffect(

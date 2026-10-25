@@ -15,7 +15,7 @@
 // until then this page waits.
 
 import { getLibraryState, refreshLibraryCatalog } from "../../runtime/library.js";
-import { JSON_URLS, readJson } from "../../runtime/assets.js";
+import { JSON_URLS, readJson, loadRegionCatalog } from "../../runtime/assets.js";
 import {
   mutateActionsState,
   mutateCanonicalTurnState,
@@ -333,6 +333,7 @@ const boot = async () => {
       },
       // The map as this game's own engine reads it, for the war room's lines and fleets.
       readChart: () => warRoomChart(),
+      readRegionCatalog: () => loadRegionCatalog(),
       replyTo,
       // A player's institution business, run here for their country.
       institution: createInstitutionDesk({

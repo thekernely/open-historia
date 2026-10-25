@@ -1,4 +1,5 @@
 /*! Open Historia — scenario-defined national Stats sheet definitions © 2026 Nicholas Krol, AGPL-3.0-or-later (see LICENSE). */
+import { normalizeStatsDashboard } from "./statsDashboardLayout.js";
 export const STAT_SHEET_VERSION = 2;
 export const MAX_STAT_INDICES = 12;
 export const MAX_STAT_SECTIONS = 12;
@@ -6,6 +7,34 @@ export const MAX_STATS_PER_SECTION = 20;
 export const MAX_CUSTOM_STATS = 60;
 export const STAT_INDEX_KEY_PATTERN = /^[A-Za-z][A-Za-z0-9]{0,39}$/;
 export const STAT_KINDS = Object.freeze(["index", "number", "percentage", "currency"]);
+
+// Keep optional legacy-preview tile width metadata round-trippable for saved
+// scenario compatibility. Its experimental editor/player UI is disabled until
+// the full grid workspace has an approved, tested layout contract.
+export const statTileSpan = (stat) => stat?.tileSpan === 1 || stat?.tileSpan === 2
+  ? stat.tileSpan
+  : stat?.kind === "index" ? 2 : 1;
+
+// Explicit source bindings are opt-in. Legacy custom keys (including `gdp`)
+// remain independent values until an author has reviewed their meaning.
+// These are readings of existing national state, not alternate writers.
+export const NATIONAL_NATIVE_METRICS = Object.freeze({
+  gdp: Object.freeze({ path: Object.freeze(["economy", "gdp"]), kind: "currency", minimum: 0 }),
+  gdpPerCapita: Object.freeze({ path: Object.freeze(["economy", "gdpPerCapita"]), kind: "currency", minimum: 0 }),
+  totalPopulation: Object.freeze({ path: Object.freeze(["population", "total"]), kind: "number", minimum: 0 }),
+  gdpGrowth: Object.freeze({ path: Object.freeze(["economy", "gdpGrowth"]), kind: "percentage", minimum: -100, maximum: 100 }),
+  inflation: Object.freeze({ path: Object.freeze(["economy", "inflation"]), kind: "percentage", minimum: -1000, maximum: 1000 }),
+  unemployment: Object.freeze({ path: Object.freeze(["economy", "unemployment"]), kind: "percentage", minimum: 0, maximum: 100 }),
+  publicDebt: Object.freeze({ path: Object.freeze(["economy", "publicDebt"]), kind: "percentage", minimum: 0, maximum: 1000 }),
+  budgetBalance: Object.freeze({ path: Object.freeze(["economy", "budgetBalance"]), kind: "percentage", minimum: -1000, maximum: 1000 }),
+  nationalStability: Object.freeze({ path: Object.freeze(["stability"]), kind: "index", minimum: 0, maximum: 100 }),
+  sovereignty: Object.freeze({ path: Object.freeze(["indices", "sovereignty"]), kind: "index", minimum: 0, maximum: 100 }),
+  foodAutonomy: Object.freeze({ path: Object.freeze(["indices", "foodAutonomy"]), kind: "index", minimum: 0, maximum: 100 }),
+  energyAutonomy: Object.freeze({ path: Object.freeze(["indices", "energyAutonomy"]), kind: "index", minimum: 0, maximum: 100 }),
+  economicIndependence: Object.freeze({ path: Object.freeze(["indices", "economicIndependence"]), kind: "index", minimum: 0, maximum: 100 }),
+  internalSecurity: Object.freeze({ path: Object.freeze(["indices", "internalSecurity"]), kind: "index", minimum: 0, maximum: 100 }),
+  internationalReputation: Object.freeze({ path: Object.freeze(["indices", "internationalReputation"]), kind: "index", minimum: 0, maximum: 100 }),
+});
 
 export const DEFAULT_STAT_INDEX_ROWS = Object.freeze([
   Object.freeze({ key: "sovereignty", label: "Sovereignty", kind: "index", icon: "⚑", color: "#f97316", description: "Practical political sovereignty and freedom of action." }),
@@ -113,6 +142,23 @@ export const normalizeStatDefinition = (item, { used = new Set(), fallbackKind =
   key = uniqueKey(key, used);
   const requestedKind = clean(item.kind).toLowerCase();
   const kind = STAT_KINDS.includes(requestedKind) ? requestedKind : fallbackKind;
+  // Reject bad explicit bindings rather than silently dropping them or treating
+  // an attempted native metric as independently writable customStats.
+  const bindingSpecified = item.nativeMetric !== undefined && item.nativeMetric !== null && item.nativeMetric !== "";
+  const nativeMetric = bindingSpecified ? item.nativeMetric : null;
+  if (bindingSpecified && (typeof nativeMetric !== "string" || !Object.prototype.hasOwnProperty.call(NATIONAL_NATIVE_METRICS, nativeMetric))) {
+    throw new Error(`Unsupported national Statistics native metric binding: ${String(nativeMetric).slice(0, 80)}.`);
+  }
+  if (nativeMetric && kind !== NATIONAL_NATIVE_METRICS[nativeMetric].kind) {
+    throw new Error(`Native metric ${nativeMetric} requires the ${NATIONAL_NATIVE_METRICS[nativeMetric].kind} display type.`);
+  }
+  const nativeDefaults = nativeMetric ? NATIONAL_NATIVE_METRICS[nativeMetric] : null;
+  // Never accept unsupported tile geometry as if it were a valid layout.
+  // Omission is meaningful: it preserves how every legacy sheet renders.
+  const hasTileSpan = item.tileSpan !== undefined && item.tileSpan !== null && item.tileSpan !== "";
+  if (hasTileSpan && item.tileSpan !== 1 && item.tileSpan !== 2) {
+    throw new Error("National Statistics tile width must be one or two columns.");
+  }
   const decimals = clamp(Math.trunc(Number(item.decimals) || 0), 0, 4);
   let minimum = normalizeBound(item.minimum ?? item.min);
   let maximum = normalizeBound(item.maximum ?? item.max);
@@ -120,9 +166,11 @@ export const normalizeStatDefinition = (item, { used = new Set(), fallbackKind =
     minimum = 0;
     maximum = 100;
   } else if (kind === "percentage") {
-    if (minimum === undefined) minimum = 0;
-    if (maximum === undefined) maximum = 100;
+    if (minimum === undefined) minimum = nativeDefaults?.minimum ?? 0;
+    if (maximum === undefined) maximum = nativeDefaults?.maximum ?? 100;
   }
+  if (nativeDefaults && minimum === undefined) minimum = nativeDefaults.minimum;
+  if (nativeDefaults && maximum === undefined) maximum = nativeDefaults.maximum;
   if (minimum !== undefined && maximum !== undefined && minimum > maximum) {
     [minimum, maximum] = [maximum, minimum];
   }
@@ -130,6 +178,8 @@ export const normalizeStatDefinition = (item, { used = new Set(), fallbackKind =
     key,
     label,
     kind,
+    ...(nativeMetric ? { nativeMetric } : {}),
+    ...(hasTileSpan ? { tileSpan: item.tileSpan } : {}),
     icon: clean(item.icon).slice(0, 8) || "◆",
     color: validColor(item.color) ? clean(item.color).toLowerCase() : DEFAULT_COLOR,
     description: clean(item.description).slice(0, 360),
@@ -159,6 +209,14 @@ export const normalizeStatIndexRows = (value, { fallback = true } = {}) => {
   if (rows.length) return rows;
   return fallback ? DEFAULT_STAT_INDEX_ROWS.map((row) => ({ ...row })) : [];
 };
+
+const dashboardFrom = (value, sections) => normalizeStatsDashboard(value?.dashboard, {
+  allowedSources: new Set([
+    ...Object.keys(NATIONAL_NATIVE_METRICS).map((key) => `native:${key}`),
+    ...sections.flatMap((section) => section.stats || [])
+      .filter((stat) => !stat.nativeMetric).map((stat) => `custom:${stat.key}`),
+  ]),
+});
 
 const cloneDefaultSections = () => DEFAULT_CUSTOM_STAT_SECTIONS.map((section) => ({
   ...section,
@@ -211,18 +269,19 @@ export const normalizeStatSheetDefinition = (value, { fallbackStandard = true } 
   // migrate it into a real section rather than losing the author's work.
   const legacyIndices = normalizeStatIndexRows(value, { fallback: false });
   if (!Array.isArray(value?.sections) && legacyIndices.length) {
-    return {
-      custom: true,
-      version: STAT_SHEET_VERSION,
-      sections: [{ key: "strategic", label: "Strategic indices", icon: "⚑", stats: legacyIndices }],
-    };
+    const sections = [{ key: "strategic", label: "Strategic indices", icon: "⚑", stats: legacyIndices }];
+    const dashboard = dashboardFrom(value, sections);
+    return { custom: true, version: STAT_SHEET_VERSION, sections, ...(dashboard ? { dashboard } : {}) };
   }
 
   const sections = normalizeStatSheetSections(value, { fallback: false });
-  if (sections.length) return { custom: true, version: STAT_SHEET_VERSION, sections };
-  return fallbackStandard
-    ? { custom: false, version: STAT_SHEET_VERSION, sections: cloneDefaultSections() }
-    : { custom: false, version: STAT_SHEET_VERSION, sections: [] };
+  // An explicitly standard sheet may have a scenario-authored dashboard. Its
+  // display layout cannot implicitly turn native GDP into a writable custom key.
+  const custom = value?.custom === false ? false : sections.length > 0;
+  const finalSections = custom ? sections : fallbackStandard ? cloneDefaultSections() : [];
+  const dashboard = dashboardFrom(value, custom ? finalSections : []);
+  return { custom, version: STAT_SHEET_VERSION, sections: finalSections,
+    ...(dashboard ? { dashboard } : {}) };
 };
 
 export const defaultCustomStatSheetDefinition = () => ({
@@ -237,7 +296,9 @@ export const serializeStatSheet = (value) => {
     : normalizeStatSheetDefinition(value, { fallbackStandard: false });
   return {
     version: STAT_SHEET_VERSION,
-    sections: definition.sections,
+    custom: definition.custom,
+    sections: definition.custom ? definition.sections : [],
+    ...(definition.dashboard ? { dashboard: definition.dashboard } : {}),
   };
 };
 
@@ -246,7 +307,12 @@ export const flattenStatSheetRows = (definitionInput) => {
   return definition.sections.flatMap((section) => section.stats.map((stat) => ({ ...stat, sectionKey: section.key, sectionLabel: section.label })));
 };
 
-export const statSheetKeys = (definitionInput) => flattenStatSheetRows(definitionInput).map((stat) => stat.key);
+// Only independent customStats keys are writable. Explicit nativeMetric rows
+// are read-only presentation references to the existing countryStats owner.
+// Legacy definitions without bindings retain the exact previous key set.
+export const statSheetKeys = (definitionInput) => flattenStatSheetRows(definitionInput)
+  .filter((stat) => !stat.nativeMetric)
+  .map((stat) => stat.key);
 
 export const normalizeCustomStatValues = (value, definitionInput, { partial = false } = {}) => {
   const definition = normalizeStatSheetDefinition(definitionInput);
@@ -254,6 +320,9 @@ export const normalizeCustomStatValues = (value, definitionInput, { partial = fa
   const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
   const out = {};
   for (const stat of flattenStatSheetRows(definition)) {
+    // Never transform a native-bound card into a second independently writable
+    // value, even when an old scenario still carries that legacy key.
+    if (stat.nativeMetric) continue;
     if (!Object.prototype.hasOwnProperty.call(source, stat.key)) {
       if (!partial) continue;
       continue;
@@ -280,7 +349,8 @@ export const describeStatSheetDefinition = (definitionInput) => {
         ? ` range ${Number.isFinite(stat.minimum) ? stat.minimum : "unbounded"}..${Number.isFinite(stat.maximum) ? stat.maximum : "unbounded"}`
         : "";
       const display = [stat.prefix, stat.suffix].filter(Boolean).join(" / ");
-      return `${stat.key} = ${stat.label} [${stat.kind}${range}${display ? `; display ${display}` : ""}]${stat.description ? ` — ${stat.description}` : ""}`;
+      const native = stat.nativeMetric ? `; native ${stat.nativeMetric} (READ-ONLY: do not output in customStats)` : "";
+      return `${stat.key} = ${stat.label} [${stat.kind}${range}${display ? `; display ${display}` : ""}${native}]${stat.description ? ` — ${stat.description}` : ""}`;
     }).join("; ");
     return `${section.label}: ${stats}`;
   }).join("\n");

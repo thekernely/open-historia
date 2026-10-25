@@ -1,7 +1,7 @@
 /*! Open Historia - scenario-authorized native births/deaths with durable accounting. */
 import { compareGameDates, diffGameDays, gameDateDayNumber } from "./gameDates.js";
 import { mergeCountryStatPatch, normalizeCountryStatDemographicClock, normalizeCountryStatDemographicEvolution,
-  normalizeCountryStatSheet, scaleComponentPopulationExact } from "./countryStats.js";
+  normalizeCountryStatSheet, scaleComponentPopulationExact, demographicClockCumulative } from "./countryStats.js";
 import { collectActiveScenarioPolityKeys } from "./scenarioPolities.js";
 
 const YEAR_DAYS = 365.2425;
@@ -58,6 +58,30 @@ const evolutionTick = (current, model, until) => {
   };
 };
 
+// A pre-native save may have accepted a whole-turn AI population reading while
+// its scenario-authorized daily clock still points to the campaign start.
+// Replaying the elapsed days would count those residents twice. Only a saved,
+// matching CURRENT observation can hand off ownership at the turn boundary;
+// neither old months nor old birth/death receipts are reconstructed.
+const resumeFromLegacyHistory = (world, polity, sheet, model, date, rawSheet) => {
+  if (compareGameDates(model.lastDate, date) >= 0
+    || compareGameDates(date, model.endDate) > 0
+    || model.influences.length > 0
+    || sheet.continuity?.nativeEconomyClock || sheet.continuity?.demographicClock
+    || rawSheet?.continuity?.nativeEconomyClock || rawSheet?.continuity?.demographicClock) return model;
+  const rows = world.countryStatsHistory?.[polity];
+  const observed = Array.isArray(rows) ? rows.at(-1) : null;
+  if (observed?.historyVersion !== 1 || observed.date !== date
+    || !Number.isSafeInteger(observed.population)
+    || observed.population !== sheet.population.total
+    || !Array.isArray(sheet.territorialComponents)
+    || (sheet.territorialComponents.length > 0 && sheet.territorialComponents
+      .reduce((sum, part) => sum + part.population, 0) !== sheet.population.total)
+    || Array.isArray(world.migrationFlows) && world.migrationFlows.some((flow) =>
+      (flow.fromPolity === polity || flow.toPolity === polity) && flow.lastDate !== date)) return model;
+  return normalizeCountryStatDemographicEvolution({ ...model, lastDate: date }) || model;
+};
+
 // Natural change only. A net migration "rate" would create or destroy people
 // without a corresponding source/destination entry and is not modeled here.
 // Each dated rate is an ANCHORED estimate for a finite horizon, never a default
@@ -69,7 +93,9 @@ export const advanceNativeDemographicClock = (world, { baselineWorld, fromDate =
   for (const [polity, raw] of Object.entries(world.countryStats)) {
     if (!active.has(polity) || !own(world.countryStats, polity)) continue;
     const current = normalizeCountryStatSheet(raw);
-    const evolution = normalizeCountryStatDemographicEvolution(current?.continuity?.demographicEvolution);
+    const rawEvolution = normalizeCountryStatDemographicEvolution(current?.continuity?.demographicEvolution);
+    const evolution = rawEvolution && current?.population?.total > 0
+      ? resumeFromLegacyHistory(world, polity, current, rawEvolution, fromDate, raw) : rawEvolution;
     const clock = normalizeCountryStatDemographicClock(current?.continuity?.demographicClock);
     // Never double-accrue two demographic processes for the same polity.
     if (evolution && clock) continue;
@@ -129,9 +155,9 @@ export const advanceNativeDemographicClock = (world, { baselineWorld, fromDate =
     }
     const until = compareGameDates(toDate, clock.endDate) > 0 ? clock.endDate : toDate;
     if (compareGameDates(until, clock.lastDate) <= 0) continue;
-    const elapsed = diffGameDays(clock.sourceDate, until);
-    const births = Math.round(clock.basePopulation * clock.birthsPerThousand / 1000 * elapsed / YEAR_DAYS);
-    const deaths = Math.round(clock.basePopulation * clock.deathsPerThousand / 1000 * elapsed / YEAR_DAYS);
+    const target = demographicClockCumulative(clock, until);
+    if (!target) continue;
+    const { births, deaths } = target;
     const populationDelta = (births - clock.creditedBirths) - (deaths - clock.creditedDeaths);
     const nextPopulation = current.population.total + populationDelta;
     if (!Number.isSafeInteger(nextPopulation) || nextPopulation <= 0) continue;

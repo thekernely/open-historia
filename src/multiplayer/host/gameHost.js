@@ -86,6 +86,8 @@ export const createGameHost = ({
   // is, whose the ground), which the war room's fortified lines and fleets
   // are held to; resolves with null when the map could not be read.
   readChart = async () => null,
+  // Canonical map catalog stays host-side; never accept a region list from a guest.
+  readRegionCatalog = async () => null,
   // An institution's business for a seat (host/institutions.js): resolves
   // { institutionId, proposalId, chatId } or rejects with the reason.
   institution = async () => {
@@ -468,8 +470,9 @@ export const createGameHost = ({
     peace: async (connection, { op, ref, terms }, seat) => {
       if (round.status().phase === "resolving") return "The round is being resolved: answer once it has landed.";
       let refusal = "";
+      const regionCatalog = await readRegionCatalog();
       await store.updateForces(({ world, game }) => {
-        const outcome = playerDiplomacy(world, { op, ref, terms, country: seat.country, players: humanCountriesOf(game), date: clean(game?.gameDate), round: game?.round });
+        const outcome = playerDiplomacy(world, { op, ref, terms, country: seat.country, players: humanCountriesOf(game), date: clean(game?.gameDate), round: game?.round, regionCatalog });
         if (outcome.error) {
           refusal = outcome.error === "not-yours" ? "This is not yours to answer." : outcome.error === "played" ? "That side is led by another player: make peace with them in a chat." : "This is no longer open.";
           return null;

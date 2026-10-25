@@ -15,8 +15,11 @@ import {
   scenarioStatsRequiredReady,
 } from "../../runtime/scenarioStatsAuthoring.js";
 import { DEFAULT_STAT_INDEX_KEYS } from "../../runtime/statIndexDefinitions.js";
-import { reviewScenarioNationalMetricAliases } from "../../runtime/statsMetricAliasReview.js";
+import { auditScenarioEconomicComparability, serializeScenarioEconomicComparabilityCsv, SCENARIO_GDP_ACCOUNTING_UNIT } from "../../runtime/scenarioEconomicComparability.js";
+import { reviewScenarioNationalMetricAliases, serializeScenarioNationalMetricReviewCsv, summarizeScenarioNationalMetricAliasReviews } from "../../runtime/statsMetricAliasReview.js";
+import { assertNoLegacyNativeStatCopies, nationalStatsAuthoringContract } from "../../runtime/statsMetricBindings.js";
 import { logDebugEvent } from "../../runtime/debugLog.js";
+import { saveTextToDisk } from "../../runtime/saveFile.js";
 
 const clean = (value) => String(value ?? "").trim();
 const copy = (value) => JSON.parse(JSON.stringify(value));
@@ -48,6 +51,7 @@ const makePrompt = ({ batch, scenarioDate, details, customKeys }) => {
   const startingEvents = (Array.isArray(details.data?.events) ? details.data.events : [])
     .slice(0, 20).map((event) => `${clean(event.date)} ${clean(event.title)}`).filter(Boolean);
   const context = [
+    `SHARED ECONOMIC ACCOUNTING UNIT FOR EVERY COUNTRY AND EVERY BATCH: ${SCENARIO_GDP_ACCOUNTING_UNIT}. This is an accounting convention, not evidence that a historical national GDP is known. Do not use PPP or current-year GDP as a substitute; state a bounded evidence/uncertainty explanation in basisNote. Population and GDP must describe the same legal territorial scope.`,
     `SCENARIO: ${clean(scenario.name)}. Starting date ${scenarioDate}.`,
     `Player's starting country: ${clean(game.country)}.`,
     `Scenario prehistory: ${clean(world.startingTimelineText).slice(0, 3200) || "not provided"}`,
@@ -63,24 +67,34 @@ const makePrompt = ({ batch, scenarioDate, details, customKeys }) => {
     ].join("\n")),
   ].join("\n\n");
   return {
-    system: `You propose STARTING Statistics for an alternate-history/grand-strategy scenario. Generate historically and scenario-plausible ESTIMATES for the provided starting date, not today's statistics or future historical outcomes. Scenario canon outranks remembered real-world history. Do not generate anything for an unlisted country. This is author review only; no simulation changes happen from this response. Use numbers as JSON numbers, not abbreviations or prose. Call the required submit_scenario_starting_statistics output tool, filling every required countryNJson STRING field with a JSON OBJECT containing the proposal for THAT SLOT'S specified canonical country only. Every countryNJson has two REQUIRED numeric tool arguments: countryNPublicDebt (0..1000) and countryNBudgetBalance (-1000..1000); set both as JSON NUMBERS for the matching slot, and OMIT publicDebt and budgetBalance inside the countryNJson string. The function's required argument names bind the identities. Do NOT add "code", "countryCode", "polityCode", "country", "polity" or "name" in the objects; do not use ISO abbreviations as identities. Never answer with unstructured explanation. Each object must include "macro": a list of {"index":integer,"population":integer,"gdpPerCapita":number,"group":"core"|"integrated"|"overseas/dependent"} for EXACTLY the given native bucket indices. A regional bucket may have population 0 and gdpPerCapita 0 only if it is genuinely uninhabited; national population must remain positive. The native system expands these values to REAL mapped geography; you must never invent province keys. Do not include military units, artificial territorial entries, dates, or continuity/clock receipts. Estimation is permitted but must be labelled in "basisNote"; your numbers are proposals for human review, not observations. ${custom
+    system: String.raw`You propose STARTING Statistics for an alternate-history/grand-strategy scenario. Generate historically and scenario-plausible ESTIMATES for the provided starting date, not today's statistics or future historical outcomes. Scenario canon outranks remembered real-world history. Do not generate anything for an unlisted country. This is author review only; no simulation changes happen from this response. Use numbers as JSON numbers, not abbreviations or prose. Call the required submit_scenario_starting_statistics output tool, filling every required countryNJson STRING field with a JSON OBJECT containing the proposal for THAT SLOT'S specified canonical country only. Every countryNJson has two REQUIRED numeric tool arguments: countryNPublicDebt (0..1000) and countryNBudgetBalance (-1000..1000); set both as JSON NUMBERS for the matching slot, and OMIT publicDebt and budgetBalance inside the countryNJson string. The function's required argument names bind the identities. Do NOT add "code", "countryCode", "polityCode", "country", "polity" or "name" in the objects; do not use ISO abbreviations as identities. Never answer with unstructured explanation. Each object must include "macro": a list of {"index":integer,"population":integer,"gdpPerCapita":number,"group":"core"|"integrated"|"overseas/dependent"} for EXACTLY the given native bucket indices. A regional bucket may have population 0 and gdpPerCapita 0 only if it is genuinely uninhabited; national population must remain positive. The native system expands these values to REAL mapped geography; you must never invent province keys. Do not include military units, artificial territorial entries, dates, or continuity/clock receipts. Estimation is permitted but must be labelled in "basisNote" with the evidence or uncertainty and the shared GDP unit; your numbers are proposals for human review, not observations. ${custom
       ? `This scenario uses a CUSTOM presentation sheet. For each country also return "customStats" object with EXACT keys ${JSON.stringify(customKeys)} (all finite numerical values), required typed numeric publicDebt and budgetBalance tool arguments for that country slot. Include optional "birthRate" and "deathRate" (0..80, births/deaths per 1,000/year), optional "birthTrendPerYear" and "deathTrendPerYear" (-2..2) only when the demographic meaning fits the scenario.`
       : `Standard modern native sheet: for EACH country also return nonempty "capital", "continent", "government", "leader", "currency"; number "stability" (0..100), "gdpGrowth" (-100..100), "inflation" (-1000..1000), "unemployment" (0..100), required typed numeric publicDebt and budgetBalance tool arguments for that country slot, "agriculture", "industry", "services" (each 0..100, sum EXACTLY 100), and "indices" with all six keys ${JSON.stringify(DEFAULT_STAT_INDEX_KEYS)} as 0..100. Include "birthRate" and "deathRate" (0..80 per thousand per year) and "birthTrendPerYear", "deathTrendPerYear" (-2..2), based on the scenario era and circumstances. No country may inherit another era's rates.`} Be careful with colonial territories: bucket population covers only held provinces, not the whole namesake geography. Do not invent missing scope.`,
     user: context,
   };
 };
 
-const ScenarioStatsAuthoringPanel = ({ details, formState, countryOptions, statsValue, statsDefinitionDirty = false, statsDefinitionUnavailable = false, onDetailsChange, onDirtyChange }) => {
+const ScenarioStatsAuthoringPanel = ({ details, formState, countryOptions, statsValue, statsDefinitionDirty = false, statsDefinitionUnavailable = false, onDetailsChange, onDirtyChange, onSaveStatsDefinition }) => {
   const scenarioId = details?.scenario?.id;
   const world = details?.data?.world ?? {};
   const scenarioDate = normalizeGameDate(details?.data?.game?.startDate || details?.data?.game?.gameDate);
   const unsavedDate = normalizeGameDate(formState?.gameDate);
   const dateMismatch = !scenarioDate || scenarioDate !== unsavedDate;
   const authoringBlocked = dateMismatch || statsDefinitionDirty || statsDefinitionUnavailable;
-  const customKeys = useMemo(() => statsValue?.custom
-    ? [...new Set((statsValue.sections ?? []).flatMap((section) => (section.stats ?? []).map((item) => clean(item.key))).filter(Boolean))]
-    : null, [statsValue]);
-  const coverage = useMemo(() => scenarioStatsCoverage(world, countryOptions, { customKeys }), [world, countryOptions, customKeys]);
+  // Only independently stored custom keys are sent to AI or editable as
+  // customStats. Native-bound cards are read-only views of countryStats.
+  const contract = useMemo(() => nationalStatsAuthoringContract(statsValue), [statsValue]);
+  const customKeys = useMemo(() => contract.custom ? contract.customKeys : null, [contract]);
+  const customDefinition = contract.boundRows.length > 0 ? statsValue : null;
+  const proposalContract = snapshot(contract);
+  // A pre-update in-memory draft can survive Fast Refresh without the newer
+  // fingerprint. Accept it only if its canonical assessed date still matches;
+  // approval also checks readiness against the CURRENT metric definition.
+  const staleProposal = (row) => (
+    (row.generatedDate === undefined ? row.sheet?.continuity?.assessedDate !== scenarioDate : row.generatedDate !== scenarioDate)
+    || (row.authoringContract !== undefined && row.authoringContract !== proposalContract)
+  );
+  const coverage = useMemo(() => scenarioStatsCoverage(world, countryOptions, { customKeys, customDefinition }), [world, countryOptions, customKeys, customDefinition]);
   const missing = coverage.filter((row) => row.status !== "ready");
   const [selected, setSelected] = useState("");
   const active = coverage.find((row) => row.code === selected) || coverage[0];
@@ -88,9 +102,31 @@ const ScenarioStatsAuthoringPanel = ({ details, formState, countryOptions, stats
   const currentSheet = world.countryStats?.[activeCode] ?? null;
   const aliasReviewRows = useMemo(() => reviewScenarioNationalMetricAliases(statsValue, currentSheet)
     .filter((row) => row.reviewRequired), [statsValue, currentSheet]);
+  const scenarioAliasReview = useMemo(() => summarizeScenarioNationalMetricAliasReviews(statsValue, world, coverage), [statsValue, world, coverage]);
+  const countriesNeedingReview = useMemo(() => new Set(scenarioAliasReview.rows.map((row) => row.countryCode)), [scenarioAliasReview]);
+  const exportAliasReview = async () => {
+    // Export only a review of existing readings; do not mutate scenario state.
+    try {
+      const csv = serializeScenarioNationalMetricReviewCsv(scenarioAliasReview);
+      const fileName = `${String(scenarioId || "scenario").replace(/[^A-Za-z0-9_-]/g, "-")}-national-statistics-review.csv`;
+      await saveTextToDisk(`\uFEFF${csv}`, fileName, "text/csv;charset=utf-8");
+    } catch (problem) {
+      setError(problem?.message || String(problem));
+    }
+  };
   const [fields, setFields] = useState({});
   const [dirty, setDirty] = useState(false);
   const [proposals, setProposals] = useState({});
+  const economicComparability = useMemo(() => {
+    const names = Object.fromEntries(coverage.map((row) => [row.code, row.name]));
+    const planned = Object.fromEntries(coverage
+      .filter((row) => world.countryStats?.[row.code])
+      .map((row) => [row.code, world.countryStats[row.code]]));
+    for (const [code, proposal] of Object.entries(proposals)) {
+      if (proposal?.sheet && !proposal?.error) planned[code] = proposal.sheet;
+    }
+    return auditScenarioEconomicComparability(planned, names);
+  }, [world.countryStats, coverage, proposals]);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState("");
   const [error, setError] = useState("");
@@ -142,6 +178,9 @@ const ScenarioStatsAuthoringPanel = ({ details, formState, countryOptions, stats
     if (snapshot(fresh.assetStatus?.regionsGeojson) !== snapshot(details.assetStatus?.regionsGeojson)) {
       throw new Error("Scenario map asset changed during authoring; reload the region ledger before saving.");
     }
+    if (snapshot(fresh.assetStatus?.stats) !== snapshot(details.assetStatus?.stats)) {
+      throw new Error("Scenario Statistics definition changed during authoring. Reload before applying values.");
+    }
     // A concurrent map change invalidates every planned territorial component.
     const freshWorld = fresh.data?.world ?? {};
     if (snapshot(freshWorld.regionOwnershipOverrides) !== snapshot(world.regionOwnershipOverrides)
@@ -161,7 +200,12 @@ const ScenarioStatsAuthoringPanel = ({ details, formState, countryOptions, stats
     if (!activeCode || busy) return;
     setBusy(true); setError("");
     try {
-      let base = proposals[activeCode]?.sheet ?? currentSheet;
+      if (customDefinition) assertNoLegacyNativeStatCopies(customDefinition, currentSheet);
+      const draft = proposals[activeCode];
+      if (draft?.sheet && (staleProposal(draft))) {
+        throw new Error("This AI proposal was generated for an earlier starting date or Statistics metric definition. Regenerate it against the current scenario before applying edits.");
+      }
+      let base = draft?.sheet ?? currentSheet;
       if (!base || !base.territorialComponents?.length) {
         // A manual baseline for a country not yet initialized is also mapped,
         // but the author's aggregate numbers are allocated transparently by
@@ -175,9 +219,12 @@ const ScenarioStatsAuthoringPanel = ({ details, formState, countryOptions, stats
           ...Object.fromEntries(NUMBER_FIELDS.filter((key) => fields[key] !== "" && fields[key] !== null && fields[key] !== undefined)
             .map((key) => [key, Number(fields[key])])),
         };
-        base = createReviewedScenarioStatsSheet({ row, basis, date: scenarioDate, customKeys, existing: currentSheet });
+        base = createReviewedScenarioStatsSheet({ row, basis, date: scenarioDate, customKeys, customDefinition, existing: currentSheet });
       }
-      const next = applyScenarioStatsManualEdits({ sheet: base, edits: fields, date: scenarioDate, customKeys });
+      const next = applyScenarioStatsManualEdits({ sheet: base, edits: fields, date: scenarioDate, customKeys, customDefinition });
+      const comparison = auditScenarioEconomicComparability({ ...(world.countryStats || {}), [activeCode]: next });
+      const relevant = comparison.warnings.filter((warning) => warning.lowerCode === activeCode || warning.higherCode === activeCode);
+      if (relevant.length && !window.confirm("Economic comparability review: This country's GDP per resident differs sharply from another country. Fictional disparities may be intentional. Review the common accounting basis; you do not have to change the number. Save it anyway?")) return;
       await applyToScenario({ [activeCode]: next }, { [activeCode]: snapshot(currentSheet) });
       setProposals((previous) => { const result = { ...previous }; delete result[activeCode]; return result; });
       setDirty(false); setProgress(`Saved ${active.name}'s starting Statistics.`);
@@ -202,6 +249,16 @@ const ScenarioStatsAuthoringPanel = ({ details, formState, countryOptions, stats
         const group = queue.slice(cursor, cursor + MAX_BATCH_COUNTRIES);
         const prepared = [];
         for (const country of group) {
+          // One unresolved legacy alias must not prevent other countries in
+          // this paid batch from being proposed and reviewed independently.
+          if (customDefinition) {
+            try { assertNoLegacyNativeStatCopies(customDefinition, world.countryStats?.[country.code]); }
+            catch (problem) {
+              all[country.code] = { ...country, error: problem?.message || String(problem), prior: snapshot(world.countryStats?.[country.code]) };
+              rejected += 1;
+              continue;
+            }
+          }
           const basis = await basisFor(country.code, catalog);
           if (!basis.plan?.length || !basis.macroPlan?.length) {
             all[country.code] = { ...country, error: "No authoritative mapped territory. Requires separate author review.", prior: snapshot(world.countryStats?.[country.code]) };
@@ -223,9 +280,9 @@ const ScenarioStatsAuthoringPanel = ({ details, formState, countryOptions, stats
             const answer = interpreted[item.code];
             if (!answer?.row) throw new Error(answer?.error || "No usable country proposal was returned.");
             const original = world.countryStats?.[item.code] ?? null;
-            const sheet = createReviewedScenarioStatsSheet({ row: answer.row, basis: item.basis, date: scenarioDate, customKeys, existing: original });
-            if (!scenarioStatsRequiredReady(sheet, customKeys)) throw new Error("Incomplete normalized baseline.");
-            all[item.code] = { ...item, sheet, prior: snapshot(original), basisNote: clean(answer.row.basisNote).slice(0, 360), selected: true };
+            const sheet = createReviewedScenarioStatsSheet({ row: answer.row, basis: item.basis, date: scenarioDate, customKeys, customDefinition, existing: original });
+            if (!scenarioStatsRequiredReady(sheet, customKeys, customDefinition)) throw new Error("Incomplete normalized baseline.");
+            all[item.code] = { ...item, sheet, prior: snapshot(original), generatedDate: scenarioDate, authoringContract: proposalContract, basisNote: clean(answer.row.basisNote).slice(0, 360), selected: true };
             accepted += 1;
           } catch (problem) {
             const reason = problem?.message || String(problem);
@@ -250,6 +307,24 @@ const ScenarioStatsAuthoringPanel = ({ details, formState, countryOptions, stats
   const applyReviewed = async () => {
     const selectedRows = Object.values(proposals).filter((row) => row.selected && row.sheet && !row.error);
     if (!selectedRows.length || busy) return;
+    const stale = selectedRows.find(staleProposal);
+    if (stale) {
+      setError(`${stale.name}'s AI proposal was generated for an earlier date or Statistics metric definition. Regenerate it before applying; no scenario values were changed.`);
+      return;
+    }
+    try {
+      for (const row of selectedRows) {
+        if (customDefinition) assertNoLegacyNativeStatCopies(customDefinition, row.sheet);
+        if (!scenarioStatsRequiredReady(row.sheet, customKeys, customDefinition)) {
+          throw new Error(`${row.name}'s AI proposal is incompatible with the current Statistics sheet. Regenerate it before applying.`);
+        }
+      }
+    } catch (problem) { setError(problem?.message || String(problem)); return; }
+    const chosenCodes = new Set(selectedRows.map((row) => row.code));
+    const proposedSelected = Object.fromEntries(selectedRows.map((row) => [row.code, row.sheet]));
+    const applicableComparison = auditScenarioEconomicComparability({ ...(world.countryStats || {}), ...proposedSelected });
+    const relevant = applicableComparison.warnings.filter((warning) => chosenCodes.has(warning.lowerCode) || chosenCodes.has(warning.higherCode));
+    if (relevant.length && !window.confirm("Economic comparability review: Some selected GDP-per-resident readings differ sharply from other countries. These differences may be intentional in a fictional scenario; no edits are required. Continue saving the reviewed figures?")) return;
     if (!window.confirm(`Save ${selectedRows.length} reviewed AI-estimated country baseline(s) into this SCENARIO? Existing authored fields are preserved. This affects future new games, not current campaigns.`)) return;
     setBusy(true); setError("");
     try {
@@ -270,9 +345,30 @@ const ScenarioStatsAuthoringPanel = ({ details, formState, countryOptions, stats
         <div style={{ display: "flex", gap: ".5rem", flexWrap: "wrap", marginTop: ".7rem", fontWeight: 800 }}>
           <span>{coverage.filter((row) => row.status === "ready").length} ready</span><span>· {coverage.filter((row) => row.status === "incomplete").length} incomplete</span><span>· {coverage.filter((row) => row.status === "missing").length} missing</span><span>· {coverage.length} countries on map roster</span>
         </div>
+        {scenarioAliasReview.rows.length > 0 && <div role="note" style={{ border: "1px solid rgba(251,191,36,.35)", borderRadius: 8, padding: ".6rem", display: "flex", flexWrap: "wrap", gap: ".5rem", alignItems: "center", color: "#fcd34d", fontSize: ".75rem" }}>
+          <strong>Legacy Statistics review required</strong>
+          <span data-no-translate>{scenarioAliasReview.countries}</span> <span>countries</span>
+          <span data-no-translate>{scenarioAliasReview.matching}</span> <span>matching duplicates</span>
+          <span data-no-translate>{scenarioAliasReview.conflicting}</span> <span>different readings</span>
+          <button type="button" style={buttonStyle} disabled={busy} onClick={exportAliasReview}>Export review CSV</button>
+          <span>Export only - no values changed.</span>
+        </div>}
         {dateMismatch && <p style={{ color: "#fcd34d" }}>Save the scenario's starting date before generating or saving Statistics.</p>}
-        {statsDefinitionDirty && <p style={{ color: "#fcd34d" }}>Save the customized Statistics sheet definition first, then generate baselines against it.</p>}
+        {statsDefinitionDirty && <div style={{ display: "grid", justifyItems: "start", gap: ".35rem", margin: ".4rem 0" }}>
+          <p style={{ color: "#fcd34d", margin: 0 }}>The Statistics sheet definition has unsaved changes. Save its definition separately before applying country baselines; pending AI proposals will be kept.</p>
+          <button type="button" style={buttonStyle} disabled={busy || statsDefinitionUnavailable || !onSaveStatsDefinition} onClick={async () => {
+            setBusy(true); setError("");
+            try {
+              await onSaveStatsDefinition();
+              setProgress("Saved the Statistics sheet definition. Pending AI proposals are preserved; review and apply them below.");
+            } catch (problem) { setError(problem?.message || String(problem)); }
+            finally { setBusy(false); }
+          }}>Save Statistics sheet definition (keep proposals)</button>
+        </div>}
         {statsDefinitionUnavailable && <p style={{ color: "#fca5a5" }}>The Statistics definition could not be loaded. Reopen this scenario before authoring starting values.</p>}
+        {contract.boundRows.length > 0 && <p style={{ color: "#fcd34d", fontSize: ".75rem" }}>
+          {contract.boundRows.length} card(s) read existing national Statistics rather than storing separate custom values. Missing native readings and legacy copies require author review; they will not be filled with zero or silently replaced.
+        </p>}
         {missing.length > 0 && <p style={{ color: "#cbd5e1", fontSize: ".74rem" }}>Countries with missing/incomplete Statistics will not get fully functional native panels merely by starting a new campaign. Generate or edit their baselines first.</p>}
         <div style={{ display: "flex", gap: ".5rem", flexWrap: "wrap", alignItems: "center" }}>
           <button type="button" style={buttonStyle} disabled={busy || authoringBlocked || !coverage.length} onClick={() => runGeneration()}>Generate {onlyMissing ? "missing" : "all"} - review first</button>
@@ -285,9 +381,29 @@ const ScenarioStatsAuthoringPanel = ({ details, formState, countryOptions, stats
         {error && <p role="alert" style={{ fontSize: ".78rem", color: "#fca5a5", margin: ".6rem 0 .3rem" }}>{error}</p>}
         <p style={{ fontSize: ".72rem", color: "#9ca3af", lineHeight: 1.5, marginBottom: 0 }}>Generation runs up to {MAX_CALLS_PER_RUN} AI requests (at most {MAX_CALLS_PER_RUN * MAX_BATCH_COUNTRIES} countries) per click, with real provider costs. Estimates aren't researched facts. No automatic application. Generate all can propose replacements, but existing authored values remain protected.</p>
       </div>
+      {economicComparability.warnings.length > 0 && <div style={{ ...cardStyle, borderColor: "rgba(251,191,36,.45)" }} role="note">
+        <div style={{ fontWeight: 800, color: "#fcd34d" }}>Economic comparability review</div>
+        <p style={{ color: "#cbd5e1", fontSize: ".74rem", margin: ".35rem 0" }}>
+          This scenario has unusually wide GDP-per-resident differences. In fictional worlds these differences may be intentional. Review the figures and their common accounting basis before approval; no numerical edits are required by this warning, and no values change automatically.
+        </p>
+        <div style={{ fontSize: ".7rem", color: "#abb2bd", marginBottom: ".4rem" }}>GDP accounting basis: <span data-no-translate>{SCENARIO_GDP_ACCOUNTING_UNIT}</span></div>
+        <button type="button" style={{ ...buttonStyle, marginBottom: ".5rem", fontSize: ".72rem" }} onClick={async () => {
+          try {
+            await saveTextToDisk(`\uFEFF${serializeScenarioEconomicComparabilityCsv(economicComparability)}`, `${String(scenarioId || "scenario").replace(/[^A-Za-z0-9_-]/g, "-")}-economic-comparability-review.csv`, "text/csv;charset=utf-8");
+          } catch (problem) { setError(problem?.message || String(problem)); }
+        }}>Export full economic review CSV</button>
+        <div style={{ display: "grid", gap: ".35rem", maxHeight: "12rem", overflow: "auto" }}>
+          {economicComparability.warnings.slice(0, 10).map((warning) => <div key={`${warning.lowerCode}:${warning.higherCode}`} style={{ fontSize: ".73rem", borderTop: "1px solid rgba(255,255,255,.08)", paddingTop: ".3rem" }}>
+            <span data-no-translate>{warning.lowerName} ↔ {warning.higherName}: {warning.ratio.toLocaleString()}× GDP per resident</span>
+          </div>)}
+        </div>
+        {economicComparability.warnings.length > 10 && <div style={{ color: "#abb2bd", fontSize: ".7rem", marginTop: ".3rem" }}><span data-no-translate>{economicComparability.warnings.length - 10}</span> more comparisons require review</div>}
+      </div>}
       {Object.keys(proposals).length > 0 && <div style={cardStyle}>
         <div style={{ fontWeight: 800 }}>Generated proposals - review before applying</div>
         <div style={{ color: "#9ca3af", fontSize: ".72rem", margin: ".4rem 0" }}>{Object.values(proposals).filter((row) => row.sheet).length} valid; {Object.values(proposals).filter((row) => row.error).length} need attention. Proposals are not saved in the scenario yet.</div>
+        <p style={{ color: "#cbd5e1", fontSize: ".72rem", margin: ".3rem 0" }}>You can approve selected AI proposals exactly as generated. No edits are required for fictional economic differences.</p>
+        <button type="button" style={{ ...buttonStyle, marginBottom: ".5rem" }} disabled={busy || authoringBlocked || !Object.values(proposals).some((row) => row.selected && row.sheet)} onClick={applyReviewed}>Apply selected reviewed baselines</button>
         <div style={{ maxHeight: "15rem", overflow: "auto", display: "grid", gap: ".3rem" }}>
           {Object.values(proposals).map((row) => <div key={row.code} style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: ".35rem", padding: ".35rem", borderBottom: "1px solid rgba(255,255,255,.07)" }}>
             <input type="checkbox" disabled={!row.sheet || busy} checked={Boolean(row.selected && row.sheet)} onChange={(event) => setProposals((previous) => ({ ...previous, [row.code]: { ...previous[row.code], selected: event.target.checked } }))}/>
@@ -307,16 +423,20 @@ const ScenarioStatsAuthoringPanel = ({ details, formState, countryOptions, stats
       <div style={cardStyle}>
         <div style={{ fontWeight: 800, marginBottom: ".5rem" }}>Edit one country's starting values</div>
         <select value={activeCode} style={inputStyle} onChange={(event) => setSelected(event.target.value)}>
-          {coverage.map((row) => <option key={row.code} value={row.code}>{row.name} - {row.status}</option>)}
+          {coverage.map((row) => <option key={row.code} value={row.code}>{row.name} - {row.status}{countriesNeedingReview.has(row.code) ? " · review required" : ""}</option>)}
         </select>
         {activeCode && <>
+          {customDefinition && (() => {
+            try { assertNoLegacyNativeStatCopies(customDefinition, currentSheet); return null; }
+            catch (problem) { return <p role="alert" style={{ color: "#fca5a5", fontSize: ".75rem" }}>{problem.message}</p>; }
+          })()}
           <p style={{ fontSize: ".75rem", color: "#a3a3a3" }}>Saved: {summary(currentSheet)}. {proposals[activeCode]?.sheet ? "There's also an unapplied AI proposal above. You can use Save this country to approve your edits, or Apply selected reviewed baselines to save the original AI proposal." : ""}</p>
           {aliasReviewRows.length > 0 && <div role="note" style={{ border: "1px solid rgba(251,191,36,.35)", borderRadius: 8, padding: ".6rem", margin: ".6rem 0", color: "#fcd34d", fontSize: ".72rem" }}>
-            <strong>{aliasReviewRows.some((row) => row.status === "different") ? "Canonical conflict" : "Review"}</strong>
+            <strong>{aliasReviewRows.some((row) => row.status === "different") ? "Canonical conflict" : "Matching duplicates - review required"}</strong>
             {aliasReviewRows.map((item) => <div key={item.key} style={{ marginTop: ".35rem", overflowWrap: "anywhere" }}>
               <span>{item.label}</span> · <code>{item.nativePath}</code> = <span data-no-translate>{item.nativeValue?.toLocaleString()}</span>
               {" ↔ "}<code>{item.customPath}</code> = <span data-no-translate>{item.customValue?.toLocaleString()}</span>
-              {" · "}<span>Review</span>
+              {" · "}<span>{item.status === "different" ? "Different values" : "Matching duplicate"}</span>
             </div>)}
           </div>}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(165px,1fr))", gap: ".6rem" }}>
