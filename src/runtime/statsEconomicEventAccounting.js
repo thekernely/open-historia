@@ -24,12 +24,44 @@ const clockOwnedAbsolutePath = (stats) => {
   return '';
 };
 export const STATS_EVENT_ACCOUNTING_STATES = Object.freeze(['applied', 'unquantified', 'none']);
+export const ECONOMIC_EXPOSURE_CHANNELS = Object.freeze(['credit', 'trade', 'production', 'logistics', 'labor']);
+export const ECONOMIC_EXPOSURE_KINDS = Object.freeze(['direct', 'dependent']);
+
+// Canonical event evidence, NOT a quantified GDP influence or a parallel world
+// ledger. Invalid rows fail closed; they must not silently become "no exposure".
+export const normalizeStatsEconomicExposures = (entries) => {
+  if (!Array.isArray(entries) || entries.length > 8) return null;
+  const seen = new Set();
+  const normalized = [];
+  for (const entry of entries) {
+    if (!record(entry) || typeof entry.polity !== 'string'
+      || typeof entry.channel !== 'string' || typeof entry.exposure !== 'string'
+      || typeof entry.evidence !== 'string'
+      || Object.keys(entry).some((key) =>
+        !['polity', 'channel', 'exposure', 'evidence'].includes(key))) return null;
+    const polity = entry.polity.trim();
+    const evidence = entry.evidence.trim();
+    if (!polity || polity.length > 120
+      || !ECONOMIC_EXPOSURE_CHANNELS.includes(entry.channel)
+      || !ECONOMIC_EXPOSURE_KINDS.includes(entry.exposure)
+      || evidence.length < 32 || evidence.length > 240
+      || seen.has(polity.toLocaleLowerCase('en-US'))) return null;
+    seen.add(polity.toLocaleLowerCase('en-US'));
+    normalized.push({ polity, channel: entry.channel,
+      exposure: entry.exposure, evidence });
+  }
+  return normalized;
+};
 
 export const normalizeStatsEconomicEventAccounting = (value) => {
   if (!record(value) || !STATS_EVENT_ACCOUNTING_STATES.includes(value.status)
     || typeof value.reason !== 'string' || !value.reason.trim()
     || value.reason.trim().length > 240) return null;
-  return { status: value.status, reason: value.reason.trim() };
+  const hasExposures = Object.hasOwn(value, 'exposures');
+  const exposures = hasExposures ? normalizeStatsEconomicExposures(value.exposures) : null;
+  if (hasExposures && (!exposures || (value.status === 'none' && exposures.length))) return null;
+  return { status: value.status, reason: value.reason.trim(),
+    ...(hasExposures ? { exposures } : {}) };
 };
 
 // Called on new jump candidates BEFORE committing an accepted turn. Existing
@@ -38,6 +70,10 @@ export const validateGeneratedStatsEconomicAccounting = (events) => {
   if (!Array.isArray(events)) return '';
   for (let index = 0; index < events.length; index++) {
     const event = events[index];
+    if (record(event?.economicAccounting) && Object.hasOwn(event.economicAccounting, 'exposures')
+      && !normalizeStatsEconomicEventAccounting(event.economicAccounting)) {
+      return `$.events[${index}].economicAccounting.exposures must contain at most eight unique canonical polities with an evidenced credit/trade/production/logistics/labor exposure, or be empty`;
+    }
     const changes = Array.isArray(event?.impacts?.polityChanges) ? event.impacts.polityChanges : [];
     // Reject direct economic updates BEFORE accepting a generated jump, even
     // when an event has no statsEffects. The old absolute-only route otherwise

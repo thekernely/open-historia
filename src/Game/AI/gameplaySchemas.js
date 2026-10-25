@@ -302,6 +302,7 @@ const polityChangeSchema = {
         },
         resolveGrowthInfluenceEventId: { type: "string", description: "End an existing, still-active dated annualRealGrowthDelta influence early by referencing its EXACT canonical source event ID. Only if the source event ID and verified end of its cause are known. This is a standalone effect and changes future accrual, not past GDP." },
         sourceStorylineId: { type: "string", description: "Optional exact active canonical storyline ID that this event is explicitly linked to, with the target country among its participants. Records causal provenance only, not an extra numeric penalty." },
+        assessesUnquantifiedEventId: { type: "string", description: "Optional exact earlier accepted unquantified economy event ID newly assessed for THIS country. Requires sourceStorylineId shared with the original event and a NEW dated, bounded economicShockEstimate. Never backdate the effect or assume other countries are assessed." },
         recoveryOfEventId: { type: "string", description: "For a measured recovery of previously lost national stability, strategic index or independent custom resource: exact original accepted Stats event ID. Restore only documented lost amounts, bounded by all prior recoveries; never use for GDP or residents." },
         debtFinancedOutlayPercentGdp: { type: "number", minimum: 0.0001, maximum: 5, description: "One-off NEW BORROWING for an explicitly quantified procurement, mobilization, relief or reconstruction outlay, as percent of current GDP (0.0001..5; up to 4 decimals). Requires dated, evidenced borrowing; never infer expenses from war, strength, or military spending rating. Increases public debt only, NOT GDP or annual budget balance." },
         debtFinancedOutlayCause: { type: "string", enum: ["procurement", "mobilization", "relief", "reconstruction"] },
@@ -1207,6 +1208,15 @@ const eventSchema = {
       properties: {
         status: { type: "string", enum: ["applied", "unquantified", "none"] },
         reason: { type: "string", description: "Concrete reason or measurement limitation." },
+        exposures: { type: "array", maxItems: 8,
+          description: "Optional country-specific material disruption still NOT numerically modeled. Only name countries with actual causal evidence; never infer from storyline participation or invent GDP losses. Empty means national exposure not established.",
+          items: { type: "object", properties: {
+            polity: { type: "string", description: "Exact canonical polity name, not a region or institution." },
+            channel: { type: "string", enum: ["credit", "trade", "production", "logistics", "labor"] },
+            exposure: { type: "string", enum: ["direct", "dependent"] },
+            evidence: { type: "string", description: "32..240 chars of concrete national disruption or named dependency; never a guessed GDP percentage." },
+          }, required: ["polity", "channel", "exposure", "evidence"], additionalProperties: false },
+        },
       },
       required: ["status", "reason"],
       additionalProperties: false,

@@ -5391,7 +5391,7 @@ const writeRegionSovereign = (world, regionId, sovereign) => {
 const POLITY_LIFECYCLE_STORES = ["countryStats", "countryTags", "internationalReputation", "intelligence", "frontPersonnel"];
 
 const applyPolityAndTerritoryImpacts = ({
-  colors, eventDate = "", eventId = "", polityChanges = [], regionClaims = [], regionControlOps = [], regionTransfers = [], regionCatalog = null, statSheetDefinition = null, eventStorylineIds = [], statsSourceStorylines = [], resolveOwner, world,
+  colors, eventDate = "", eventId = "", polityChanges = [], regionClaims = [], regionControlOps = [], regionTransfers = [], regionCatalog = null, statSheetDefinition = null, eventStorylineIds = [], statsSourceStorylines = [], historicalEvents = [], resolveOwner, world,
 }) => {
   // The net under the turn validator (runtime/territoryBasis.js). A transfer or
   // a control flip that says its own basis is a claim, a threat or a raid moves
@@ -5693,7 +5693,8 @@ const applyPolityAndTerritoryImpacts = ({
               && normalizeArray(row.sourceEventIds).includes(eventId)
               && normalizeArray(eventStorylineIds).includes(row.id)
               && !normalizeArray(world.storylines).some((current) => current?.id === row.id)),
-          ], polity: code, receipts: world.statsEventReceipts })
+          ], polity: code, receipts: world.statsEventReceipts, historicalEvents,
+          resolvePolity: resolveOwner })
         : null;
       if (effect && world.statsEventReceipts?.some((receipt) => receipt.eventId === eventId && receipt.polity === code)) {
         throw new Error("Statistics event has already been applied to this polity");
@@ -5709,6 +5710,7 @@ const applyPolityAndTerritoryImpacts = ({
       if (effect) appendAcceptedStatsReceipt(world, {
         eventId, polity: code, date: eventDate, reason: effect.reason, before, after: merged, process: effect.process, resolution: effect.resolution,
         sourceStorylineId: effect.sourceStorylineId, recoveryOfEventId: effect.recoveryOfEventId,
+        assessesUnquantifiedEventId: effect.assessesUnquantifiedEventId,
       });
       const rep = Number(merged?.indices?.internationalReputation);
       if (Number.isFinite(rep)) {
@@ -5837,7 +5839,7 @@ const applyPolityAndTerritoryImpacts = ({
 export const applyEventImpactsToWorld = ({
   colors = {}, events = [], world, motion = null, round = 0, boardOnlyEventIds = [],
   statsChronology = null, regionCatalog = null, statSheetDefinition = null,
-  statsSourceStorylines = [],
+  statsSourceStorylines = [], historicalEvents = [],
 }) => {
   const boardOnly = new Set(normalizeArray(boardOnlyEventIds).map(normalizeOptionalString).filter(Boolean));
   let nextColors = cloneValue(colors) ?? {};
@@ -5936,6 +5938,7 @@ export const applyEventImpactsToWorld = ({
       statSheetDefinition,
       eventStorylineIds: event.storylineIds,
       statsSourceStorylines,
+      historicalEvents,
       resolveOwner,
       world: nextWorld,
     });

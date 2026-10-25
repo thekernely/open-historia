@@ -1461,19 +1461,15 @@ const buildTemplateVariables = async (bundle, options = {}) => {
   // briefing; never mint a second assessment ledger or schedule another AI call.
   // An unquantified declaration is a review obligation, NOT permission to
   // backdate GDP loss, invent exposure, or relabel an old event as applied.
-  if (taskKey === "jumpForward") {
+  if (JUMP_TASK_KEYS.has(taskKey)) {
     const activeEffects = [
       buildActiveEconomicInfluenceContext(bundle.world, bundle.game?.gameDate),
       buildRecoverableStatsLossContext(bundle.world, bundle.game?.gameDate),
       buildUnquantifiedEconomicAssessmentContext(bundle.world, bundle.events, bundle.game?.gameDate),
     ].filter(Boolean).join("\n\n");
-    if (activeEffects) {
-      for (const key of ["worldSummaryNoCity", "worldSummary"]) {
-        if (typeof variables[key] === "string" && variables[key]) {
-          variables[key] += `\n\n${activeEffects}`;
-        }
-      }
-    }
+    // Jump templates render jumpLiveState, not worldSummary. Carry this native
+    // evidence into that actual output boundary instead of a dead summary key.
+    if (activeEffects) variables.statsCausalBriefing = activeEffects;
   }
   // The diplomatic slice is bounded to the player plus, for a chat task, the
   // polities in the thread; wars are few enough to show whole.
@@ -1550,7 +1546,7 @@ const JUMP_LEVERS = [
   "• politicalActorOps {\"op\":\"<operation>\",\"polityKey\":\"<current full name; the new one if this event also renames it>\",\"argsJson\":\"<one JSON object, as a string>\"}: set-government, replace-leader, form-coalition / leave-coalition, create / update / set-party-*, create / update / set-power-bloc-*, set-political-system, set-strategy, set-traits, set-perceptions / remove-perception. Never guess the decoded argsJson shape: use the one given for the op below. Every change of government, leader or party carries these ops, or it changes only the story; stats.leader and stats.government never carry it.",
   "• polityChanges[].statsEffects: if an event establishes a measurable national GDP or population consequence, give the signed change, typed cause and evidence-based reason. A TEMPORARY strike, supply disruption or enacted economic policy may instead use annualRealGrowthDelta (-20..20 percentage-points of real growth) with durationDays (1..730), gdpCause production/trade/policy, and reason. When the underlying cause demonstrably ENDS earlier, a separate event may resolve the still-active influence using resolveGrowthInfluenceEventId with its exact original canonical event ID and a specific reason. Do not invent IDs or resolve from hopeful announcements; resolution changes only future accrual, never past GDP. The dated native clock applies it only during that period. One-off debt-financed expenditure may use debtFinancedOutlayPercentGdp (0.0001..5 percent of GDP, four decimals) and debtFinancedOutlayCause ONLY when a dated event establishes a quantified NEW borrowing for procurement, mobilization, relief, or reconstruction. It increases debt, not GDP or the standing annual deficit; never convert a military spending rating, troop strength, battle, or general wartime expense into borrowed funds. No event may claim an economic change without the matching typed effect; don't fabricate a percentage from narrative adjectives, proposed budgets, or war alone. Never use polityChanges[].stats to write absolute GDP, growth, inflation, unemployment, debt, budget, population, or GDP-sector figures during generated time skips. A documented partial restoration of a past stability, strategic index or custom national resource loss may use recoveryOfEventId with the EXACT original accepted Statistics event ID; never exceed the remaining unrecovered loss, and do not use this to reverse GDP, population or unmeasured damage. For supported national stability or an existing strategic index, use stabilityDelta or indexDeltas with bounded signed point changes and evidence-based reason; never invent a missing index or change a derived macro reading. For custom scenario-owned numeric metrics, use customStatDeltas for bounded, signed changes to already initialized, independent keys; a native-bound presentation card is never writable. Use the scenario sheet units, bounds, and precision; never combine relative custom deltas and absolute customStats in one event.",
   "• For concrete country-specific material disruption from an existing active storyline OR a new active storyline explicitly linked to this accepted event, you MAY propose a finite negative annualRealGrowthDelta as an explicitly labeled economicShockEstimate. Give sourceStorylineId, gdpCause, durationDays and the specific credit/trade/production/logistics/labor exposure evidence; estimated direct effects are limited to -12pp, dependent -5pp, at most 90 days, never GDP stock loss. Never infer exposure from storyline pressure or assume all participants are affected. If exposure is unknown, use unquantified; do not invent a measured percentage.",
-  "• economicAccounting: every event tagged Economy must state {status,reason}: applied ONLY with polityChanges[].statsEffects; unquantified for genuine economic consequences without trustworthy numerical evidence; none for discussion/proposals with no enacted economic change. Give a specific reason, do not invent percentages. An event with GDP/population/growth or measured debt-financed outlay statsEffects must declare applied even without Economy tag; strategic-only typed changes do not require economicAccounting unless Economy-tagged. This is an explicit audit, not permission to claim a numerical effect without a typed mutation.",
+  "• economicAccounting: every event tagged Economy must state {status,reason}: applied ONLY with polityChanges[].statsEffects; unquantified for genuine economic consequences without trustworthy numerical evidence; none for discussion/proposals with no enacted economic change. Where the event directly documents a named country\'s material economic disruption but its magnitude is unresolved, record economicAccounting.exposures with that canonical polity name, credit/trade/production/logistics/labor channel, direct/dependent exposure and concrete evidence; do not include merely associated storyline participants. This is an audit of unmodeled consequences, NOT a GDP mutation. Give a specific reason, do not invent percentages. An event with GDP/population/growth or measured debt-financed outlay statsEffects must declare applied even without Economy tag; strategic-only typed changes do not require economicAccounting unless Economy-tagged. This is an explicit audit, not permission to claim a numerical effect without a typed mutation.",
   "• Always return politicalClaims: transient validation only, never world state. One line per event that COMPLETES a national Political World structural change: eventNumber~polity~effectsCSV. Effects: election (final national result), government, coalition, leadership, system, parties (founding/split/merger/reorganization). Use the same polityKey as that event's politicalActorOps (new key after a same-event rename). No line for campaigns, policy, subnational politics, references or later consequences. Empty string when none. Claims never replace politicalActorOps.",
   POLITICAL_ACTOR_GENERATED_ARG_GUIDANCE,
   `When an election or a new government is the first settled politics of a young polity, set up its parties, governing force, system, goals and traits in the same event; while results are still being counted, narrate the count, not a result. Traits use only these keys: ${POLITICAL_TRAIT_KEYS.join(", ")}. Never use set-political-pressures or set-behavioral-disposition.`,
@@ -2799,6 +2795,11 @@ const buildJumpLiveState = async ({ variables = {}, lookups = null, reminders = 
   // slice (nativeWorldDirector.js), built per segment.
   const director = normalizeString(variables.worldInitiativeContext);
   if (director) blocks.push(director);
+  // The authoritative jump prompt is assembled from these live-state blocks;
+  // summary variables alone are not shown. Keep source-linked, bounded
+  // economic evidence adjacent to the director's live storyline picture.
+  const statsContinuity = normalizeString(variables.statsCausalBriefing);
+  if (statsContinuity) blocks.push(`[National Statistics Continuity]\n${statsContinuity}`);
   blocks.push(buildWarLedgerDirective(variables));
   blocks.push(buildDiplomaticLedgerDirective(variables));
 
@@ -9189,7 +9190,7 @@ const applySimulationResult = async ({
     stopDate: nextGame.gameDate, round: nextGame.round,
   });
   const impactMerge = applyEventImpactsToWorld({
-    statsSourceStorylines,
+    statsSourceStorylines, historicalEvents: priorEvents,
     statSheetDefinition: customStatDefinitionForEffects,
     colors: baseColors,
     events: freshEvents,
@@ -19461,7 +19462,7 @@ export const applyGameMasterPreview = async (preview) => {
       round: bundle.game.round || 0,
     });
     const impactMerge = applyEventImpactsToWorld({
-      statsSourceStorylines: gmStatsSources,
+      statsSourceStorylines: gmStatsSources, historicalEvents: priorEvents,
       statSheetDefinition: customStatsEffectsPresent ? await loadStatSheetDefinition() : null,
       colors,
       events,

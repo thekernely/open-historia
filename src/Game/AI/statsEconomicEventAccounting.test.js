@@ -142,3 +142,13 @@ test('explicitly estimated systemic pressure is an applied typed mutation, never
   assert.match(verdict(event(assessed('unquantified'),[crisis])).error,/must be applied/);
   assert.match(verdict(event(assessed('none','No measurable disruption'),[crisis])).error,/must be applied/);
 });
+test('generated Economy events expose bounded qualitative national coverage without a new GDP writer', () => {
+  for (const key of ['jumpForward','autoJumpForward']) {
+    const schema = GAMEPLAY_TOOLS[key].schema.properties.events.items.properties.economicAccounting;
+    assert.equal(schema.properties.exposures.type,'array');
+    assert.equal(schema.properties.exposures.maxItems,8);
+    assert.deepEqual(schema.properties.exposures.items.required,['polity','channel','exposure','evidence']);
+    assert.equal(schema.properties.exposures.items.additionalProperties,false);
+  }
+  assert.ok(JSON.stringify(GAMEPLAY_TOOLS.jumpForward.schema).length < 28200);
+});

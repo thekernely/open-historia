@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { applyEventImpactsToWorld, normalizeEvents, normalizeWorldState } from "./gameState.js";
 import { mergeCountryStatPatch } from "./countryStats.js";
 import { applyWorldStorylineUpdates, projectNewStatsStorylineSources } from "../Game/AI/nativeWorldDirector.js";
+import { buildUnquantifiedEconomicAssessmentContext } from "./statsUnquantifiedAssessmentContext.js";
 
 const sheet = (multiplier = 1) => mergeCountryStatPatch(null, {
   territorialComponents: [
@@ -316,4 +317,145 @@ test('a newly accepted same-day crisis may source one estimate before the storyl
     world: initial, events: [source],
     statsSourceStorylines: [{ ...projected[0], startedDate: '1912-03-01' }],
   }), /storyline/i);
+});
+
+test('later national crisis assessments reference a prior unquantified event exactly once per country', () => {
+  const baseline = world();
+  baseline.storylines = [{
+    id: 'credit-crisis-review', kind: 'economy', status: 'active', title: 'Credit collapse',
+    startedDate: '1912-01-17', participants: ['Alba', 'Borealia'],
+    sourceEventIds: ['initial-credit-loss'], pressure: 80, momentum: 12,
+  }];
+  const original = { ...event([], 'initial-credit-loss'), date: '1912-01-17',
+    storylineIds: ['credit-crisis-review'], tags: ['Economy'],
+    economicAccounting: { status: 'unquantified',
+      reason: 'International clearing banks stopped settlements, but national GDP exposures were not established.' } };
+  const estimate = { basis: 'simulation-estimate', channel: 'credit', exposure: 'direct',
+    evidence: 'Alba merchants lost functioning letter-of-credit settlement, preventing confirmed commercial shipments.' };
+  const change = { sourceStorylineId: 'credit-crisis-review',
+    assessesUnquantifiedEventId: 'initial-credit-loss',
+    annualRealGrowthDelta: -5, durationDays: 30, gdpCause: 'trade',
+    economicShockEstimate: estimate,
+    reason: 'New evidence of thirty days of blocked Alba merchant settlements warrants an uncertain national pressure.' };
+  const followup = { ...event([{code:'Alba', statsEffects:change}], 'credit-loss-alba'),
+    storylineIds:['credit-crisis-review'] };
+  const apply = (w, current, history) => applyEventImpactsToWorld({
+    world: w, events: [current], historicalEvents: history,
+  }).world;
+  assert.throws(() => apply(baseline, followup, []), /follow-up/i,
+    'an uncommitted or unknown original cannot authorize assessment');
+  const first = apply(baseline, followup, [original]);
+  assert.equal(first.statsEventReceipts[0].assessesUnquantifiedEventId, original.id);
+  assert.equal(first.statsEventReceipts[0].polity, 'Alba');
+  assert.equal(first.countryStats.Alba.continuity.economicInfluences[0].annualRealGrowthDelta, -5);
+  assert.equal(first.countryStats.Borealia.continuity?.economicInfluences?.length ?? 0, 0);
+  const saved = normalizeWorldState(JSON.parse(JSON.stringify(first)));
+  assert.equal(saved.statsEventReceipts[0].assessesUnquantifiedEventId, original.id,
+    'assessment identity survives canonical save normalization');
+  const brief = buildUnquantifiedEconomicAssessmentContext(saved, [original, followup], '1912-03-01');
+  assert.match(brief, /receiptBackedAssessedPolities=\["Alba"\]/);
+  assert.match(brief, /Borealia/);
+  assert.match(brief, /1 of 1 canonical declarations/,
+    'the original global declaration remains an incomplete review, not globally closed');
+
+  const second = { ...event([{ code:'Borealia', statsEffects: {
+    ...change, annualRealGrowthDelta:-3,
+    economicShockEstimate: { ...estimate, exposure: 'dependent',
+      evidence: 'Borealia exporters lost a documented settlement route through Alba merchant credit intermediaries.' },
+    reason:'Fresh dependent settlement evidence supports a thirty day Borealia credit pressure.',
+  }}], 'credit-loss-borealia'), storylineIds:['credit-crisis-review'] };
+  const both = apply(first, second, [original, followup]);
+  assert.deepEqual(both.statsEventReceipts.map((r) => r.polity).sort(), ['Alba','Borealia']);
+  const duplicate = { ...followup, id:'credit-loss-alba-again' };
+  assert.throws(() => apply(both, duplicate, [original, followup, second]), /follow-up/i,
+    'a later event cannot assess the same original cause twice for one country');
+  const noReceipt = {...both, statsEventReceipts: []};
+  assert.throws(() => apply(noReceipt, duplicate, [original, followup, second]), /follow-up/i,
+    'retained historical event IDs prevent duplicate assessment after receipt pruning');
+  assert.throws(() => apply(baseline, followup, [{...original, economicAccounting:{
+    status:'none', reason:'No verified national economy event occurred during negotiations.'}}]), /follow-up/i);
+  assert.throws(() => apply(baseline, followup, [{...original, storylineIds:['other-crisis']}]), /follow-up/i);
+  assert.throws(() => apply(baseline, followup, [{...original, date:'1912-02-20'}]), /follow-up/i);
+  assert.throws(() => apply({ ...baseline, storylines: [{ ...baseline.storylines[0],
+    startedDate: '1912-01-18' }] }, followup, [original]), /follow-up/i,
+    'a causal storyline that began after the original event cannot be reused');
+  assert.throws(() => apply(baseline, followup, [original, original]), /follow-up/i);
+
+  // Mixed event: a measured positive intervention in another polity does not
+  // settle Alba's separately recorded, still-unquantified credit disruption.
+  const exposure = { polity: 'Alba', channel: 'credit', exposure: 'direct',
+    evidence: 'Alba merchant banks suspended letters of credit for export settlement despite outside relief.' };
+  const mixed = { ...original, economicAccounting: {
+    status: 'applied', reason: 'An emergency barter programme was funded, while Alba bank disruption remained unmeasured.',
+    exposures: [exposure],
+  }};
+  const mixedResult = apply(baseline, followup, [mixed]);
+  assert.equal(mixedResult.statsEventReceipts[0].assessesUnquantifiedEventId, original.id);
+  const differentCountryOnly = { ...mixed, economicAccounting: {
+    ...mixed.economicAccounting, exposures: [{...exposure, polity: 'Borealia'}],
+  }};
+  assert.throws(() => apply(baseline, followup, [differentCountryOnly]), /follow-up/i);
+});
+
+test('a dated national crisis assessment follows canonical polity identity after a rename', () => {
+  const initial = world();
+  const oldName = 'Alba', newName = 'New Alba';
+  initial.countryStats[newName] = initial.countryStats[oldName];
+  delete initial.countryStats[oldName];
+  initial.polityOverrides[newName] = { code: newName, name: newName, formerNames: [oldName] };
+  delete initial.polityOverrides[oldName];
+  initial.storylines = [{
+    id: 'legacy-credit-crisis', title: 'Old Alba credit crisis', kind: 'economy',
+    startedDate: '1912-01-17', status: 'active',
+    participants: [oldName], sourceEventIds: ['legacy-crisis-event'],
+  }];
+  const original = {
+    ...event([], 'legacy-crisis-event'), date: '1912-01-17',
+    storylineIds: ['legacy-credit-crisis'], tags: ['Economy'],
+    economicAccounting: {
+      status: 'unquantified', reason: 'Clearing suspensions disrupted the former Alba economic area without a measured rate.',
+      exposures: [{ polity: oldName, channel: 'credit', exposure: 'direct',
+        evidence: 'Merchants in Alba could not settle commercial credits through their national clearing banks.' }],
+    },
+  };
+  const change = {
+    sourceStorylineId: 'legacy-credit-crisis', assessesUnquantifiedEventId: original.id,
+    annualRealGrowthDelta: -3, durationDays: 30, gdpCause: 'trade',
+    economicShockEstimate: {
+      basis: 'simulation-estimate', channel: 'credit', exposure: 'direct',
+      evidence: 'Former Alba merchants lost trade clearing services for a documented thirty-day interval.',
+    },
+    reason: 'Dated documented clearing failures now support a bounded national estimate.',
+  };
+  const reassess = {
+    ...event([{ code: newName, statsEffects: change }], 'alba-later-assessment'),
+    storylineIds: ['legacy-credit-crisis'],
+  };
+  const accepted = applyEventImpactsToWorld({
+    world: initial, events: [reassess], historicalEvents: [original],
+  }).world;
+  assert.equal(accepted.statsEventReceipts[0].polity, newName);
+  assert.equal(accepted.statsEventReceipts[0].assessesUnquantifiedEventId, original.id);
+  assert.equal(accepted.countryStats[newName].continuity.economicInfluences[0].annualRealGrowthDelta, -3);
+  assert.equal(accepted.countryStats[oldName], undefined, 'no phantom old account');
+  const mixedOrigin = { ...original, economicAccounting: {
+    ...original.economicAccounting, status: 'applied',
+    reason: "Another national effect was measured, while the renamed country's credit disruption remained unresolved.",
+  } };
+  const mixedAssessment = applyEventImpactsToWorld({
+    world: initial, events: [reassess], historicalEvents: [mixedOrigin],
+  }).world;
+  assert.equal(mixedAssessment.statsEventReceipts[0].assessesUnquantifiedEventId, original.id,
+    'historical exposure names are resolved before testing a mixed applied event');
+  assert.throws(() => applyEventImpactsToWorld({
+    world: accepted, events: [{ ...reassess, id: 'duplicate-country-assessment' }],
+    historicalEvents: [original, reassess],
+  }), /follow-up/i, 'rename aliases do not permit duplicate country closure');
+  const unrelated = {
+    ...event([{ code: 'Borealia', statsEffects: change }], 'unrelated-claim'),
+    storylineIds: ['legacy-credit-crisis'],
+  };
+  assert.throws(() => applyEventImpactsToWorld({
+    world: initial, events: [unrelated], historicalEvents: [original],
+  }), /storyline|follow-up/i, 'the rename must not authorize unrelated countries');
 });

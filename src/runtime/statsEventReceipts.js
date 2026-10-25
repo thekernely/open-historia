@@ -47,6 +47,11 @@ export const normalizeStatsEventReceipts = (value) => Array.isArray(value)
       ...(validStorylineId(r.sourceStorylineId) ? { sourceStorylineId: r.sourceStorylineId } : {}),
       ...(validStorylineId(r.recoversEventId) && r.recoversEventId !== r.eventId
         ? { recoversEventId: r.recoversEventId } : {}),
+      ...(validStorylineId(r.assessesUnquantifiedEventId)
+        && r.assessesUnquantifiedEventId !== r.eventId && validStorylineId(r.sourceStorylineId)
+        && validProcess(r.process) && r.process.sourceStorylineId === r.sourceStorylineId
+        && normalizeStatsCrisisEstimate(r.process.economicShockEstimate)
+        ? { assessesUnquantifiedEventId: r.assessesUnquantifiedEventId } : {}),
       ...(validProcess(r.process) ? { process: {
         eventId: r.process.eventId, startDate: r.process.startDate,
         endDate: r.process.endDate, annualRealGrowthDelta: r.process.annualRealGrowthDelta,
@@ -93,7 +98,7 @@ export const remainingStatsRecoveryLosses = (receipts, { eventId, polity, date }
   }
   return remaining;
 };
-export const appendAcceptedStatsReceipt = (world, { eventId, polity, date, reason, before, after, process = null, resolution = null, sourceStorylineId = null, recoveryOfEventId = null }) => {
+export const appendAcceptedStatsReceipt = (world, { eventId, polity, date, reason, before, after, process = null, resolution = null, sourceStorylineId = null, recoveryOfEventId = null, assessesUnquantifiedEventId = null }) => {
   if (!isCanonicalGameDate(date) || !eventId || !polity) throw new Error("Unidentified accepted Statistics event");
   const existing = normalizeStatsEventReceipts(world.statsEventReceipts);
   if (existing.some((r) => r.eventId === eventId && r.polity === polity)) {
@@ -127,11 +132,19 @@ export const appendAcceptedStatsReceipt = (world, { eventId, polity, date, reaso
     || recoveryOfEventId === eventId || process || resolution || !changes.length)) {
     throw new Error("Invalid source-linked Statistics recovery receipt");
   }
+  if (assessesUnquantifiedEventId !== null && (!validStorylineId(assessesUnquantifiedEventId)
+    || assessesUnquantifiedEventId === eventId || !validStorylineId(sourceStorylineId)
+    || !validProcess(process) || !normalizeStatsCrisisEstimate(process?.economicShockEstimate)
+    || existing.some((row) => row.polity === polity
+      && row.assessesUnquantifiedEventId === assessesUnquantifiedEventId))) {
+    throw new Error("Invalid or duplicate country-specific unquantified economic assessment receipt");
+  }
   if (!changes.length && !validProcess(process) && !validResolution(resolution)) {
     throw new Error("Statistics effect produced no observable numerical change");
   }
   world.statsEventReceipts = normalizeStatsEventReceipts([...existing, { eventId, polity, date, reason,
     ...(sourceStorylineId ? { sourceStorylineId } : {}),
     ...(recoveryOfEventId ? { recoversEventId: recoveryOfEventId } : {}),
+    ...(assessesUnquantifiedEventId ? { assessesUnquantifiedEventId } : {}),
     ...(validProcess(process) ? { process } : {}), ...(validResolution(resolution) ? { resolution } : {}), changes }]);
 };

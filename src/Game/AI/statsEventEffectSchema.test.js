@@ -79,3 +79,16 @@ test('both provider transports expose an explicitly estimated, bounded crisis me
   }
   assert.ok(JSON.stringify(GAMEPLAY_TOOLS.jumpForward.schema).length<28200);
 });
+
+test('new country-specific estimates may name an exact previously unquantified event without weakening the schema', () => {
+  for (const schema of [JUMP_FORWARD_SCHEMA, GAME_MASTER_SCHEMA]) {
+    const stat = effects(schema);
+    assert.equal(stat.properties.assessesUnquantifiedEventId.type, 'string');
+    assert.equal(stat.required.includes('assessesUnquantifiedEventId'), false);
+    if (schema === GAME_MASTER_SCHEMA) {
+      assert.match(stat.properties.assessesUnquantifiedEventId.description, /NEW dated, bounded economicShockEstimate/);
+    }
+    assert.equal(stat.additionalProperties, false);
+  }
+  assert.ok(JSON.stringify(GAMEPLAY_TOOLS.jumpForward.schema).length < 28200);
+});

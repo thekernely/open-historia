@@ -9,7 +9,8 @@ import { useActiveFeatures } from "../../runtime/gameFeatures.js";
 import { groupsOnTerritory } from "../../runtime/groups.js";
 import { extendBounds } from "./eventFocus.js";
 import { showEventOnTimeline, warTimelineEventId, warTimelineEventOpensWar } from "./turnReveal.js";
-import { isPolityLandless, readGameData, readWorldState, readWorldStateView, writeWorldState } from "../../runtime/gameState.js";
+import { isPolityLandless, readEventsState, readGameData, readWorldState, readWorldStateView, writeWorldState } from "../../runtime/gameState.js";
+import { buildCountryEconomicCoverage } from "../../runtime/statsEconomicCoverage.js";
 import { useLibraryState } from "../../runtime/library.js";
 import { useCountryDisplayName } from "../../runtime/polityNames.js";
 import { resolvePolityIdentity } from "../../runtime/polityIdentity.js";
@@ -1922,6 +1923,10 @@ const StatsPaneBody = ({ active, mapRef, requestedTarget = "", onConsumeTarget }
     const [polity, setPolity] = useState(null); // world.polityOverrides[target]
     const [worldSnapshot, setWorldSnapshot] = useState(null);
     const worldSnapshotRef = useRef(null);
+    // Qualify native GDP/unemployment readings only on the Economy tab. The
+    // event log owns the evidence; do not mirror it into canonical world state.
+    const [economicEventHistory, setEconomicEventHistory] = useState(null);
+    const [economicHistoryRetry, setEconomicHistoryRetry] = useState(0);
     const statsLoadRef = useRef({ sequence: 0, controller: null });
     // The sheet this pane is generating itself: { code, sequence } while one runs.
     const generatingRef = useRef(null);
@@ -2441,6 +2446,24 @@ const StatsPaneBody = ({ active, mapRef, requestedTarget = "", onConsumeTarget }
             });
     }, [active, targetCountry, player.code, worldSnapshot]);
 
+    // Do not fetch long event history for Politics, Diplomacy or Ranking.
+    // A dated read-only audit is needed only when the player sees native GDP.
+    useEffect(() => {
+        if (!active || statsView !== "economy" || !player.date) return undefined;
+        let cancelled = false;
+        setEconomicEventHistory({ status: "loading", gameKey: player.gameKey, date: player.date });
+        readEventsState({ force: false })
+            .then((events) => {
+                if (!cancelled) setEconomicEventHistory({ status: "ready", gameKey: player.gameKey, date: player.date, events });
+            })
+            .catch(() => {
+                // A failed audit read is UNKNOWN, not evidence of zero unmodeled
+                // economic consequences. Keep the failure visible on this tab.
+                if (!cancelled) setEconomicEventHistory({ status: "error", gameKey: player.gameKey, date: player.date });
+            });
+        return () => { cancelled = true; };
+    }, [active, statsView, player.gameKey, player.date, economicHistoryRetry]);
+
     // Opening the pane on a polity is what gets that polity its numbers: the
     // stat sheet and, once the sheet is in, a first reading of its
     // intelligence service. Which view is open decides who pays for them.
@@ -2590,6 +2613,16 @@ const StatsPaneBody = ({ active, mapRef, requestedTarget = "", onConsumeTarget }
     const resolvedTargetKey = targetCountry && polityIndex
         ? (polityIndex.canonicalKey(targetCountry) || targetCountry)
         : targetCountry;
+    const countryEconomicCoverage = useMemo(() => buildCountryEconomicCoverage({
+        world: worldSnapshot,
+        events: economicEventHistory?.status === "ready"
+            && economicEventHistory.gameKey === player.gameKey
+            && economicEventHistory.date === player.date ? economicEventHistory.events : null,
+        polity: resolvedTargetKey || targetCountry,
+        viewerPolity: player.code,
+        date: player.date,
+        maxRows: 2,
+    }), [worldSnapshot, economicEventHistory, player.gameKey, player.date, player.code, resolvedTargetKey, targetCountry]);
     const headerSheet = sheet
         || worldSnapshot?.countryStats?.[resolvedTargetKey]
         || worldSnapshot?.countryStats?.[targetCountry]
@@ -2883,6 +2916,40 @@ const StatsPaneBody = ({ active, mapRef, requestedTarget = "", onConsumeTarget }
 
             {statsView === "economy" && !statSheetDefinitionError && sheet && state.status === "ready" && (
                 <>
+                {!statSheetDefinition.custom && economicEventHistory?.status === "error"
+                    && economicEventHistory.gameKey === player.gameKey
+                    && economicEventHistory.date === player.date && (
+                    <aside role="alert" style={{ background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.3)", borderRadius: "9px", marginTop: "0.85rem", padding: "0.75rem 0.85rem", color: "#d9dfdf", fontSize: "0.73rem", lineHeight: 1.5 }}>
+                        Economic event history could not be loaded. National crisis coverage is unknown, and the displayed GDP or employment figures may omit consequences that were never quantified.
+                        <button type="button" className="oh-tap-row"
+                            onClick={() => setEconomicHistoryRetry((current) => current + 1)}
+                            style={{ background: "none", border: "none", color: "#93c5fd", cursor: "pointer", display: "block", fontSize: "0.74rem", fontWeight: 700, marginTop: "0.4rem", padding: 0 }}>
+                            Retry event history
+                        </button>
+                    </aside>
+                )}
+                {!statSheetDefinition.custom && countryEconomicCoverage.status !== "none" && (
+                    <aside role="note" style={{ background: "rgba(245,158,11,0.07)", border: "1px solid rgba(245,158,11,0.28)", borderRadius: "9px", marginTop: "0.85rem", padding: "0.75rem 0.85rem", color: "#d9dfdf", fontSize: "0.73rem", lineHeight: 1.5 }}>
+                        <strong style={{ color: "#fbbf74", display: "block", fontSize: "0.78rem", marginBottom: "0.3rem" }}>Economic coverage incomplete</strong>
+                        {countryEconomicCoverage.confirmedCount > 0 ? (
+                            <>
+                                {countryEconomicCoverage.confirmedCount} documented national disruption(s) have no accepted numerical estimate. GDP growth and unemployment reflect the modeled baseline, not these unresolved consequences.
+                                {countryEconomicCoverage.confirmed.map((row) => (
+                                    <div key={row.eventId} style={{ marginTop: "0.4rem", paddingLeft: "0.5rem", borderLeft: "2px solid rgba(245,158,11,0.4)" }}>
+                                        <span data-no-translate>{row.title}</span> ({row.channel}, {row.exposure}): <span data-no-translate>{row.evidence}</span>
+                                    </div>
+                                ))}
+                            </>
+                        ) : (
+                            <>The active crisis storyline links this polity to {countryEconomicCoverage.potentialCount} unresolved economic event(s), but country-specific disruption has not been verified. The displayed GDP and employment figures are not proof of zero crisis impact.</>
+                        )}
+                        {countryEconomicCoverage.potentialCount > 0 && countryEconomicCoverage.confirmedCount > 0 && (
+                            <div style={{ marginTop: "0.4rem", color: "#b8bfc1" }}>
+                                Another {countryEconomicCoverage.potentialCount} associated event(s) have no verified country-specific exposure.
+                            </div>
+                        )}
+                    </aside>
+                )}
                 {visibleNationalDashboard ? (
                     <>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "0.5rem", marginTop: "1rem" }}>

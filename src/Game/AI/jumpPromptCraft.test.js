@@ -189,3 +189,18 @@ test("the live records go into the template, and the request ends on the writing
     assert.ok(!gameplaySource.includes(gone), `${gone} is appended again`);
   }
 });
+test("native financial crisis evidence is actually placed in both jump live-state prompts", () => {
+  // Oct 25 live playtest: attaching the context to worldSummary did nothing
+  // because neither current jump template renders that variable.
+  for (const task of JUMP_TASKS) {
+    assert.ok(template(task).includes(LIVE_STATE), task);
+    assert.ok(!template(task).includes('${worldSummary}'), task);
+    assert.ok(!template(task).includes('${worldSummaryNoCity}'), task);
+  }
+  assert.match(gameplaySource, /const JUMP_TASK_KEYS = new Set\(\["jumpForward", "autoJumpForward"\]\)/);
+  assert.match(gameplaySource, /buildUnquantifiedEconomicAssessmentContext\(bundle\.world, bundle\.events, bundle\.game\?\.gameDate\)/);
+  assert.match(gameplaySource, /variables\.statsCausalBriefing = activeEffects/);
+  assert.match(gameplaySource, /const statsContinuity = normalizeString\(variables\.statsCausalBriefing\)/);
+  assert.ok(gameplaySource.includes('blocks.push(`[National Statistics Continuity]\\n${statsContinuity}`)'));
+  assert.match(gameplaySource, /jumpLiveState: await buildJumpLiveState\(/);
+});

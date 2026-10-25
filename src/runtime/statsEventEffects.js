@@ -6,18 +6,25 @@
 
 import { addGameDays, compareGameDates, isCanonicalGameDate } from "./gameDates.js";
 import { normalizeStatsCrisisEstimate, estimateGrowthLimit } from "./statsCrisisEstimate.js";
+import { normalizeStatsEconomicEventAccounting } from "./statsEconomicEventAccounting.js";
 import { remainingStatsRecoveryLosses } from "./statsEventReceipts.js";
 import { normalizeCountryStatEconomicInfluences, COUNTRY_STATS_MAX_ECONOMIC_INFLUENCES } from "./countryStats.js";
 import { MAX_STAT_INDICES, MAX_CUSTOM_STATS, STAT_INDEX_KEY_PATTERN, normalizeStatSheetDefinition } from "./statIndexDefinitions.js";
 
-const EFFECT_KEYS = new Set(["populationChange", "populationCause", "gdpChangePercent", "gdpCause", "annualRealGrowthDelta", "durationDays", "stabilityDelta", "indexDeltas", "customStatDeltas", "resolveGrowthInfluenceEventId", "recoveryOfEventId", "sourceStorylineId", "debtFinancedOutlayPercentGdp", "debtFinancedOutlayCause", "economicShockEstimate", "reason"]);
+const EFFECT_KEYS = new Set(["populationChange", "populationCause", "gdpChangePercent", "gdpCause", "annualRealGrowthDelta", "durationDays", "stabilityDelta", "indexDeltas", "customStatDeltas", "resolveGrowthInfluenceEventId", "recoveryOfEventId", "sourceStorylineId", "debtFinancedOutlayPercentGdp", "debtFinancedOutlayCause", "economicShockEstimate", "assessesUnquantifiedEventId", "reason"]);
 const POPULATION_CAUSES = new Set(["births", "deaths", "immigration", "emigration"]);
 const GDP_CAUSES = new Set(["production", "destruction", "trade", "policy"]);
 const DEBT_OUTLAY_CAUSES = new Set(["procurement", "mobilization", "relief", "reconstruction"]);
 const has = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
 const record = (value) => value && typeof value === "object" && !Array.isArray(value);
 
-export const planStatsEventEffect = ({ effect, sheet, absoluteStats = null, statSheetDefinition = null, eventId = "", eventDate = "", eventStorylineIds = [], storylines = [], polity = "", receipts = [] } = {}) => {
+export const planStatsEventEffect = ({ effect, sheet, absoluteStats = null, statSheetDefinition = null, eventId = "", eventDate = "", eventStorylineIds = [], storylines = [], polity = "", receipts = [], historicalEvents = [], resolvePolity = (name) => name } = {}) => {
+  // The event applier already owns a rename-safe polity resolver. Reuse it for
+  // historical source/receipt identity instead of comparing displayed names.
+  const sameCountry = (left, right) => typeof left === "string" && !!left.trim()
+    && typeof right === "string" && !!right.trim()
+    && String(resolvePolity(left)).trim().toLocaleLowerCase("en-US")
+      === String(resolvePolity(right)).trim().toLocaleLowerCase("en-US");
   if (!record(effect) || !record(sheet) || typeof eventId !== "string" || !eventId.trim() || eventId.length > 128) {
     throw new Error("Accepted Statistics effect requires an event identity and canonical sheet");
   }
@@ -34,11 +41,11 @@ export const planStatsEventEffect = ({ effect, sheet, absoluteStats = null, stat
   if (has(effect, "sourceStorylineId")) {
     const id = effect.sourceStorylineId;
     const associated = Array.isArray(eventStorylineIds) && eventStorylineIds.includes(id);
-    const source = Array.isArray(storylines) ? storylines.find((row) => row?.id === id) : null;
+    const matches = Array.isArray(storylines) ? storylines.filter((row) => row?.id === id) : [];
+    const source = matches.length === 1 ? matches[0] : null;
     const participants = source?.participants;
-    const participates = Array.isArray(participants) && typeof polity === "string"
-      && polity.trim() && participants.some((name) => typeof name === "string"
-        && name.trim().toLocaleLowerCase() === polity.trim().toLocaleLowerCase());
+    const participates = Array.isArray(participants)
+      && participants.some((name) => sameCountry(name, polity));
     if (typeof id !== "string" || !id.trim() || id.length > 128
       || !associated || source?.status !== "active" || !participates) {
       throw new Error("Statistics cause must reference an active, event-linked storyline involving the target polity");
@@ -67,6 +74,45 @@ export const planStatsEventEffect = ({ effect, sheet, absoluteStats = null, stat
     || (shockEstimate.channel === "credit" || shockEstimate.channel === "trade"
       ? effect.gdpCause !== "trade" : effect.gdpCause !== "production"))) {
     throw new Error("Unmeasured systemic shock estimate requires a bounded, dated, source-linked production or trade pressure");
+  }
+  // Closing a national assessment does not close an entire global crisis.
+  // Only a new *estimated* country-specific influence may account for one
+  // previously unquantified event. The old declaration stays historical.
+  let assessesUnquantifiedEventId = null;
+  if (has(effect, "assessesUnquantifiedEventId")) {
+    const originalId = effect.assessesUnquantifiedEventId;
+    const matches = Array.isArray(historicalEvents)
+      ? historicalEvents.filter((row) => row?.id === originalId) : [];
+    const original = matches.length === 1 ? matches[0] : null;
+    const originalAccounting = normalizeStatsEconomicEventAccounting(original?.economicAccounting);
+    const priorUnmodeled = originalAccounting?.status === "unquantified"
+      || (originalAccounting?.status === "applied" && Array.isArray(originalAccounting.exposures)
+        && originalAccounting.exposures.some((entry) => sameCountry(entry.polity, polity)));
+    const causal = Array.isArray(storylines)
+      ? storylines.filter((row) => row?.id === sourceStorylineId) : [];
+    const alreadyReceipted = Array.isArray(receipts) && receipts.some((row) =>
+      sameCountry(row?.polity, polity) && row?.assessesUnquantifiedEventId === originalId);
+    // Receipts are capped; retained canonical event history is an additional
+    // guard against silently re-assessing the same country after receipt pruning.
+    const alreadyInHistory = Array.isArray(historicalEvents) && historicalEvents.some((row) =>
+      row?.id !== originalId && row?.id !== eventId
+      && Array.isArray(row?.impacts?.polityChanges)
+      && row.impacts.polityChanges.some((change) =>
+        sameCountry(change?.code, polity)
+        && change?.statsEffects?.assessesUnquantifiedEventId === originalId));
+    if (typeof originalId !== "string" || !originalId.trim() || originalId.length > 128
+      || originalId === eventId || !shockEstimate || !sourceStorylineId
+      || !original || !priorUnmodeled
+      || !isCanonicalGameDate(original.date) || !isCanonicalGameDate(eventDate)
+      || causal.length !== 1 || !isCanonicalGameDate(causal[0].startedDate)
+      || compareGameDates(causal[0].startedDate, original.date) > 0
+      || compareGameDates(original.date, eventDate) >= 0
+      || !Array.isArray(original.storylineIds)
+      || !original.storylineIds.includes(sourceStorylineId)
+      || alreadyReceipted || alreadyInHistory) {
+      throw new Error("Statistics follow-up requires one earlier unmodeled national economic disruption, the same active causal storyline and a new country-specific estimate not already assessed");
+    }
+    assessesUnquantifiedEventId = originalId;
   }
   if (recovery && (population || gdp || finite || resolves || fiscalOutlay || !(stability || indices || custom))) {
     throw new Error("Statistics recovery can only restore previously measured stability, strategic or custom losses");
@@ -350,6 +396,7 @@ export const planStatsEventEffect = ({ effect, sheet, absoluteStats = null, stat
       throw new Error("Finite economic influence is not valid canonical state");
     }
   }
-  return { patch, process, resolution, sourceStorylineId, recoveryOfEventId: recovery ? effect.recoveryOfEventId : null, reason: reason.trim(), populationCause: population ? effect.populationCause : null,
+  return { patch, process, resolution, sourceStorylineId, assessesUnquantifiedEventId,
+    recoveryOfEventId: recovery ? effect.recoveryOfEventId : null, reason: reason.trim(), populationCause: population ? effect.populationCause : null,
     gdpCause: (gdp || finite) ? effect.gdpCause : null };
 };
