@@ -35,6 +35,7 @@ import {
   selectLastJumpRecord,
   tallyAppliedEvents,
   withReceiptDraft,
+  withLatestApplicationReceipt,
 } from "./applicationReceipt.js";
 
 const event = (impacts = {}) => ({ title: "Test", description: "test", impacts });
@@ -44,6 +45,24 @@ test("a collector that is not collecting is a no-op everywhere", () => {
   assert.doesNotThrow(() => tallyAppliedEvents(null, [event()]));
   assert.equal(mergeReceipts(null, createApplicationReceipt()), null);
   assert.equal(receiptHasNotes(null), false);
+});
+
+test("a post-settlement coverage note survives the already-normalized newest turn record only", () => {
+  const receipt = createApplicationReceipt();
+  const first = { simulationHistory: [
+    { mode: "jump", date: "2127-11-02", receipt: normalizeApplicationReceipt(receipt) },
+    { mode: "jump", date: "2127-10-26", receipt: { ...normalizeApplicationReceipt(receipt), notes: [] } },
+  ] };
+  noteReceipt(receipt, "short", "Previously documented national credit losses are still unquantified.");
+  assert.equal(first.simulationHistory[0].receipt.notes.length, 0,
+    "normalization already severed the original receipt reference");
+  const persisted = withLatestApplicationReceipt(first, receipt);
+  assert.equal(persisted.simulationHistory[0].receipt.notes[0].kind, "short");
+  assert.match(persisted.simulationHistory[0].receipt.notes[0].text, /credit losses/);
+  assert.deepEqual(persisted.simulationHistory[1], first.simulationHistory[1]);
+  assert.equal(first.simulationHistory[0].receipt.notes.length, 0);
+  assert.notStrictEqual(persisted, first);
+  assert.strictEqual(withLatestApplicationReceipt({}, receipt).simulationHistory, undefined);
 });
 
 test("notes are kept in order, de-duplicated, and an unknown kind is ignored", () => {

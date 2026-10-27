@@ -4,6 +4,7 @@ import { forgetBatch, readStoredBatches, rememberBatch } from "./batchRegistry.j
 import { jumpDayStep, jumpTargetDate } from "../../runtime/jumpDates.js";
 import { buildActiveEconomicInfluenceContext, buildRecoverableStatsLossContext } from "../../runtime/statsEconomicInfluenceContext.js";
 import { buildUnquantifiedEconomicAssessmentContext } from "../../runtime/statsUnquantifiedAssessmentContext.js";
+import { buildNationalEconomicCoverageAudit } from "../../runtime/statsEconomicCoverageAudit.js";
 import { clampTimelineDates, validatePregameEvents, validateTimelineDates } from "./timelineDates.js";
 import { buildMilitaryFeasibilityText } from "./militaryFeasibility.js";
 import { looksLikeChatRequest } from "./chatHints.js";
@@ -44,6 +45,7 @@ import {
   renderLastTurnReceipt,
   tallyAppliedEvents,
   withReceiptDraft,
+  withLatestApplicationReceipt,
 } from "../../runtime/applicationReceipt.js";
 import {
   basisActionNote,
@@ -4252,6 +4254,11 @@ const runJsonTask = async (taskKey, {
           // without a war/relation/agreement/storyline the model attempted to
           // establish. Fail closed and retry instead.
           protectedPathPrefixes: taskKey === "pregameHistory" ? ["$.canonicalUpdates"] : [],
+          // A skip's free-text summary, folded history and independent ledgers
+          // can still claim an event existed after generic salvage deletes it.
+          // Salvage optional fields INSIDE events, but require a repaired AI
+          // answer (or the existing fallback) if an entire event would be lost.
+          protectedArrayItems: ["jumpForward", "autoJumpForward"].includes(taskKey) ? ["$.events"] : [],
           describe: (candidate, path) => (path[0] === "events" && typeof path[1] === "number"
             ? `"${normalizeString(candidate?.events?.[path[1]]?.title) || `event ${path[1] + 1}`}"`
             : ""),
@@ -10076,6 +10083,40 @@ const applySimulationResult = async ({
   } catch (error) {
     console.warn("[power status] per-turn tier refresh failed; the completed turn is preserved.", error);
     logDebugEvent("turn", "Power tier refresh failed; the tiers stay as they were.", error, { problem: true });
+  }
+
+  // A successful economic event does not certify that older country-specific
+  // disruptions were quantified. Audit the *settled* canonical world/history,
+  // after the Stats clock, receipts and storyline updates. This adds no writer
+  // and no model call: absent exposure evidence stays explicitly unverified.
+  if (result.mode === "jump" || result.mode === "auto") {
+    const coverageAudit = buildNationalEconomicCoverageAudit({
+      world: nextWorld, events: nextEvents, date: nextGame.gameDate,
+    });
+    if (coverageAudit.status !== "complete" && coverageAudit.status !== "unavailable") {
+      logDebugEvent("turn", "National economic coverage audit.", {
+        status: coverageAudit.status,
+        documentedUnresolvedCount: coverageAudit.documentedUnresolvedCount,
+        noNationalEvidenceCount: coverageAudit.noNationalEvidenceCount,
+        assessedCount: coverageAudit.assessedCount,
+        sample: coverageAudit.documentedUnresolved.slice(0, 4),
+      }, { problem: coverageAudit.documentedUnresolvedCount > 0
+        || coverageAudit.noNationalEvidenceCount > 0 });
+      if (result.generation?.source === "ai") {
+        // Host-only application feedback, not canonical GDP state. A legacy
+        // crisis can lack structured country evidence entirely: that UNKNOWN
+        // state also stays open for review, but never implies national losses.
+        // The independent causal briefing already carries exact original IDs.
+        noteReceipt(receipt, "short",
+          `Economic coverage remains open: ${coverageAudit.documentedUnresolvedCount} documented national disruption(s) still unquantified; `
+          + `${coverageAudit.noNationalEvidenceCount} crisis-associated country/event pair(s) lack independent national exposure evidence. `
+          + "These are different uncertainties, not proof of GDP loss. Positive policies elsewhere do not close them; review only when new country-specific evidence supports it and never invent percentages.");
+        // The simulationHistory snapshot was created and normalized during
+        // impact settlement. Reattach the now-final bounded application receipt
+        // or this evidence warning will disappear before the next AI jump.
+        nextWorld = withLatestApplicationReceipt(nextWorld, receipt);
+      }
+    }
   }
 
   // Re-read the chat list instead of writing the pre-turn snapshot back over it.

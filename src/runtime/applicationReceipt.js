@@ -239,6 +239,21 @@ export const normalizeApplicationReceipt = (value, { keepNotes = true } = {}) =>
 
 export const receiptHasNotes = (receipt) => array(receipt?.notes).length > 0;
 
+// The jump's initial world projection normalizes the receipt before all
+// post-settlement audits have run. Once the final native audit adds feedback,
+// reattach the normalized final receipt to the newest turn without rewriting
+// any older record, event, canonical GDP, or input object.
+export const withLatestApplicationReceipt = (world, receipt) => {
+  const turns = array(world?.simulationHistory);
+  const latest = turns[0];
+  const normalized = normalizeApplicationReceipt(receipt);
+  if (!latest || typeof latest !== "object" || !normalized) return world;
+  return {
+    ...world,
+    simulationHistory: [{ ...latest, receipt: normalized }, ...turns.slice(1)],
+  };
+};
+
 // Which turn record the next jump reports on: the newest one a JUMP wrote.
 // world.simulationHistory also records Game Master interventions, resolved
 // interactive events and the pregame bootstrap, newest first; none of those is an answer

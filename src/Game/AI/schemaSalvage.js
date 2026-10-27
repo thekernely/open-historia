@@ -108,10 +108,16 @@ export const SCHEMA_SALVAGE_MAX_REMOVALS = 24;
 // Kyiv""), so a removal can be reported in the model's own terms.
 // `protectedPathPrefixes` marks state-bearing subtrees that salvage may inspect
 // but must never repair by deletion; the original validation error is retained.
+// `protectedArrayItems` is narrower: disallow removal of an entire direct
+// item from a specified array, while preserving repair of malformed OPTIONAL
+// fields (and nested arrays) inside that item. A generated event has a summary,
+// history and possibly ledgers that may still assert its existence: removing
+// the event itself is not a coherent repair of a time-skip answer.
 export const salvageBySchema = (value, validate, {
     maxRemovals = SCHEMA_SALVAGE_MAX_REMOVALS,
     describe = null,
     protectedPathPrefixes = [],
+    protectedArrayItems = [],
 } = {}) => {
     const removed = [];
     let verdict = validate(value);
@@ -131,7 +137,16 @@ export const salvageBySchema = (value, validate, {
                 || removalPath.startsWith(`${normalized}[`)
                 || removalPath.startsWith(`${normalized}.`);
         });
-        if (protectedRemoval) break;
+        const protectedItem = protectedArrayItems.some((prefix) => {
+            const normalized = String(prefix ?? "").trim();
+            if (!normalized) return false;
+            // The whole events array cannot be truncated, nor may a direct
+            // event be removed. Nested malformed tags/unitOps remain salvageable.
+            return (removal.kind === "truncate" && removalPath === normalized)
+                || (removal.kind === "item" && removalPath.startsWith(`${normalized}[`)
+                    && /^\d+\]$/.test(removalPath.slice(normalized.length + 1)));
+        });
+        if (protectedRemoval || protectedItem) break;
         let label = "";
         try {
             label = describe ? String(describe(value, removal.path) ?? "") : "";

@@ -2613,16 +2613,27 @@ const StatsPaneBody = ({ active, mapRef, requestedTarget = "", onConsumeTarget }
     const resolvedTargetKey = targetCountry && polityIndex
         ? (polityIndex.canonicalKey(targetCountry) || targetCountry)
         : targetCountry;
-    const countryEconomicCoverage = useMemo(() => buildCountryEconomicCoverage({
-        world: worldSnapshot,
-        events: economicEventHistory?.status === "ready"
-            && economicEventHistory.gameKey === player.gameKey
-            && economicEventHistory.date === player.date ? economicEventHistory.events : null,
-        polity: resolvedTargetKey || targetCountry,
-        viewerPolity: player.code,
-        date: player.date,
-        maxRows: 2,
-    }), [worldSnapshot, economicEventHistory, player.gameKey, player.date, player.code, resolvedTargetKey, targetCountry]);
+    const countryEconomicCoverage = useMemo(() => {
+        // A shared-game guest cannot see the World Director's private source
+        // storylines or receipts. The host sends a viewer-scoped public summary
+        // instead; never mistake the missing private records for a clean audit.
+        const shared = worldSnapshot?.countryEconomicCoverageView;
+        const projected = shared?.date === player.date
+            ? shared.byPolity?.[resolvedTargetKey || targetCountry] : null;
+        if (projected && ["none", "documented-unquantified", "potential-unverified"].includes(projected.status)) {
+            return projected;
+        }
+        return buildCountryEconomicCoverage({
+            world: worldSnapshot,
+            events: economicEventHistory?.status === "ready"
+                && economicEventHistory.gameKey === player.gameKey
+                && economicEventHistory.date === player.date ? economicEventHistory.events : null,
+            polity: resolvedTargetKey || targetCountry,
+            viewerPolity: player.code,
+            date: player.date,
+            maxRows: 2,
+        });
+    }, [worldSnapshot, economicEventHistory, player.gameKey, player.date, player.code, resolvedTargetKey, targetCountry]);
     const headerSheet = sheet
         || worldSnapshot?.countryStats?.[resolvedTargetKey]
         || worldSnapshot?.countryStats?.[targetCountry]
@@ -2916,6 +2927,12 @@ const StatsPaneBody = ({ active, mapRef, requestedTarget = "", onConsumeTarget }
 
             {statsView === "economy" && !statSheetDefinitionError && sheet && state.status === "ready" && (
                 <>
+                {!statSheetDefinition.custom && worldSnapshot?.countryEconomicCoverageView?.date === player.date
+                    && !isPlayer && (
+                    <p style={{ marginTop: "0.75rem", color: "rgba(255,255,255,0.52)", fontSize: "0.71rem", lineHeight: 1.45 }}>
+                        Shared-game coverage for other countries shows publicly documented disruptions only. Private economic developments may be omitted.
+                    </p>
+                )}
                 {!statSheetDefinition.custom && economicEventHistory?.status === "error"
                     && economicEventHistory.gameKey === player.gameKey
                     && economicEventHistory.date === player.date && (

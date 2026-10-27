@@ -10,6 +10,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { WORLD_DEFAULTS, normalizeChats, normalizeEvents, normalizeWorldState } from "../../runtime/gameState.js";
+import { mergeCountryStatPatch } from "../../runtime/countryStats.js";
 import { projectChatThread } from "../../runtime/chatThreads.js";
 import { newSeal } from "../../runtime/spySeal.js";
 import {
@@ -172,6 +173,216 @@ const state = () => ({
 
 const text = (view) => JSON.stringify(view);
 const SEAL = newSeal();
+test("shared-game public numeric sheets never disclose private Statistics continuity receipts", () => {
+  const docs = state();
+  docs.world.countryStats[RUSSIA] = mergeCountryStatPatch(null, {
+    territorialComponents: [{ geography: "Moscow", group: "core",
+      population: 1_000_000, gdpPerCapita: 10_000 }],
+    economy: { gdpGrowth: 2, inflation: 3, unemployment: 5 },
+    continuity: {
+      assessedDate: "2014-03-20",
+      accountedEventIds: ["CANARY-PRIVATE-NATIONAL-EVENT"],
+      economicInfluences: [{
+        eventId: "CANARY-PRIVATE-NATIONAL-EVENT",
+        startDate: "2014-03-01", endDate: "2014-04-01",
+        annualRealGrowthDelta: -3, cause: "trade",
+        reason: "Classified evidence supports an estimated national economic interruption.",
+        sourceStorylineId: "CANARY-PRIVATE-NATIONAL-STORYLINE",
+      }],
+      gdpRamps: [{
+        eventId: "CANARY-PRIVATE-INDUSTRIAL-EVENT", projectId: "CANARY-PRIVATE-PROJECT",
+        startDate: "2014-03-01", endDate: "2014-04-01", lastDate: "2014-03-15",
+        gdpDelta: 1000, credited: 200,
+      }],
+      foundingAssessment: {
+        version: 1, eventId: "CANARY-PRIVATE-FOUNDING-EVENT",
+        date: "2014-02-01", source: "ai-estimate",
+        basis: "CANARY-PRIVATE-FOUNDING-BASIS backed by confidential assessments.",
+      },
+    },
+  });
+  const before = normalizeWorldState(docs.world).countryStats[RUSSIA];
+  assert.equal(before.continuity.economicInfluences[0].sourceStorylineId,
+    "CANARY-PRIVATE-NATIONAL-STORYLINE", "fixture requires a canonical retained private influence");
+  assert.equal(before.continuity.gdpRamps[0].projectId, "CANARY-PRIVATE-PROJECT");
+  const view = projectForViewer(docs, LATVIA);
+  const publicSheet = view.world.countryStats[RUSSIA];
+  assert.equal(publicSheet.economy.gdp, before.economy.gdp,
+    "redaction must preserve the publicly observed national GDP");
+  assert.equal(publicSheet.economy.gdpGrowth, before.economy.gdpGrowth);
+  assert.equal(publicSheet.continuity.assessedDate, before.continuity.assessedDate);
+  for (const field of ["accountedEventIds", "economicInfluences", "gdpRamps", "foundingAssessment"]) {
+    assert.equal(Object.hasOwn(publicSheet.continuity, field), false,
+      "internal Statistics continuity field transmitted: " + field);
+  }
+  for (const canary of [
+    "CANARY-PRIVATE-NATIONAL-EVENT", "CANARY-PRIVATE-NATIONAL-STORYLINE",
+    "CANARY-PRIVATE-PROJECT", "CANARY-PRIVATE-INDUSTRIAL-EVENT",
+    "CANARY-PRIVATE-FOUNDING-EVENT", "CANARY-PRIVATE-FOUNDING-BASIS",
+  ]) assert.equal(text(view).includes(canary), false, "private Stats provenance leaked: " + canary);
+  assert.ok(Object.hasOwn(docs.world.countryStats[RUSSIA].continuity, "economicInfluences"),
+    "host's authoritative country Stats remain untouched");
+});
+
+test("shared-game economic coverage is host-derived from visible events without leaking causal sources", () => {
+  const docs = state();
+  docs.world.storylines = [{
+    id: "CANARY-PRIVATE-CRISIS-SOURCE", title: "CANARY-PRIVATE-CRISIS-NARRATIVE",
+    startedDate: "2014-03-01", status: "active",
+    participants: [RUSSIA, ESTONIA],
+    sourceEventIds: ["econ-public", "CANARY-PRIVATE-ECON-EVENT"],
+  }];
+  docs.events = [
+    {
+      id: "econ-public", date: "2014-03-30", title: "Merchant clearing stoppage",
+      storylineIds: ["CANARY-PRIVATE-CRISIS-SOURCE"],
+      economicAccounting: {
+        status: "unquantified", reason: "National economic consequences were not numerically measured.",
+        exposures: [{
+          polity: RUSSIA, channel: "credit", exposure: "direct",
+          evidence: "Published merchant testimony confirms that Russian clearinghouses stopped settling credits.",
+        }],
+      },
+      impacts: { polityChanges: [] },
+    },
+    {
+      id: "CANARY-PRIVATE-ECON-EVENT", date: "2014-03-30", title: "CANARY-PRIVATE-ECON-TITLE",
+      audience: [LATVIA], storylineIds: ["CANARY-PRIVATE-CRISIS-SOURCE"],
+      economicAccounting: {
+        status: "unquantified", reason: "CANARY-PRIVATE-ECON-REASON",
+        exposures: [{
+          polity: RUSSIA, channel: "trade", exposure: "dependent",
+          evidence: "CANARY-PRIVATE-ECON-EVIDENCE: Restricted intelligence documented secret import failures.",
+        }],
+      }, impacts: { polityChanges: [] },
+    },
+  ];
+  const view = projectForViewer(docs, RUSSIA);
+  const coverage = view.world.countryEconomicCoverageView;
+  assert.equal(coverage.date, "2014-04-01");
+  assert.equal(coverage.byPolity[RUSSIA].status, "documented-unquantified");
+  assert.equal(coverage.byPolity[RUSSIA].confirmedCount, 1);
+  assert.equal(coverage.byPolity[RUSSIA].confirmed[0].eventId, "econ-public");
+  assert.equal(coverage.byPolity[RUSSIA].confirmed[0].sourceStorylineId, undefined);
+  assert.equal(coverage.byPolity[RUSSIA].confirmed[0].active, undefined,
+    "private storyline activity must never be inferred from public economic coverage");
+  assert.deepEqual(normalizeWorldState(view.world).countryEconomicCoverageView, coverage,
+    "the shared-game world normalizer must preserve the ephemeral host-derived reading");
+  assert.equal(coverage.byPolity[ESTONIA], undefined, "only canonical Statistics accounts are projected");
+  for (const secret of [
+    "CANARY-PRIVATE-CRISIS-SOURCE", "CANARY-PRIVATE-CRISIS-NARRATIVE",
+    "CANARY-PRIVATE-ECON-EVENT", "CANARY-PRIVATE-ECON-TITLE", "CANARY-PRIVATE-ECON-EVIDENCE",
+  ]) assert.equal(text(view).includes(secret), false, secret + " leaked");
+  assert.equal(Object.hasOwn(view.world, "storylines"), false);
+  assert.equal(Object.hasOwn(view.world, "statsEventReceipts"), false);
+  assert.equal(Object.hasOwn(docs.world, "countryEconomicCoverageView"), false, "projection is not saved state");
+});
+
+test("shared-game crisis closure uses only visible, later accepted assessments", () => {
+  const docs = state();
+  docs.world.storylines = [{
+    id: "CANARY-RECEIPT-SOURCE", title: "Credit crisis review",
+    startedDate: "2014-03-01", status: "active",
+    participants: [RUSSIA], sourceEventIds: ["credit-origin"],
+  }];
+  const original = {
+    id: "credit-origin", date: "2014-03-10", title: "Banking disruption",
+    storylineIds: ["CANARY-RECEIPT-SOURCE"],
+    economicAccounting: {
+      status: "unquantified", reason: "National credit collapse was documented but not yet measured.",
+      exposures: [{
+        polity: RUSSIA, channel: "credit", exposure: "direct",
+        evidence: "Published records identify failed credit settlements at multiple Russian banks.",
+      }],
+    },
+    impacts: { polityChanges: [] },
+  };
+  const followup = {
+    id: "credit-followup", date: "2014-03-30", title: "New national crisis assessment",
+    storylineIds: ["CANARY-RECEIPT-SOURCE"],
+    impacts: { polityChanges: [{
+      code: RUSSIA, operation: "update",
+      statsEffects: {
+        sourceStorylineId: "CANARY-RECEIPT-SOURCE",
+        assessesUnquantifiedEventId: "credit-origin",
+        annualRealGrowthDelta: -3, durationDays: 30, gdpCause: "trade",
+        economicShockEstimate: { basis: "simulation-estimate", channel: "credit",
+          exposure: "direct",
+          evidence: "Published records identify failed credit settlements at multiple Russian banks." },
+        reason: "Published settlement evidence supports an estimated thirty-day disruption.",
+      },
+    }] },
+  };
+  docs.events = [original, { ...followup, audience: [LATVIA],
+    title: "CANARY-HIDDEN-ECON-ASSESSMENT" }];
+  const before = projectForViewer(docs, RUSSIA);
+  assert.equal(before.world.countryEconomicCoverageView.byPolity[RUSSIA].confirmedCount, 1,
+    "another country's restricted assessment cannot silently close a visible disruption");
+  assert.equal(text(before).includes("CANARY-HIDDEN-ECON-ASSESSMENT"), false);
+  docs.events[1] = followup;
+  const after = projectForViewer(docs, RUSSIA);
+  assert.equal(after.world.countryEconomicCoverageView.byPolity[RUSSIA].status, "none");
+  assert.equal(after.world.countryEconomicCoverageView.byPolity[RUSSIA].confirmedCount, 0);
+  const publicEffect = after.events[1].impacts.polityChanges[0].statsEffects;
+  assert.equal(publicEffect.annualRealGrowthDelta, -3,
+    "public accepted economic effects must retain their numerical consequence");
+  assert.equal(publicEffect.sourceStorylineId, undefined);
+  assert.equal(publicEffect.assessesUnquantifiedEventId, undefined);
+  assert.equal(text(after).includes("CANARY-RECEIPT-SOURCE"), false);
+});
+
+test("a renamed shared-game seat still receives its own tentative economic warning", () => {
+  const docs = state();
+  const renamed = "Northern Russian Union";
+  docs.world.polityOverrides[renamed] = {
+    code: renamed, name: renamed, status: "active", formerNames: [RUSSIA],
+  };
+  delete docs.world.polityOverrides[RUSSIA];
+  docs.world.countryStats[renamed] = docs.world.countryStats[RUSSIA];
+  delete docs.world.countryStats[RUSSIA];
+  docs.world.storylines = [{
+    id: "CANARY-RENAME-CRISIS", title: "Currency run",
+    startedDate: "2014-03-01", status: "active",
+    participants: [RUSSIA], sourceEventIds: ["rename-econ-source"],
+  }];
+  docs.events = [{
+    id: "rename-econ-source", date: "2014-03-30", title: "Credit disruption",
+    storylineIds: ["CANARY-RENAME-CRISIS"],
+    economicAccounting: {
+      status: "unquantified", reason: "The observed disruption has no country-specific growth estimate.",
+    },
+    impacts: { polityChanges: [] },
+  }];
+  const view = projectForViewer(docs, RUSSIA);
+  assert.equal(view.world.countryEconomicCoverageView.byPolity[renamed].status,
+    "potential-unverified", "former seat names should resolve to current canonical identities");
+  assert.equal(text(view).includes("CANARY-RENAME-CRISIS"), false);
+});
+
+test("shared-game tentative national crisis links are visible to that seat, not to foreign observers", () => {
+  const docs = state();
+  docs.world.storylines = [{
+    id: "CANARY-HOST-ONLY-SOURCE-ID", title: "Protected credit market crisis",
+    startedDate: "2014-03-01", status: "active",
+    participants: [LATVIA, RUSSIA], sourceEventIds: ["econ-unmeasured"],
+  }];
+  docs.events = [{
+    id: "econ-unmeasured", date: "2014-03-30", title: "Bank liquidity alert",
+    storylineIds: ["CANARY-HOST-ONLY-SOURCE-ID"],
+    economicAccounting: {
+      status: "unquantified", reason: "The banking interruption was not attributed to any measured national rate.",
+    },
+    impacts: { polityChanges: [] },
+  }];
+  const russian = projectForViewer(docs, RUSSIA);
+  assert.equal(russian.world.countryEconomicCoverageView.byPolity[RUSSIA].status, "potential-unverified");
+  assert.equal(russian.world.countryEconomicCoverageView.byPolity[LATVIA].status, "none",
+    "host-only participation must not reveal another country's potential exposure");
+  assert.equal(projectForViewer(docs, LATVIA).world.countryEconomicCoverageView.byPolity[LATVIA].status,
+    "potential-unverified");
+  assert.equal(text(russian).includes("CANARY-HOST-ONLY-SOURCE-ID"), false);
+});
+
 
 test("every world key is public, filtered for the viewer, or the host's alone, and only one of those", () => {
   const classified = [...PUBLIC_WORLD_KEYS, ...FILTERED_WORLD_KEY_NAMES, ...HOST_ONLY_WORLD_KEYS];

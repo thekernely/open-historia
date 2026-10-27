@@ -9,6 +9,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import { describeSchemaRemoval, parseErrorPath, salvageBySchema } from "./schemaSalvage.js";
 import { validateGameplayPayload } from "./gameplaySchemas.js";
@@ -185,6 +186,73 @@ test("an event with no title is left out and the rest of the turn stands", () =>
     const result = salvageBySchema(answer, (value) => validateGameplayPayload("jumpForward", value));
     assert.equal(result.valid, true, result.error);
     assert.deepEqual(answer.events.map((event) => event.title), ["Kept"]);
+});
+
+test("Opossum regression: an unsupported applied economic event cannot vanish while the summary survives", () => {
+    const account = { status: "applied",
+        reason: "The Khanate changed trade tariff arrangements and commodity settlement procedures." };
+    const claim = jumpEvent({
+        title: "Steppe Relay Khanate Formalizes Silver-Standard Barter Tariffs",
+        tags: ["Economy"], economicAccounting: account,
+        description: "The Khanate finalizes a new tariff regime for silver settlement.",
+    });
+    const input = jumpAnswer([
+        jumpEvent({ title: "Other accepted event" }), claim,
+    ]);
+    input.summary = "The Steppe Relay Khanate finalizes silver-standard barter tariffs.";
+    input.history = { summary: "The Khanate adopted new silver tariffs.",
+        document: "National silver tariffs are now enacted." };
+    // The production jump schema does not accept arbitrary fields or invent
+    // statsEffects to make 'applied' true. Its actual error first points at
+    // economicAccounting; naive salvage drops that field, then the whole event.
+    const base = structuredClone(input);
+    const response = salvageBySchema(input,
+        (candidate) => validateGameplayPayload("jumpForward", candidate),
+        { protectedArrayItems: ["$.events"] });
+    assert.equal(response.valid, false);
+    assert.equal(input.events.length, 2, "an event cannot be removed while history still asserts it");
+    assert.deepEqual(input.events[1].title, claim.title);
+    assert.equal(input.summary, base.summary);
+    assert.ok(response.removed.every((entry) => entry.path !== "$.events[1]"));
+    assert.match(response.error, /economicAccounting|events\[1\]/);
+});
+
+test("an unrepairable missing event title cannot be hidden by truncating the timeline", () => {
+    const missingTitle = jumpEvent();
+    delete missingTitle.title;
+    const input = jumpAnswer([jumpEvent({ title: "Keep" }), missingTitle]);
+    input.summary = "A second, now-invalid event occurred.";
+    const output = salvageBySchema(input, (candidate) => validateGameplayPayload("jumpForward", candidate),
+        { protectedArrayItems: ["$.events"] });
+    assert.equal(output.valid, false);
+    assert.equal(input.events.length, 2);
+    assert.deepEqual(output.removed, []);
+});
+
+test("the jump still salvages malformed optional tags without discarding the event", () => {
+    const input = jumpAnswer([jumpEvent({ title: "Retain", tags: ["Military", "UNKNOWN"] })]);
+    const response = salvageBySchema(input, (candidate) => validateGameplayPayload("jumpForward", candidate),
+        { protectedArrayItems: ["$.events"] });
+    assert.equal(response.valid, true, response.error);
+    assert.deepEqual(input.events[0].tags, ["Military"]);
+    assert.deepEqual(response.removed.map((entry) => entry.path), ["$.events[0].tags[1]"]);
+});
+
+test("a protected timeline array cannot be truncated to remove events referenced by the summary", () => {
+    const answer = { summary: "All four events happened.",
+        orders: [{ unit: "one" }, { unit: "two" }, { unit: "three" }, { unit: "four" }] };
+    const denied = salvageBySchema(structuredClone(answer), validateOrders,
+        { protectedArrayItems: ["$.orders"] });
+    assert.equal(denied.valid, false);
+    assert.equal(denied.value.orders.length, 4);
+    const allowed = salvageBySchema(structuredClone(answer), validateOrders);
+    assert.equal(allowed.valid, true);
+    assert.equal(allowed.value.orders.length, 3);
+});
+
+test("time-skip task runner actually protects canonical event deletion", () => {
+    const source = readFileSync(new URL("./gameplay.js", import.meta.url), "utf8");
+    assert.match(source, /protectedArrayItems: \["jumpForward", "autoJumpForward"\]\.includes\(taskKey\)/);
 });
 
 test("a jump with no stop date is not something removal can fix", () => {

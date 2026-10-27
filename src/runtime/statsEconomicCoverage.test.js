@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { normalizeEvents } from './gameState.js';
-import { buildCountryEconomicCoverage as inspect } from './statsEconomicCoverage.js';
+import { buildCountryEconomicCoverage as inspect, createCountryEconomicCoverageReader } from './statsEconomicCoverage.js';
 import { normalizeStatsEconomicEventAccounting, validateGeneratedStatsEconomicAccounting } from './statsEconomicEventAccounting.js';
 
 const date = '2127-11-02';
@@ -38,6 +38,22 @@ test('evidenced national exposure survives canonical event save normalization un
   assert.equal(report.confirmed[0].channel, 'credit');
   assert.equal(report.confirmed[0].sourceStorylineId, 'global-credit-collapse');
   assert.equal(JSON.stringify(world()), snapshot);
+});
+
+test('multi-country coverage reader preserves independent single-country results without rewriting the world', () => {
+  const w = world();
+  const events = normalizeEvents([original()]);
+  const originalWorld = JSON.stringify(w);
+  const originalEvents = JSON.stringify(events);
+  const reader = createCountryEconomicCoverageReader({ world: w, events, date,
+    viewerPolity: 'Opossum Kingdom' });
+  for (const polity of ['Ferric Crownlands', 'Dyke-and-Rook League', 'Opossum Kingdom', 'Nonexistent Polity']) {
+    assert.deepEqual(reader(polity, 2), inspect({
+      world: w, events, polity, viewerPolity: 'Opossum Kingdom', date, maxRows: 2,
+    }), 'reader result differs for ' + polity);
+  }
+  assert.equal(JSON.stringify(w), originalWorld);
+  assert.equal(JSON.stringify(events), originalEvents);
 });
 
 test('a storyline participant is a potential exposure, not a confirmed economically disrupted country', () => {
@@ -140,6 +156,9 @@ test('the Economy pane loads canonical events lazily and distinguishes documente
     'a failed event-history fetch is not treated as zero unmodeled impact');
   assert.match(source, /Economic event history could not be loaded/);
   assert.match(source, /setEconomicHistoryRetry\(\(current\) => current \+ 1\)/);
+  assert.match(source, /worldSnapshot\?\.countryEconomicCoverageView/,
+    'Economy uses the viewer-scoped host coverage summary in shared games');
+  assert.match(source, /Shared-game coverage for other countries shows publicly documented disruptions only/);
 });
 test('a later accepted source-linked assessment closes legacy tentative exposure even after receipt pruning', () => {
   const old=original({status:'unquantified',reason:'A named crisis exists without country-specific measurement.'});
@@ -147,6 +166,10 @@ test('a later accepted source-linked assessment closes legacy tentative exposure
     id:'followup',date:'2127-10-30',storylineIds:['global-credit-collapse'],
     impacts:{polityChanges:[{code:'Ferric Crownlands',statsEffects:{
       sourceStorylineId:'global-credit-collapse',assessesUnquantifiedEventId:'collapse-2127',
+      annualRealGrowthDelta:-3,durationDays:30,gdpCause:'trade',
+      economicShockEstimate:{basis:'simulation-estimate',channel:'credit',exposure:'direct',
+        evidence:'Commercial bank clearinghouses suspended merchant settlement orders across the Crownlands.'},
+      reason:'Subsequent credit records support a bounded national loss estimate.',
     }}]},
   };
   const w=world();

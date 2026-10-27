@@ -22,10 +22,11 @@
 // it is sent.
 //
 // v1 limits, kept deliberately narrow rather than guessed at:
-// - A country's stat sheet is what any government can count or read: capital,
-//   government, population, the economy and the scenario's own figures. Every
-//   sheet goes to every player, as single player shows them. (A scenario's own
-//   figures may be military; the host cannot yet mark some of them private.)
+// - A country's measured figures are what any government can count or read:
+//   capital, population, the economy and scenario-specific statistics. Internal
+//   event and project receipts in the sheet's continuity are NOT public.
+//   Scenario-authored custom figures may be sensitive, but v1 cannot yet mark
+//   them private; this remains a separate visibility constraint.
 // - How good a country's intelligence service is, is exact only for its own
 //   government: everyone else is sent an estimate, to the nearest ten.
 // - Agreements carry no secrecy flag yet, so every treaty is public.
@@ -35,6 +36,8 @@
 //   own key and kept on that device (client/seatWrites.js): no view carries any.
 
 import { normalizeWorldState } from "../../runtime/gameState.js";
+import { createCountryEconomicCoverageReader } from "../../runtime/statsEconomicCoverage.js";
+import { buildOwnerAliasMap, canonicalOwnerName } from "../../runtime/ownerNames.js";
 import { normalizeReports } from "../../runtime/reports.js";
 import { visiblePuppetsFor } from "../../runtime/puppets.js";
 import { buildPublicPoliticalView } from "../../runtime/politicalKnowledge.js";
@@ -88,8 +91,9 @@ export const PUBLIC_WORLD_KEYS = Object.freeze([
   "reparations",
   "peaceTreaties",
   "callsToArms",
-  // The stat sheets, and how each has moved: public figures (see the limits above).
-  "countryStats", "countryStatsHistory",
+  // The chart history is numeric-only. Current Stats figures are public too,
+  // but their private accounting/event identities need the filtered projection.
+  "countryStatsHistory",
 ]);
 
 // The narrator's and the engine's own. Never in any view.
@@ -134,6 +138,22 @@ const pick = (record, keys) => Object.fromEntries(keys.filter((key) => record[ke
 // Filtered keys: each is given the whole world and returns what the viewer may
 // have of that key.
 const FILTERED_WORLD_KEYS = Object.freeze({
+  // National measurements are public. Their continuity ledger is not a
+  // public event log: event IDs, causal sources, private project receipts and
+  // assessment basis must never cross the host/viewer boundary. Keep the
+  // non-provenance clocks/calibration and measured economy unchanged.
+  countryStats: (world) => Object.fromEntries(
+    Object.entries(isRecord(world.countryStats) ? world.countryStats : {})
+      .map(([polity, sheet]) => {
+        if (!isRecord(sheet) || !isRecord(sheet.continuity)) return [polity, sheet];
+        const { accountedEventIds: _privateEventIds,
+          economicInfluences: _privateInfluences,
+          gdpRamps: _privateProjectReceipts,
+          foundingAssessment: _privateFoundingSource,
+          ...publicContinuity } = sheet.continuity;
+        return [polity, { ...sheet, continuity: publicContinuity }];
+      }),
+  ),
   // Units are seen, their orders are not.
   units: (world, viewer) => list(world.units).map((unit) => (same(unit?.ownerCode, viewer)
     ? unit
@@ -237,6 +257,11 @@ const FILTERED_WORLD_KEYS = Object.freeze({
   playerGoals: (world, viewer) => Object.fromEntries(Object.entries(isRecord(world.playerGoals) ? world.playerGoals : {})
     .filter(([country]) => same(country, viewer))),
 
+  // An ephemeral, public-information-limited reading of the host's national
+  // crisis coverage. Never transfer the director's storylines or Stats receipts.
+  countryEconomicCoverageView: (world, viewer, { events, date }) =>
+    economicCoverageForViewer(world, viewer, { events, date }),
+
   // Its own government in full; every other only as the public sees it.
   politicalActors: (world, viewer) => {
     const ledger = isRecord(world.politicalActors) ? world.politicalActors : {};
@@ -267,11 +292,11 @@ export const FILTERED_WORLD_KEY_NAMES = Object.freeze([...Object.keys(FILTERED_W
 
 // `hiddenEventIds`: the events this viewer is not shown (eventsHiddenFrom), so
 // a turn's record does not count them either.
-export const projectWorld = (world, viewer, { host = "", hiddenEventIds = new Set() } = {}) => {
+export const projectWorld = (world, viewer, { host = "", hiddenEventIds = new Set(), events = [], date = "" } = {}) => {
   const full = normalizeWorldState(world);
   const out = {};
   for (const key of PUBLIC_WORLD_KEYS) if (full[key] !== undefined) out[key] = full[key];
-  for (const [key, filter] of Object.entries(FILTERED_WORLD_KEYS)) out[key] = filter(full, viewer, { host, hiddenEventIds });
+  for (const [key, filter] of Object.entries(FILTERED_WORLD_KEYS)) out[key] = filter(full, viewer, { host, hiddenEventIds, events, date });
   if (same(host, viewer)) for (const key of HOST_SEAT_WORLD_KEYS) if (full[key] !== undefined) out[key] = full[key];
   return copy(out);
 };
@@ -299,6 +324,43 @@ const readableBy = (event, viewer) => {
   const audience = list(event?.audience).map(clean).filter(Boolean);
   return !audience.length || audience.some((polity) => same(polity, viewer));
 };
+// Compute the view from the host's accepted events and internal causal state.
+ // Only a visible event can add evidence or settle a visible prior assessment.
+ // A different country's *tentative* participation in a private director
+ // storyline is not public intelligence: reserve it for that country's seat.
+function economicCoverageForViewer(world, viewer, { events = [], date = "" } = {}) {
+  const visibleEvents = list(events).filter((entry) => isRecord(entry) && readableBy(entry, viewer));
+  const visibleEventIds = new Set(visibleEvents.map((entry) => clean(entry.id)).filter(Boolean));
+  const scopedWorld = {
+    ...world,
+    statsEventReceipts: list(world.statsEventReceipts)
+      .filter((receipt) => visibleEventIds.has(clean(receipt?.eventId))),
+  };
+  const byPolity = {};
+  const readCoverage = createCountryEconomicCoverageReader({
+    world: scopedWorld, events: visibleEvents, viewerPolity: viewer, date,
+  });
+  const ownerAliases = buildOwnerAliasMap(world.polityOverrides);
+  const resolve = (name) => canonicalOwnerName(name, ownerAliases);
+  for (const polity of Object.keys(isRecord(world.countryStats) ? world.countryStats : {})) {
+    const coverage = readCoverage(polity, 2);
+    const own = same(resolve(polity), resolve(viewer));
+    byPolity[polity] = {
+      status: coverage.confirmedCount ? "documented-unquantified"
+        : own && coverage.potentialCount ? "potential-unverified" : "none",
+      confirmedCount: coverage.confirmedCount,
+      potentialCount: own ? coverage.potentialCount : 0,
+      confirmed: coverage.confirmed.map(({
+        sourceStorylineId: _privateSource, active: _privateActivity, ...publicRow
+      }) => publicRow),
+      // Guests only need the count of their own *tentative* causal associations.
+      // Do not send host-internal storyline IDs in any derived row.
+      potential: [],
+    };
+  }
+  return { date, byPolity };
+}
+
 export const eventsHiddenFrom = (events, viewer) => new Set(list(events)
   .filter((event) => isRecord(event) && !readableBy(event, viewer))
   .map((event) => clean(event.id))
@@ -316,6 +378,17 @@ export const projectEvents = (events, viewer, { ownOrderIds = new Set(), unitOwn
     && (op.op !== "move" || same(unitOwner(op.unitId), viewer)));
   const projected = {};
   for (const key of PUBLIC_IMPACT_KEYS) if (Array.isArray(impacts?.[key])) projected[key] = impacts[key];
+  // Public Statistics effects are numeric consequences, not permission to see
+  // the World Director's internal source links. This provenance is nested
+  // under an otherwise public polity change, so strip it separately.
+  if (Array.isArray(projected.polityChanges)) {
+    projected.polityChanges = projected.polityChanges.map((change) => {
+      if (!isRecord(change) || !isRecord(change.statsEffects)) return change;
+      const { sourceStorylineId: _internalSource,
+        assessesUnquantifiedEventId: _internalAssessment, ...statsEffects } = change.statsEffects;
+      return { ...change, statsEffects };
+    });
+  }
   // An opened thread is its owner's (projectChats): single player's and the
   // host's are the host seat's.
   const createdChats = same(host, viewer) ? list(impacts?.createdChats) : [];
@@ -457,7 +530,8 @@ export const projectForViewer = ({ world, game, events, chat, actions, intercept
   const ownOrderIds = new Set(ownActions.map((action) => clean(action?.id)).filter(Boolean));
   const owners = new Map(list(world?.units).map((unit) => [clean(unit?.id), clean(unit?.ownerCode)]));
   return {
-    world: projectWorld(world ?? {}, seat, { host, hiddenEventIds: eventsHiddenFrom(events, seat) }),
+    world: projectWorld(world ?? {}, seat, { host, events, date: game?.gameDate,
+      hiddenEventIds: eventsHiddenFrom(events, seat) }),
     game: copy({ ...(isRecord(game) ? game : {}), country: seat }),
     events: copy(projectEvents(events, seat, { ownOrderIds, host, unitOwner: (id) => owners.get(clean(id)) || "" })),
     chat: copy(projectChats(chat, seat, { host })),
