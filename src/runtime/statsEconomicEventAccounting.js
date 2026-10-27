@@ -70,11 +70,49 @@ export const validateGeneratedStatsEconomicAccounting = (events) => {
   if (!Array.isArray(events)) return '';
   for (let index = 0; index < events.length; index++) {
     const event = events[index];
-    if (record(event?.economicAccounting) && Object.hasOwn(event.economicAccounting, 'exposures')
-      && !normalizeStatsEconomicEventAccounting(event.economicAccounting)) {
-      return `$.events[${index}].economicAccounting.exposures must contain at most eight unique canonical polities with an evidenced credit/trade/production/logistics/labor exposure, or be empty`;
+    const declaration = event?.economicAccounting;
+    const accountingIssues = [];
+    if (record(declaration)) {
+      if (Object.hasOwn(declaration, 'exposures')) {
+        const normalized = normalizeStatsEconomicExposures(declaration.exposures);
+        if (normalized === null || (declaration.status === 'none' && normalized.length)) {
+          const names = Array.isArray(declaration.exposures)
+            ? declaration.exposures.map((entry) => typeof entry?.polity === 'string'
+              ? entry.polity.trim().toLocaleLowerCase('en-US') : '') : [];
+          const duplicate = names.find((name, i) => name && names.indexOf(name) !== i);
+          accountingIssues.push(`$.events[${index}].economicAccounting.exposures must contain at most eight unique canonical polities with an evidenced credit/trade/production/logistics/labor exposure, or be empty${duplicate ? ` (duplicate polity: ${duplicate})` : ''}`);
+        }
+      }
+      if (typeof declaration.reason === 'string' && declaration.reason.trim().length > 240) {
+        accountingIssues.push(`$.events[${index}].economicAccounting.reason must be at most 240 characters (received ${declaration.reason.trim().length})`);
+      }
     }
     const changes = Array.isArray(event?.impacts?.polityChanges) ? event.impacts.polityChanges : [];
+    for (let changeIndex = 0; changeIndex < changes.length; changeIndex++) {
+      const effect = changes[changeIndex]?.statsEffects;
+      if (record(effect) && Object.hasOwn(effect, 'assessesUnquantifiedEventId')
+        && !record(effect.economicShockEstimate)) {
+        accountingIssues.push(`$.events[${index}].impacts.polityChanges[${changeIndex}].statsEffects.economicShockEstimate is required to assess an earlier unquantified event; supply bounded, source-linked country-specific simulation evidence or omit the assessment and numeric shock`);
+      }
+      if (record(effect)
+        && Object.hasOwn(effect, 'debtFinancedOutlayPercentGdp')
+          !== Object.hasOwn(effect, 'debtFinancedOutlayCause')) {
+        accountingIssues.push(`$.events[${index}].impacts.polityChanges[${changeIndex}].statsEffects.debtFinancedOutlayCause must accompany debtFinancedOutlayPercentGdp (and vice versa); omit unsupported borrowing rather than invent a fiscal appropriation`);
+      }
+      if (record(effect) && Object.hasOwn(effect, 'economicShockEstimate')) {
+        // The native writer permits a crisis estimate only as an independent
+        // finite growth influence. Flag incompatible mutations before a generated
+        // turn is accepted or salvage can erase the causal evidence.
+        const conflicts = ['populationChange', 'gdpChangePercent',
+          'debtFinancedOutlayPercentGdp', 'stabilityDelta', 'indexDeltas',
+          'customStatDeltas', 'resolveGrowthInfluenceEventId', 'recoveryOfEventId']
+          .filter((key) => Object.hasOwn(effect, key));
+        if (conflicts.length) {
+          accountingIssues.push(`$.events[${index}].impacts.polityChanges[${changeIndex}].statsEffects.economicShockEstimate cannot be combined with ${conflicts.join(', ')}; retain only the evidenced dated negative growth estimate, and do not invent separate borrowing or other changes`);
+        }
+      }
+    }
+    if (accountingIssues.length) return accountingIssues.join('; ');
     // Reject direct economic updates BEFORE accepting a generated jump, even
     // when an event has no statsEffects. The old absolute-only route otherwise
     // bypasses the typed effect guard and can desynchronize native clock cursors.

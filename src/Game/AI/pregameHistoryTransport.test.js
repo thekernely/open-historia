@@ -262,7 +262,8 @@ test("native pregame directive and publication path use the semantic compiler, n
   assert.match(source, /eventIdsByRef: eventRefs\.map/);
   assert.match(source, /pregameBootstrapContractVersion: PREGAME_BOOTSTRAP_CONTRACT_VERSION/);
   assert.match(source, /mutateCanonicalTurnState\(\(current\) =>/);
-  assert.match(source, /protectedPathPrefixes: taskKey === "pregameHistory" \? \["\$\.canonicalUpdates"\] : \[\]/);
+  assert.match(source, /protectedPathPrefixes: taskKey === "pregameHistory" \? \["\$\.canonicalUpdates"\]/);
+  assert.match(source, /\["jumpForward", "autoJumpForward"\]\.includes\(taskKey\)[\s\S]*?protectedJumpEconomicPaths\(parsed\) : \[\]/);
 
   const start = source.indexOf("export const maybeGeneratePregameHistory");
   const end = source.indexOf("// ---- Idle diplomacy drip", start);

@@ -11,7 +11,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-import { describeSchemaRemoval, parseErrorPath, salvageBySchema } from "./schemaSalvage.js";
+import { describeSchemaRemoval, parseErrorPath, protectedJumpEconomicPaths, salvageBySchema } from "./schemaSalvage.js";
 import { validateGameplayPayload } from "./gameplaySchemas.js";
 
 test("the path is read from the front of the validator's message", () => {
@@ -215,6 +215,68 @@ test("Opossum regression: an unsupported applied economic event cannot vanish wh
     assert.equal(input.summary, base.summary);
     assert.ok(response.removed.every((entry) => entry.path !== "$.events[1]"));
     assert.match(response.error, /economicAccounting|events\[1\]/);
+});
+
+test("time-skip salvage refuses to erase a malformed historical economic assessment", () => {
+    const change={operation:"update",code:"Dyke-and-Rook League",statsEffects:{
+        annualRealGrowthDelta:-1.2,durationDays:45,gdpCause:"trade",
+        sourceStorylineId:"global-financial-collapse-2127",
+        assessesUnquantifiedEventId:"original-crisis",
+        reason:"The country has documented disruptions to merchant-credit settlements.",
+    }};
+    const account={status:"applied",reason:"National credit clearing has been significantly disrupted.",
+        exposures:[
+            {polity:"Dyke-and-Rook League",channel:"credit",exposure:"direct",
+                evidence:"Merchant banks cannot settle import bills."},
+            {polity:"Dyke-and-Rook League",channel:"trade",exposure:"direct",
+                evidence:"Shipping settlements are blocked by a currency crisis."},
+        ],
+    };
+    const original=jumpAnswer([jumpEvent({title:"Credit crisis",tags:["Economy"],
+        economicAccounting:account,impacts:{polityChanges:[change]}})]);
+    const paths=protectedJumpEconomicPaths(original);
+    assert.deepEqual(paths,[
+        "$.events[0].economicAccounting",
+        "$.events[0].impacts.polityChanges[0]",
+        "$.events[0].impacts.polityChanges[0].statsEffects",
+    ]);
+    const before=structuredClone(original);
+    const guarded=salvageBySchema(original,
+        value=>validateGameplayPayload("jumpForward",value),
+        {protectedPathPrefixes:paths,protectedArrayItems:["$.events"]});
+    assert.equal(guarded.valid,false);
+    assert.deepEqual(guarded.removed,[]);
+    assert.deepEqual(original,before,"cannot delete economic evidence to produce a false accepted turn");
+    const other=jumpAnswer([jumpEvent({title:"Unrelated optional tags",
+        tags:["Politics","NotATag"]})]);
+    const kept=salvageBySchema(other,value=>validateGameplayPayload("jumpForward",value),
+        {protectedPathPrefixes:protectedJumpEconomicPaths(other),protectedArrayItems:["$.events"]});
+    assert.equal(kept.valid,true,kept.error);
+    assert.equal(kept.removed.length,1);
+});
+
+test("an applied economic event cannot drop malformed statsEffects and retain a false narrative", () => {
+    const change={operation:"update",code:"Dyke-and-Rook League",statsEffects:{
+        annualRealGrowthDelta:-1.2,durationDays:30,gdpCause:"trade",
+        sourceStorylineId:"global-financial-collapse-2127",
+        debtFinancedOutlayPercentGdp:0.005,
+        reason:"Merchant trade declined due to documented credit restrictions.",
+    }};
+    const input=jumpAnswer([jumpEvent({
+        title:"National credit restriction",tags:["Economy"],
+        economicAccounting:{status:"applied",
+            reason:"The credit restrictions have documented national economic consequences."},
+        impacts:{polityChanges:[change]},
+    })]);
+    const before=structuredClone(input);
+    const guarded=salvageBySchema(input,
+        row=>validateGameplayPayload("jumpForward",row),
+        {protectedArrayItems:["$.events"],
+            protectedPathPrefixes:protectedJumpEconomicPaths(input)});
+    assert.equal(guarded.valid,false);
+    assert.equal(guarded.removed.length,0);
+    assert.match(guarded.error,/debtFinancedOutlayCause must accompany/);
+    assert.deepEqual(input,before);
 });
 
 test("an unrepairable missing event title cannot be hidden by truncating the timeline", () => {

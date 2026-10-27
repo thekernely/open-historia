@@ -253,7 +253,7 @@ import {
   requestLedger,
   savingRequests,
 } from "./requestBudget.js";
-import { describeSchemaRemoval, salvageBySchema } from "./schemaSalvage.js";
+import { describeSchemaRemoval, protectedJumpEconomicPaths, salvageBySchema } from "./schemaSalvage.js";
 import {
   TURN_REVIEW_TASK,
   buildTurnReviewPrompt,
@@ -4253,7 +4253,9 @@ const runJsonTask = async (taskKey, {
           // must never be "fixed" by deleting it and silently starting the game
           // without a war/relation/agreement/storyline the model attempted to
           // establish. Fail closed and retry instead.
-          protectedPathPrefixes: taskKey === "pregameHistory" ? ["$.canonicalUpdates"] : [],
+          protectedPathPrefixes: taskKey === "pregameHistory" ? ["$.canonicalUpdates"]
+            : ["jumpForward", "autoJumpForward"].includes(taskKey)
+              ? protectedJumpEconomicPaths(parsed) : [],
           // A skip's free-text summary, folded history and independent ledgers
           // can still claim an event existed after generic salvage deletes it.
           // Salvage optional fields INSIDE events, but require a repaired AI

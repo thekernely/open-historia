@@ -142,6 +142,89 @@ test('explicitly estimated systemic pressure is an applied typed mutation, never
   assert.match(verdict(event(assessed('unquantified'),[crisis])).error,/must be applied/);
   assert.match(verdict(event(assessed('none','No measurable disruption'),[crisis])).error,/must be applied/);
 });
+test('provider credit-crisis candidate reports ALL three actual faults without silently dropping evidence', () => {
+  const source = {
+    operation:'update',code:'Dyke-and-Rook League',statsEffects: {
+      assessesUnquantifiedEventId:'event-ai-r0003-21270822-008',
+      sourceStorylineId:'global-financial-collapse-2127',
+      annualRealGrowthDelta:-1.2,durationDays:45,gdpCause:'trade',
+      reason:'Commercial credit markets have stopped clearing transactions across trade hubs.',
+    },
+  };
+  const accounting={status:'applied',
+    reason:'Documented national credit restrictions caused liquidity contraction. '.repeat(4),
+    exposures:[
+      {polity:'Dyke-and-Rook League',channel:'credit',exposure:'direct',
+        evidence:'National merchant banks cannot settle commercial import credit.'},
+      {polity:'Dyke-and-Rook League',channel:'trade',exposure:'direct',
+        evidence:'Shipping finance remains locked by commodity-scrip conversion.'},
+    ],
+  };
+  const outcome=validateGeneratedStatsEconomicAccounting([event(accounting,[source])]);
+  assert.match(outcome,/duplicate polity: dyke-and-rook league/);
+  assert.match(outcome,/reason must be at most 240 characters/);
+  assert.match(outcome,/statsEffects\.economicShockEstimate is required/);
+  const repaired=event({
+    ...accounting,
+    reason:'A supported national liquidity contraction is estimated for the first time.',
+    exposures:[accounting.exposures[0]],
+  },[{...source,statsEffects:{...source.statsEffects,
+    economicShockEstimate:{basis:'simulation-estimate',channel:'credit',exposure:'direct',
+      evidence:'National merchant banks cannot settle commercial import credit.'},
+  }}]);
+  assert.equal(validateGeneratedStatsEconomicAccounting([repaired]),'');
+  assert.equal(verdict(repaired).valid,true,verdict(repaired).error);
+  const withoutExposure={...repaired,economicAccounting:{...repaired.economicAccounting,exposures:[]},
+    impacts:{polityChanges:[{...repaired.impacts.polityChanges[0],
+      statsEffects:{...source.statsEffects}}]}};
+  assert.match(verdict(withoutExposure).error,/economicShockEstimate is required/);
+});
+
+test('estimated crisis pressures cannot smuggle debt borrowing or another independent mutation through generated-event admission', () => {
+  const accounting=assessed('applied','A bounded temporary country-specific credit pressure is estimated.');
+  const base={operation:'update',code:'Dyke-and-Rook League',statsEffects:{
+    sourceStorylineId:'global-financial-collapse-2127',
+    assessesUnquantifiedEventId:'event-ai-r0003-21270822-008',
+    annualRealGrowthDelta:-1.2,durationDays:45,gdpCause:'trade',
+    economicShockEstimate:{basis:'simulation-estimate',channel:'credit',exposure:'direct',
+      evidence:'Merchant credit clearing has ceased at the affected national ports.'},
+    reason:'Documented national credit clearing disruption',
+  }};
+  assert.equal(verdict(event(accounting,[base])).valid,true);
+  for(const [field,value] of [
+    ['debtFinancedOutlayPercentGdp',0.5],
+    ['gdpChangePercent',-1],
+    ['populationChange',-1000],
+    ['stabilityDelta',-3],
+    ['indexDeltas',{financialStability:-5}],
+  ]) {
+    const proposed={...base,statsEffects:{...base.statsEffects,[field]:value}};
+    const output=verdict(event(accounting,[proposed]));
+    assert.equal(output.valid,false,field);
+    assert.match(output.error,/economicShockEstimate cannot be combined with/);
+    assert.ok(output.error.includes(field));
+  }
+});
+
+test('borrowing must carry its independently authorized spending cause, never a silent outlay', () => {
+  const accounting=assessed('applied','Dated national borrowing and debt relief must be documented.');
+  const base={operation:'update',code:'Dyke-and-Rook League',statsEffects:{
+    annualRealGrowthDelta:-1.2,durationDays:30,gdpCause:'trade',
+    sourceStorylineId:'global-financial-collapse-2127',
+    reason:'Documented contraction in merchant trade due to credit paralysis',
+  }};
+  const missingCause=event(accounting,[{
+    ...base,statsEffects:{...base.statsEffects,debtFinancedOutlayPercentGdp:0.005},
+  }]);
+  assert.match(verdict(missingCause).error,/debtFinancedOutlayCause must accompany/);
+  const orphanCause=event(accounting,[{
+    ...base,statsEffects:{...base.statsEffects,debtFinancedOutlayCause:'relief'},
+  }]);
+  assert.match(verdict(orphanCause).error,/debtFinancedOutlayCause must accompany/);
+  assert.equal(verdict(event(accounting,[base])).valid,true,
+    'an effect with no unsupported borrowing must remain admissible');
+});
+
 test('generated Economy events expose bounded qualitative national coverage without a new GDP writer', () => {
   for (const key of ['jumpForward','autoJumpForward']) {
     const schema = GAMEPLAY_TOOLS[key].schema.properties.events.items.properties.economicAccounting;

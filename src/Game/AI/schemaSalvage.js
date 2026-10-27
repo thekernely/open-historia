@@ -166,6 +166,23 @@ export const salvageBySchema = (value, validate, {
     return { value, valid: Boolean(verdict.valid), error: verdict.valid ? "" : String(verdict.error ?? ""), removed };
 };
 
+// Economic declarations and prior-crisis assessments must never be
+// "repaired" by deleting their evidence while preserving a narrated applied
+// consequence. Harmless optional fields elsewhere in a time skip can still be
+// salvaged. Keep this pure so the provider-backed diagnostic and actual game
+// share exactly the same policy.
+export const protectedJumpEconomicPaths = (payload) =>
+    (Array.isArray(payload?.events) ? payload.events : []).flatMap((event, i) => [
+        ...(event && Object.prototype.hasOwnProperty.call(event, "economicAccounting")
+            ? [`$.events[${i}].economicAccounting`] : []),
+        ...(Array.isArray(event?.impacts?.polityChanges) ? event.impacts.polityChanges : [])
+            .flatMap((change, j) =>
+                change?.statsEffects && (change.statsEffects.assessesUnquantifiedEventId
+                    || event.economicAccounting?.status === "applied")
+                    ? [`$.events[${i}].impacts.polityChanges[${j}]`,
+                        `$.events[${i}].impacts.polityChanges[${j}].statsEffects`] : []),
+    ]);
+
 // One line per removal, in words the model can act on next turn.
 export const describeSchemaRemoval = (removal) => {
     const where = removal.label ? `${removal.label}: ` : "";
