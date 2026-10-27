@@ -7,7 +7,8 @@
 import { addGameDays, compareGameDates, isCanonicalGameDate } from "./gameDates.js";
 import { normalizeStatsCrisisEstimate, estimateGrowthLimit } from "./statsCrisisEstimate.js";
 import { normalizeStatsEconomicEventAccounting } from "./statsEconomicEventAccounting.js";
-import { remainingStatsRecoveryLosses } from "./statsEventReceipts.js";
+import { indexRetainedEconomicAssessments } from "./statsEconomicCoverage.js";
+import { normalizeStatsEventReceipts, remainingStatsRecoveryLosses } from "./statsEventReceipts.js";
 import { normalizeCountryStatEconomicInfluences, COUNTRY_STATS_MAX_ECONOMIC_INFLUENCES } from "./countryStats.js";
 import { MAX_STAT_INDICES, MAX_CUSTOM_STATS, STAT_INDEX_KEY_PATTERN, normalizeStatSheetDefinition } from "./statIndexDefinitions.js";
 
@@ -90,16 +91,31 @@ export const planStatsEventEffect = ({ effect, sheet, absoluteStats = null, stat
         && originalAccounting.exposures.some((entry) => sameCountry(entry.polity, polity)));
     const causal = Array.isArray(storylines)
       ? storylines.filter((row) => row?.id === sourceStorylineId) : [];
-    const alreadyReceipted = Array.isArray(receipts) && receipts.some((row) =>
-      sameCountry(row?.polity, polity) && row?.assessesUnquantifiedEventId === originalId);
-    // Receipts are capped; retained canonical event history is an additional
-    // guard against silently re-assessing the same country after receipt pruning.
-    const alreadyInHistory = Array.isArray(historicalEvents) && historicalEvents.some((row) =>
-      row?.id !== originalId && row?.id !== eventId
-      && Array.isArray(row?.impacts?.polityChanges)
-      && row.impacts.polityChanges.some((change) =>
-        sameCountry(change?.code, polity)
-        && change?.statsEffects?.assessesUnquantifiedEventId === originalId));
+    // Never let an unauthenticated/malformed persisted receipt masquerade as
+    // prior national settlement. The writer and both economic review readers
+    // must apply the same receipt admission shape before duplicate checking.
+    const alreadyReceipted = normalizeStatsEventReceipts(receipts).some((row) =>
+      sameCountry(row.polity, polity)
+      && row.assessesUnquantifiedEventId === originalId);
+    // A source ID string alone must not block a real national assessment.
+    // Use the SAME validated retained-event evidence as the Country Panel and
+    // AI review briefing, including after receipts age out. An older malformed,
+    // future, duplicated or foreign-source claim is not prior acceptance.
+    const historicalIds = new Map();
+    for (const row of Array.isArray(historicalEvents) ? historicalEvents : []) {
+      if (typeof row?.id === "string" && row.id.trim()) {
+        historicalIds.set(row.id, (historicalIds.get(row.id) || 0) + 1);
+      }
+    }
+    const historicalAssessments = indexRetainedEconomicAssessments({
+      events: historicalEvents, date: eventDate, eventIds: historicalIds,
+      resolve: resolvePolity, includePrivate: true,
+    });
+    const alreadyInHistory = (historicalAssessments.get(originalId) || []).some((row) =>
+      sameCountry(row.polity, polity)
+      && Array.isArray(original?.storylineIds) && original.storylineIds.includes(row.sourceId)
+      && isCanonicalGameDate(original?.date)
+      && compareGameDates(row.date, original.date) > 0);
     if (typeof originalId !== "string" || !originalId.trim() || originalId.length > 128
       || originalId === eventId || !shockEstimate || !sourceStorylineId
       || !original || !priorUnmodeled

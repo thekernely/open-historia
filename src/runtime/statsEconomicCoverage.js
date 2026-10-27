@@ -30,6 +30,40 @@ const hasRetainedAssessment = (effect) => {
   return true;
 };
 
+// An accepted, retained event supplies evidence after the bounded receipt
+// ledger is pruned. Share this strictly validated index between the Country
+// Panel's coverage reader and the AI's deferred-review briefing; otherwise the
+// next model turn can be told to assess a national crisis already assessed.
+// Entries are only candidate closures: callers must additionally prove that
+// the original event is older and linked to the *same canonical storyline*.
+export const indexRetainedEconomicAssessments = ({
+  events, date, eventIds, resolve = token, viewer = '', includePrivate = false,
+} = {}) => {
+  const indexed = new Map();
+  if (!Array.isArray(events) || !isCanonicalGameDate(date)
+    || !(eventIds instanceof Map)) return indexed;
+  for (const later of events) {
+    if (!isCanonicalGameDate(later?.date) || compareGameDates(later.date, date) > 0
+      || eventIds.get(token(later?.id)) !== 1
+      || (!includePrivate && array(later.audience).length
+        && !array(later.audience).some((name) =>
+          viewer && resolve(name) === viewer))) continue;
+    for (const change of array(later?.impacts?.polityChanges)) {
+      const effect = change?.statsEffects;
+      const originalId = token(effect?.assessesUnquantifiedEventId);
+      const sourceId = token(effect?.sourceStorylineId);
+      if (!originalId || !sourceId || !array(later.storylineIds).includes(sourceId)
+        || !hasRetainedAssessment(effect)) continue;
+      const polity = resolve(change?.code);
+      if (!polity) continue;
+      const rows = indexed.get(originalId) || [];
+      rows.push({ date: later.date, sourceId, polity });
+      indexed.set(originalId, rows);
+    }
+  }
+  return indexed;
+};
+
 // Reuse one source/receipt/index scan when a multiplayer host builds the
 // coverage of many countries for one authorized viewer.
 export const createCountryEconomicCoverageReader = ({
@@ -62,25 +96,11 @@ export const createCountryEconomicCoverageReader = ({
     .filter((receipt) => receipt.assessesUnquantifiedEventId
       && isCanonicalGameDate(receipt.date)
       && compareGameDates(receipt.date, date) <= 0);
-  // Preserve closure when bounded receipts are pruned, without a quadratic
-  // scan of long event histories on every Country Panel render.
-  const assessedHistory = new Map();
-  for (const later of events) {
-    if (!isCanonicalGameDate(later?.date) || compareGameDates(later.date, date) > 0
-      || eventIds.get(token(later?.id)) !== 1
-      || (!includePrivate && array(later.audience).length
-        && !array(later.audience).some((name) =>
-          viewer && resolve(name) === viewer))) continue;
-    for (const change of array(later?.impacts?.polityChanges)) {
-      const origin = token(change?.statsEffects?.assessesUnquantifiedEventId);
-      const sourceId = token(change?.statsEffects?.sourceStorylineId);
-      if (!origin || !sourceId || !array(later.storylineIds).includes(sourceId)
-        || !hasRetainedAssessment(change?.statsEffects)) continue;
-      const rows = assessedHistory.get(origin) || [];
-      rows.push({ date: later.date, sourceId, polity: resolve(change?.code) });
-      assessedHistory.set(origin, rows);
-    }
-  }
+  // One shared retained-event assessment index also drives the AI follow-up
+  // briefing, so receipt pruning cannot make a country look unassessed there.
+  const assessedHistory = indexRetainedEconomicAssessments({
+    events, date, eventIds, resolve, viewer, includePrivate,
+  });
   // Event/date/accounting and causal-source admission are independent of
   // which country is being inspected. Parse once; preserve the unique-ID
   // and private-audience guards for every country in the resulting reader.

@@ -349,11 +349,38 @@ test('later national crisis assessments reference a prior unquantified event exa
   assert.equal(first.statsEventReceipts[0].polity, 'Alba');
   assert.equal(first.countryStats.Alba.continuity.economicInfluences[0].annualRealGrowthDelta, -5);
   assert.equal(first.countryStats.Borealia.continuity?.economicInfluences?.length ?? 0, 0);
+  // A legacy or malformed receipt can carry the original assessment ID
+  // without an accepted bounded numerical estimate. All three readers
+  // normalize it away; it must not preempt the writer's first valid effect.
+  const phantom = {
+    eventId: 'phantom-previous', polity: 'Alba', date: '1912-02-01',
+    assessesUnquantifiedEventId: original.id,
+    sourceStorylineId: 'credit-crisis-review',
+    reason: 'Legacy metadata claimed an assessment that did not settle.',
+    changes: [],
+  };
+  const phantomProcess = { ...phantom, process: {
+    eventId: phantom.eventId, startDate: phantom.date, endDate: '1912-02-28',
+    annualRealGrowthDelta: -3, cause: 'trade', sourceStorylineId: phantom.sourceStorylineId,
+  } };
+  for (const malformed of [phantom, phantomProcess]) {
+    const before = normalizeWorldState({ ...baseline, statsEventReceipts: [malformed] });
+    // Use the literal raw malformed record too: a partially migrated/injected
+    // world can reach the writer before normalized save publication.
+    const literal = { ...baseline, statsEventReceipts: [malformed] };
+    for (const input of [literal, before]) {
+      const result = apply(input, followup, [original]);
+      const newReceipt = result.statsEventReceipts.find((row) => row.eventId === followup.id);
+      assert.equal(newReceipt?.assessesUnquantifiedEventId, original.id,
+        'a non-admitted receipt must not block the first valid assessment');
+      assert.equal(result.countryStats.Alba.continuity.economicInfluences[0].annualRealGrowthDelta, -5);
+    }
+  }
   const saved = normalizeWorldState(JSON.parse(JSON.stringify(first)));
   assert.equal(saved.statsEventReceipts[0].assessesUnquantifiedEventId, original.id,
     'assessment identity survives canonical save normalization');
   const brief = buildUnquantifiedEconomicAssessmentContext(saved, [original, followup], '1912-03-01');
-  assert.match(brief, /receiptBackedAssessedPolities=\["Alba"\]/);
+  assert.match(brief, /acceptedAssessedPolities=\["Alba"\]/);
   assert.match(brief, /Borealia/);
   assert.match(brief, /1 of 1 canonical declarations/,
     'the original global declaration remains an incomplete review, not globally closed');
@@ -372,6 +399,35 @@ test('later national crisis assessments reference a prior unquantified event exa
   const noReceipt = {...both, statsEventReceipts: []};
   assert.throws(() => apply(noReceipt, duplicate, [original, followup, second]), /follow-up/i,
     'retained historical event IDs prevent duplicate assessment after receipt pruning');
+
+  // A retained event is not proof that its claimed assessment was ACCEPTED:
+  // older legacy/partial history can carry a naked source reference, or a
+  // future, duplicate, wrong-source or nonquantified pseudo-assessment.
+  // The Country Panel and AI briefing already reject these claims; the writer
+  // must not block the first real, evidenced country-level settlement either.
+  const misleading = {
+    ...followup, id: 'malformed-previous-claim', date: '1912-02-18',
+    impacts: {polityChanges:[{code:'Alba',statsEffects:{
+      ...change, economicShockEstimate: undefined,
+    }}]},
+  };
+  const wrongSource = {...misleading, id: 'wrong-source-claim',
+    storylineIds:['unrelated-credit-source'],
+    impacts:{polityChanges:[{code:'Alba',statsEffects:{...change}}]}};
+  const futureClaim = {...misleading, id:'future-claim', date:'1912-04-01',
+    impacts:{polityChanges:[{code:'Alba',statsEffects:{...change}}]}};
+  const sameDayClaim = {...misleading, id:'same-day-claim', date:original.date,
+    impacts:{polityChanges:[{code:'Alba',statsEffects:{...change}}]}};
+  for (const history of [
+    [original, misleading], [original, wrongSource],
+    [original, futureClaim], [original, sameDayClaim],
+    [original, {...followup, id:'duplicated-claim'}, {...followup, id:'duplicated-claim'}],
+  ]) {
+    const accepted = apply(baseline, followup, history);
+    assert.equal(accepted.statsEventReceipts[0].assessesUnquantifiedEventId, original.id,
+      'invalid retained claim must not bar the first valid assessed effect');
+    assert.equal(accepted.countryStats.Alba.continuity.economicInfluences[0].annualRealGrowthDelta, -5);
+  }
   assert.throws(() => apply(baseline, followup, [{...original, economicAccounting:{
     status:'none', reason:'No verified national economy event occurred during negotiations.'}}]), /follow-up/i);
   assert.throws(() => apply(baseline, followup, [{...original, storylineIds:['other-crisis']}]), /follow-up/i);

@@ -2,9 +2,11 @@
  * Event history owns the declaration; storylines own causal lifecycle; countryStats
  * owns numbers. This is a bounded prompt view, NOT a second canonical queue.
  */
-import { compareGameDates, isCanonicalGameDate } from './gameDates.js';
+import { compareGameDates, gameDateDayNumber, isCanonicalGameDate } from './gameDates.js';
 import { normalizeStatsEconomicEventAccounting } from './statsEconomicEventAccounting.js';
 import { normalizeStatsEventReceipts } from './statsEventReceipts.js';
+import { indexRetainedEconomicAssessments } from './statsEconomicCoverage.js';
+import { buildOwnerAliasMap, canonicalOwnerName } from './ownerNames.js';
 
 const text = (value) => typeof value === 'string' ? value.trim() : '';
 const rows = (value) => Array.isArray(value) ? value : [];
@@ -30,9 +32,18 @@ export const buildUnquantifiedEconomicAssessmentContext = (
     const id = text(event?.id);
     if (id) eventCounts.set(id, (eventCounts.get(id) || 0) + 1);
   }
+  const aliases = buildOwnerAliasMap(world?.polityOverrides);
+  const resolve = (name) => canonicalOwnerName(name, aliases);
+  // When the bounded receipt ledger is pruned, the retained validated event
+  // is still durable evidence. Reuse the Country Panel's exact native index:
+  // source IDs alone or an invalid numerical estimate never close an event.
+  const retainedAssessments = indexRetainedEconomicAssessments({
+    events, date, eventIds: eventCounts, resolve, includePrivate: true,
+  });
 
-  // Receipts are the native numerical authority. A completed assessment is
-  // per-country evidence, never proof that every participant was affected.
+  // Receipts remain the native numerical authority; a matching retained
+  // accepted event preserves that fact after pruning. Closure is per-country,
+  // not proof that everyone in the storyline suffered a national loss.
   const assessments = normalizeStatsEventReceipts(world?.statsEventReceipts)
     .filter((row) => row.assessesUnquantifiedEventId
       && compareGameDates(row.date, date) <= 0);
@@ -54,11 +65,17 @@ export const buildUnquantifiedEconomicAssessmentContext = (
     const link = active[0] || links[0] || null;
     const participantNames = [...new Set(rows(link?.participants)
       .map((value) => text(value).slice(0, 96)).filter(Boolean))];
-    const assessed = [...new Set(assessments.filter((receipt) =>
+    const linkedSourceIds = new Set(links.map((source) => source.id));
+    const byReceipt = assessments.filter((receipt) =>
       receipt.assessesUnquantifiedEventId === id
-      && rows(event.storylineIds).includes(receipt.sourceStorylineId)
+      && linkedSourceIds.has(receipt.sourceStorylineId)
       && compareGameDates(receipt.date, eventDate) > 0)
-      .map((receipt) => text(receipt.polity)).filter(Boolean))].sort();
+      .map((receipt) => resolve(receipt.polity));
+    const byHistory = (retainedAssessments.get(id) || [])
+      .filter((row) => linkedSourceIds.has(row.sourceId)
+        && compareGameDates(row.date, eventDate) > 0)
+      .map((row) => row.polity);
+    const assessed = [...new Set([...byReceipt, ...byHistory].filter(Boolean))].sort();
     pending.push({
       id,
       date: eventDate,
@@ -83,21 +100,43 @@ export const buildUnquantifiedEconomicAssessmentContext = (
   }
   if (!pending.length) return '';
 
-  // Recent supported causes are most useful; reserve two slots for the oldest
-  // still-uncertain declarations so a long-running crisis is not starved forever.
+  // A fixed newest-first top-N starved the same middle declarations forever
+  // (11 unresolved Opossum events, but a standard briefing of eight). Keep
+  // the two newest actionable sources and one oldest declaration when there
+  // is room; rotate remaining slots over the other canonical declarations.
+  // Game-date weeks, not wall time or mutable save counters, make the schedule
+  // deterministic across save/reload, multiplayer and ancient-era calendars.
   const active = pending.filter((row) => row.status === 'active-source');
   const other = pending.filter((row) => row.status !== 'active-source');
   const priority = [...active.reverse(), ...other.reverse()];
   const limit = bounded(maxRows, 8, 12);
-  const chosen = priority.slice(0, limit);
-  if (priority.length > limit && limit >= 3) {
-    const oldest = [...pending].find((row) => !chosen.includes(row));
-    if (oldest) chosen[limit - 1] = oldest;
+  let chosen = priority.slice(0, limit);
+  if (priority.length > limit) {
+    const fixedNewCount = limit >= 5 ? 2 : limit >= 3 ? 1 : 0;
+    const fixedOldCount = limit >= 3 ? 1 : 0;
+    // Reserve the chronologically oldest event, not merely the tail of the
+    // active-before-inactive priority list (which may be a newer inactive one).
+    const oldestEvent = fixedOldCount ? pending.reduce((oldest, row) =>
+      compareGameDates(row.date, oldest.date) < 0 ? row : oldest) : null;
+    const remaining = oldestEvent
+      ? priority.filter((row) => row !== oldestEvent) : priority;
+    const recent = remaining.slice(0, fixedNewCount);
+    const oldest = oldestEvent ? [oldestEvent] : [];
+    const rotating = remaining.slice(fixedNewCount);
+    const slots = limit - recent.length - oldest.length;
+    const week = Math.floor(gameDateDayNumber(date) / 7);
+    // Shift by a whole window each week. A stable backlog is visited in
+    // ceil(rotating.length / slots) weekly jumps, not indefinitely ignored.
+    const start = ((week * slots) % rotating.length + rotating.length)
+      % rotating.length;
+    const scheduled = [...rotating.slice(start), ...rotating.slice(0, start)]
+      .slice(0, slots);
+    chosen = [...recent, ...scheduled, ...oldest];
   }
   const display = chosen.map((row) =>
-    `- originalEventId=${quoted(row.id)}; date=${row.date}; title=${quoted(row.title)}; accountingReason=${quoted(row.reason)}; accountingStatus=${row.accountingStatus}${row.eventEvidence ? `; sourceEventEvidence=${quoted(row.eventEvidence)}` : ''}${row.documentedExposures.length ? `; documentedNationalExposures=${quoted(row.documentedExposures)}` : ''}; sourceStatus=${row.status}${row.sourceId ? `; sourceStorylineId=${quoted(row.sourceId)}` : ''}${row.participants.length ? `; storylineParticipants= ${quoted(row.participants)} (CANDIDATES, NOT verified affected polities)` : ''}${row.hiddenParticipants ? `; additionalParticipantsNotShown=${row.hiddenParticipants}` : ''}${row.assessedPolityCount ? `; receiptBackedAssessedPolities=${quoted(row.assessedPolities)}; assessedPolityCount=${row.assessedPolityCount}` : ''}`);
+    `- originalEventId=${quoted(row.id)}; date=${row.date}; title=${quoted(row.title)}; accountingReason=${quoted(row.reason)}; accountingStatus=${row.accountingStatus}${row.eventEvidence ? `; sourceEventEvidence=${quoted(row.eventEvidence)}` : ''}${row.documentedExposures.length ? `; documentedNationalExposures=${quoted(row.documentedExposures)}` : ''}; sourceStatus=${row.status}${row.sourceId ? `; sourceStorylineId=${quoted(row.sourceId)}` : ''}${row.participants.length ? `; storylineParticipants= ${quoted(row.participants)} (CANDIDATES, NOT verified affected polities)` : ''}${row.hiddenParticipants ? `; additionalParticipantsNotShown=${row.hiddenParticipants}` : ''}${row.assessedPolityCount ? `; acceptedAssessedPolities=${quoted(row.assessedPolities)}; assessedPolityCount=${row.assessedPolityCount}` : ''}`);
 
   return `[Economic events with unresolved quantitative coverage - ${chosen.length} of ${pending.length} canonical declarations]
-An 'unquantified' declaration has NO authorized numerical GDP effect. This is a historical follow-up, not permission to rewrite the original event, infer exposure from storyline pressure, mark every participant affected, or manufacture an observed GDP loss. Check subsequent evidence and country-specific mechanisms. Only a NEW accepted dated event with concrete national evidence may propose a bounded typed Statistics influence, using an active, exactly event-linked storyline. When this new event quantifies a prior unquantified declaration for ONE country, use the exact originalEventId as statsEffects.assessesUnquantifiedEventId alongside sourceStorylineId and economicShockEstimate. receiptBackedAssessedPolities are already assessed for that source and must not be counted twice. Other countries still require independent exposure evidence. If sourceStatus is inactive or unconfirmed, no source ID here authorizes an estimate: establish a valid new causal event or keep it unquantified. Do not retrospectively backdate effects or mark the whole crisis resolved.
+An 'unquantified' declaration has NO authorized numerical GDP effect. This is a historical follow-up, not permission to rewrite the original event, infer exposure from storyline pressure, mark every participant affected, or manufacture an observed GDP loss. Check subsequent evidence and country-specific mechanisms. Only a NEW accepted dated event with concrete national evidence may propose a bounded typed Statistics influence, using an active, exactly event-linked storyline. When this new event quantifies a prior unquantified declaration for ONE country, use the exact originalEventId as statsEffects.assessesUnquantifiedEventId alongside sourceStorylineId and economicShockEstimate. acceptedAssessedPolities are already assessed for that source (by native receipt or retained accepted effect) and must not be counted twice. Other countries still require independent exposure evidence. If sourceStatus is inactive or unconfirmed, no source ID here authorizes an estimate: establish a valid new causal event or keep it unquantified. Do not retrospectively backdate effects or mark the whole crisis resolved.
 ${display.join('\n')}`;
 };
