@@ -63,7 +63,7 @@ const createdChatSchema = {
       minItems: 1,
       items: nonEmptyTextSchema("A polity's FULL name (\"Spain\"), never a code."),
     },
-    openingMessage: nonEmptyTextSchema("The initiator's first message, in its leader's voice. Never written as the player."),
+    openingMessage: nonEmptyTextSchema("The initiator's own first message, in its leader's voice, TO the player: never the player's words."),
     speaker: nonEmptyTextSchema("The polity sending the opening message. Never the player's."),
     linkedEventId: textSchema("The event that caused it, when one did."),
   },
@@ -1941,7 +1941,7 @@ const chatActionSchema = {
       enum: ["send_message", "add_reaction", "rename_chat", "add_member", "remove_member", "create_poll", "add_poll_option", "poll_vote", ...INSTITUTION_CHAT_ACTION_KINDS],
     },
     actorName: nonEmptyTextSchema("The AI participant acting, by exact display name. NEVER a human-controlled one."),
-    content: textSchema("send_message: spoken message only, in its leader's voice. Match the length and tone of what it answers. actorName already identifies the speaker; never prefix content with the polity name plus a colon or dash."),
+    content: textSchema("send_message: spoken message only, in the actor's own voice, written TO the others (never the player's words, never addressed to the actor's own government, capital or leader). Match the length and tone of what it answers. actorName already identifies the speaker; never prefix content with the polity name plus a colon or dash."),
     targetEntryId: textSchema("add_reaction: the id of the message reacted to, copied from the transcript."),
     emoji: textSchema("add_reaction: one emoji."),
     title: textSchema("rename_chat: the new title."),
@@ -2747,6 +2747,31 @@ export const TIMELINE_CURATOR_SCHEMA = {
 // The unit director's answer: unit operations to attach to the military events
 // the jump already wrote, keyed by the supplied event index. Native code
 // sanitizes every op before it reaches an event.
+// The unit director alone can mark a spawn as a story ship: the jump never
+// needs it, and the jump's contract is kept small on purpose
+// (projectOpSchema.test.js).
+const directorUnitOpSchema = {
+  ...unitOpSchema,
+  anyOf: unitOpSchema.anyOf.map((branch) => (branch.properties?.op?.enum?.[0] === "spawn"
+    ? {
+      ...branch,
+      properties: {
+        ...branch.properties,
+        unit: {
+          ...unitSchema,
+          properties: {
+            ...unitSchema.properties,
+            storyVessel: {
+              type: "boolean",
+              description: "Only for a ship that is NOT a warship but carries something the player's story turns on (a cargo, a passenger, a prize), on a candidate marked storyShip. The engine keeps it unlisted and takes it off the map after ten rounds if no arrival removes it first.",
+            },
+          },
+        },
+      },
+    }
+    : branch)),
+};
+
 export const UNIT_DIRECTOR_SCHEMA = {
   type: "object",
   description:
@@ -2762,7 +2787,7 @@ export const UNIT_DIRECTOR_SCHEMA = {
           eventIndex: { type: "integer", minimum: 0 },
           unitOps: {
             type: "array",
-            items: unitOpSchema,
+            items: directorUnitOpSchema,
           },
           reason: textSchema("Short reason these operations are needed for map/state continuity."),
         },

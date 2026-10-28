@@ -4,7 +4,7 @@ import test from "node:test";
 
 import {
   DEFAULT_INTELLIGENCE, MAX_ACTIVE_SPIES, MAX_FOREIGN_SPIES,
-  activeSpies, applySpyOps, deploySpy, detectionChance, espionageBrief, expelSpy, foreignAgentBrief, foreignDeployChance,
+  activeSpies, applySpyOps, cannotSpy, deploySpy, detectionChance, espionageBrief, expelSpy, foreignAgentBrief, foreignDeployChance,
   foreignSpies, intelligenceOf, normalizeIntercepts, normalizeSpies, recallSpy, redactExchange, redactText,
   resolveEspionage, setCoverStory, signalClarity, suspicionChance, turnChance, turnSpy,
 } from "./spycraft.js";
@@ -118,8 +118,8 @@ test("over many rounds a weak service against a strong one loses its agent, and 
   assert.ok(planted, "a hostile 95 service gets an agent into a 20 service within forty rounds");
   // A public expulsion is an event the AI will see; a turning is silent.
   const mine = normalizeSpies(world.spies).find((s) => s.owner === P);
-  if (mine.status === "exposed") assert.ok(allEvents.some((e) => /rolled up in Germany/.test(e.title)));
-  if (mine.status === "turned") assert.ok(!allEvents.some((e) => /rolled up in Germany/.test(e.title)));
+  if (mine.status === "exposed") assert.ok(allEvents.some((e) => /Germany/.test(e.title)));
+  if (mine.status === "turned") assert.ok(!allEvents.some((e) => /Germany/.test(e.title) && !/^Doubts/.test(e.title)));
 });
 
 test("a caught foreign agent waits for the PLAYER's decision and stops reporting", () => {
@@ -134,7 +134,7 @@ test("a caught foreign agent waits for the PLAYER's decision and stops reporting
   assert.ok(caught, "a 0-vs-100 agent is caught");
   const [spy] = foreignSpies(world, P);
   assert.equal(spy.status, "discovered");
-  assert.ok(caught.events.some((e) => /uncovers a Germany agent/.test(e.title)));
+  assert.ok(caught.events.some((e) => /Germany/.test(e.title)));
   // Nothing is decided for the player: the next round leaves it waiting.
   const next = resolveEspionage(world, { round: 99, date: "d", playerPolity: P });
   assert.equal(normalizeSpies(next.spies)[0].status, "discovered");
@@ -151,9 +151,60 @@ test("the foreign-spy cap and the one-agent-per-polity rule hold", () => {
   assert.equal(new Set(inFrance.map((s) => s.owner)).size, inFrance.length, "one agent per polity");
 });
 
-test("clarity: reader's service helps, target's hurts at half weight, never zero", () => {
-  assert.equal(signalClarity(100, 0), 1);
-  assert.ok(signalClarity(0, 100) >= 0.06);
+test("a polity the scenario marks noSpies is read by key, name or alias", () => {
+  const world = { polityOverrides: { giants: { name: "The Giants", aliases: ["Giants"], noSpies: true }, Pentos: { name: "Pentos" } } };
+  assert.equal(cannotSpy(world, "giants"), true);
+  assert.equal(cannotSpy(world, "the giants"), true);
+  assert.equal(cannotSpy(world, "Giants"), true);
+  assert.equal(cannotSpy(world, "Pentos"), false);
+  assert.equal(cannotSpy(world, "Braavos"), false);
+  assert.equal(cannotSpy({}, "The Giants"), false);
+});
+
+test("a noSpies polity never plants an agent in the player, whatever its odds", () => {
+  let world = { intelligence: { "The Giants": 100, France: 0 }, polityOverrides: { "The Giants": { name: "The Giants", noSpies: true } }, spies: [] };
+  for (let round = 1; round <= 60; round += 1) {
+    const out = resolveEspionage(world, { round, date: "d", playerPolity: P, candidates: [{ polity: "The Giants", hostile: true }] });
+    world = { ...world, spies: out.spies };
+  }
+  assert.deepEqual(foreignSpies(world, P), []);
+});
+
+test("a noSpies polity's live agents are quietly withdrawn; a caught one still waits on the player", () => {
+  const world = {
+    intelligence: { "The Giants": 0, France: 0 },
+    polityOverrides: { "The Giants": { name: "The Giants", noSpies: true } },
+    spies: [
+      { id: "g-1", owner: "The Giants", target: P, status: "turned" },
+      { id: "g-2", owner: "The Giants", target: "Germany", status: "active" },
+      { id: "g-3", owner: "The Giants", target: "Italy", status: "discovered" },
+      { id: "f-1", owner: P, target: "The Giants", status: "active" },
+    ],
+  };
+  const out = resolveEspionage(world, { round: 1, date: "d", playerPolity: P });
+  const status = Object.fromEntries(normalizeSpies(out.spies).map((spy) => [spy.id, spy.status]));
+  assert.equal(status["g-1"], "recalled");
+  assert.equal(status["g-2"], "recalled");
+  assert.equal(status["g-3"], "discovered");
+  assert.notEqual(status["f-1"], "recalled", "others may still spy on a noSpies polity");
+  assert.ok(!out.events.some((event) => /Giants/.test(event.title)), "the withdrawal is silent");
+});
+
+test("a noSpies polity cannot deploy an agent by hand or by order", () => {
+  const world = { polityOverrides: { "The Giants": { name: "The Giants", noSpies: true } }, spies: [] };
+  assert.throws(() => deploySpy(world, "House Stark", { playerPolity: "The Giants" }), /runs no spies/);
+  const result = applySpyOps(world, [{ op: "deploy", target: "House Stark" }], { playerPolity: "The Giants" });
+  assert.equal(result.applied.length, 0);
+  assert.match(result.rejected[0].reason, /runs no spies/);
+});
+
+test("clarity: reader's service does nearly all of it, target's hurts a little, never zero", () => {
+  assert.equal(signalClarity(100, 40), 0.95);
+  assert.ok(signalClarity(100, 100) >= 0.88);
+  assert.ok(signalClarity(100, 0) >= 0.98);
+  assert.ok(signalClarity(40, 40) <= 0.25);
+  assert.ok(signalClarity(20, 40) <= 0.11);
+  assert.equal(signalClarity(0, 100), 0.04);
   assert.ok(signalClarity(60, 40) > signalClarity(40, 40));
   assert.ok(signalClarity(40, 80) < signalClarity(40, 40));
   assert.ok(signalClarity(60, 40) - signalClarity(40, 40) > signalClarity(40, 40) - signalClarity(40, 60));
@@ -322,4 +373,31 @@ test("foreign deployment odds read graded hostility, and the legacy boolean maps
   assert.equal(foreignDeployChance(50, { hostile: true }), foreignDeployChance(50, { hostility: 0.75 }));
   assert.equal(foreignDeployChance(50, { hostile: true, hostility: 0 }), base);
   assert.equal(foreignDeployChance(100, { hostility: 1 }), 0.32);
+});
+
+// "Counter-intelligence uncovers a The Giants agent": the one fixed sentence put
+// "a" before every polity name, and it read the same every time.
+test("spy events name a polity grammatically and do not all read alike", () => {
+  const titles = new Set();
+  for (let index = 1; index <= 40; index += 1) {
+    const world = {
+      intelligence: { "House Stark": 100, "The Giants": 0, Pentos: 100 },
+      spies: [
+        { id: `g-${index}`, owner: "The Giants", target: "House Stark", status: "active" },
+        { id: `s-${index}`, owner: "House Stark", target: "Pentos", status: "active" },
+      ],
+    };
+    for (let round = 1; round <= 40; round += 1) {
+      const out = resolveEspionage(world, { round, date: "d", playerPolity: "House Stark" });
+      out.events.forEach((event) => titles.add(event.title));
+      world.spies = out.spies;
+      if (!world.spies.some((spy) => spy.status === "active")) break;
+    }
+  }
+  const all = [...titles];
+  assert.ok(all.length > 0);
+  assert.ok(!all.some((title) => /\ba The\b|\ban? [A-Z][\w' ]+ agent\b/.test(title)), all.join(" | "));
+  assert.ok(all.filter((title) => /Giants/.test(title)).every((title) => /the Giants/.test(title)), "mid-sentence 'The' is lower-cased");
+  assert.ok(new Set(all.filter((title) => /Giants/.test(title)).map((title) => title.replace(/the Giants/, "X"))).size >= 2, "more than one wording");
+  assert.ok(new Set(all.filter((title) => /Pentos/.test(title)).map((title) => title.replace(/Pentos|House Stark/g, "X"))).size >= 2, "more than one wording");
 });

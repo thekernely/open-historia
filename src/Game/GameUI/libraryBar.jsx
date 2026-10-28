@@ -189,6 +189,15 @@ const DEFAULT_SCENARIO_COVER = "/scenario-placeholder.webp";
 // author picked, glows in the corner over that: the one fade the interface
 // keeps (noGradients.test.js).
 const COVER_TINT = "inset 0 0 0 100vmax rgba(4,6,12,0.56)";
+const CARD_COVER_FADE_STYLE = {
+  bottom: 0,
+  boxShadow: "inset 0 -0.8rem 0.5rem 0 #12141a",
+  height: "1.2rem",
+  inset: "auto 0 0 0",
+  pointerEvents: "none",
+  position: "absolute",
+  zIndex: 1,
+};
 const accentGlowStyle = (accentColor, { at, alpha, reach }) => ({
   background: `radial-gradient(circle at ${at}, ${accentColor}${alpha}, transparent ${reach})`,
   inset: 0,
@@ -274,8 +283,8 @@ const ButtonIcon = ({ kind, size = 15, strokeWidth = 1.9 }) => {
     case "refresh":
       return (
         <svg aria-hidden="true" {...common}>
-          <path d="M20 11a8 8 0 1 0 2.1 5.4" />
-          <path d="M20 4v7h-7" />
+          <path d="M20 12a8 8 0 1 1-8-8c2.24 0 4.38.89 6 2.44L20 8.5" />
+          <path d="M20 4v4.5h-4.5" />
         </svg>
       );
     case "import":
@@ -993,6 +1002,7 @@ const ScenarioCard = ({ onClone, onEdit, onPlay, onSelect, onUpdate, scenario, s
           }}
         />
         <div aria-hidden="true" style={accentGlowStyle(scenario.accentColor, { at: "14% 18%", alpha: "b8", reach: "34%" })} />
+        <div aria-hidden="true" style={CARD_COVER_FADE_STYLE} />
 
         {/* Floating Badges over Cover */}
         <div
@@ -1069,13 +1079,12 @@ const ScenarioCard = ({ onClone, onEdit, onPlay, onSelect, onUpdate, scenario, s
       {/* ── Bottom Half: Sleek Dark Cockpit Panel (#12141a) ── */}
       <div
         style={{
-          borderTop: "1px solid rgba(255,255,255,0.08)",
           display: "flex",
           flex: 1,
           flexDirection: "column",
           gap: "0.55rem",
           justifyContent: "space-between",
-          padding: "1rem 1.05rem",
+          padding: "0.85rem 1.05rem 1rem",
           position: "relative",
           zIndex: 2,
         }}
@@ -1348,6 +1357,7 @@ const GameCard = ({ active, busy, game, onActivate, onArchive, onClone, onDelete
           }}
         />
         <div aria-hidden="true" style={accentGlowStyle(game.accentColor, { at: "14% 18%", alpha: "b8", reach: "34%" })} />
+        <div aria-hidden="true" style={CARD_COVER_FADE_STYLE} />
       </div>
       <div
         style={{
@@ -1493,13 +1503,12 @@ const GameCard = ({ active, busy, game, onActivate, onArchive, onClone, onDelete
 
       <div
         style={{
-          borderTop: "1px solid rgba(255,255,255,0.08)",
           display: "flex",
           flex: 1,
           flexDirection: "column",
           gap: "0.55rem",
           justifyContent: "space-between",
-          padding: "1rem 1.05rem",
+          padding: "0.85rem 1.05rem 1rem",
           position: "relative",
           zIndex: 2,
         }}

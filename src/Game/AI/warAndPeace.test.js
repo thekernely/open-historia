@@ -18,6 +18,7 @@ import { normalizeWorldState } from "../../runtime/gameState.js";
 import { PEACE_OFFER_WEARINESS, TERRITORY_AS_HELD, TERRITORY_RESTORED } from "../../runtime/peaceTerms.js";
 import { WEARINESS_A_YEAR, wearinessOf } from "../../runtime/warWeariness.js";
 import { PUBLIC_WORLD_KEYS } from "../../multiplayer/host/projection.js";
+import { playerFronts } from "../GameUI/warRoomData.js";
 import {
   acceptPeaceOffer,
   answerCallToArms,
@@ -307,4 +308,24 @@ test("a peace settlement conserves the existing mapped residents and territorial
   assert.equal(settled.wars.find((entry) => entry.id === "war-1").status, "ended");
   assert.equal(source.countryStats.Borduria.population.total, 300,
     "failed preflight and accepted settlement leave the original state untouched");
+});
+
+test("a peace made lapses its war's open calls to arms and leaves its battlefields to the engine, and the war room no longer counts them", () => {
+  const battlefield = { name: "The Border", warId: "war-1", status: "active", sides: [["Aland"], ["Borduria"]] };
+  const call = { id: "call:war-1:Cobaltia", warId: "war-1", ally: "Cobaltia", defender: "Aland", status: "open", round: 1 };
+  const base = world({ battlefields: [battlefield], callsToArms: [call] });
+  const peace = makePeace(base, { warId: "war-1", from: "Borduria", to: "Aland", date: "1914-09-01", round: 3 });
+  assert.equal(peace.callsToArms.find((entry) => entry.id === call.id)?.status, "lapsed");
+  assert.deepEqual(peace.battlefields, base.battlefields);
+  assert.equal(peace.wars.find((war) => war.id === "war-1")?.status, "ended");
+  assert.equal(playerFronts([battlefield], "Aland", base.wars).length, 1);
+  assert.equal(playerFronts([battlefield], "Aland", peace.wars).length, 0);
+  assert.equal(playerFronts([battlefield], "Aland").length, 1);
+});
+
+test("countries are matched in diplomacy by their one name only", () => {
+  const base = world({ peaceOffers: [{ id: "off-1", warId: "war-1", from: "Borduria", to: "Aland", status: "open", terms: { territory: TERRITORY_RESTORED, reparations: null } }] });
+  assert.equal(playerDiplomacy(base, { op: "accept", ref: "off-1", country: "ALD", date: "1914-09-01", round: 3 }).error, "not-yours");
+  assert.equal(proposePeace(base, { warId: "war-1", from: "ALD", terms: { territory: TERRITORY_RESTORED } }).reason, "not-in-war");
+  assert.equal(playerDiplomacy(base, { op: "accept", ref: "off-1", country: "Aland", date: "1914-09-01", round: 3 }).error, "");
 });

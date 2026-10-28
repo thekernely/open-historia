@@ -53,6 +53,267 @@ import { PAST_UPDATES } from "./notesPast.js";
 // make UPDATES, newest first by date.
 const NEW_UPDATES = [
   {
+    id: "2026-10-gm-causal-previews",
+    kind: "minor",
+    date: "2026-10-28",
+    channel: "beta",
+    banners: [
+      {
+        title: "Safer Game Master changes",
+        items: [
+          "Game Master Auto now chooses Direct, Exact Event or World Intervention for your request, and explains the choice before you apply it.",
+          "The preview lists real national Statistics changes, including bounded economic effects, without claiming a future GDP figure.",
+          "A Direct request that makes no canonical change is rejected instead of being shown as successful.",
+          "World interventions can no longer replace a country's GDP baseline as though a crisis had instantly measured a new total.",
+          "Temporary growth effects with an invalid cause or duration are rejected in the preview before Apply.",
+        ],
+      },
+    ],
+  },
+  {
+    id: "2026-10-zoom-keys",
+    kind: "minor",
+    date: "2026-10-27",
+    banners: [
+      {
+        title: "Zoom in and out",
+        items: [
+          "On a computer, Ctrl and = (or +) now makes everything larger again, as Ctrl and - makes it smaller.",
+          "Ctrl and 0 puts the size back to normal. On a Mac, use Cmd.",
+        ],
+      },
+    ],
+  },
+  {
+    // "make it so you can do all the map controls with 2 fingers on a trackpad, and make it so mouse you can just
+    // right click to do them"; "make it so on track pad, a one finger click and drag pans but 2 finger drag turns
+    // tilts and rotates" (the owner, 2026-10-27).
+    id: "2026-10-turn-and-tilt",
+    kind: "minor",
+    date: "2026-10-27",
+    channel: "beta",
+    banners: [
+      {
+        title: "Turn and tilt the map",
+        items: [
+          "Drag with the right mouse button to turn and tilt the map: sideways turns it, up and down tilts it.",
+          "On a trackpad, a two-finger drag now turns and tilts the map, both at once, instead of zooming. Pinch to zoom.",
+          "A one-finger click and drag still moves the map, and a mouse wheel still zooms.",
+          "It works the same in the War Room, and Shift with the arrow keys still turns and tilts the map too.",
+        ],
+      },
+    ],
+  },
+  {
+    id: "2026-10-globe-and-renames",
+    kind: "minor",
+    date: "2026-10-27",
+    banners: [
+      {
+        title: "A smoother globe",
+        items: [
+          "Globe rotation and celestial star rendering run smoother with fewer frame drops.",
+          "A city renamed in your game shows its new name in its place popup as well as on the map.",
+          "A city renamed by an event is renamed on the map more reliably.",
+        ],
+      },
+    ],
+  },
+  {
+    id: "2026-10-peace-and-weariness",
+    kind: "minor",
+    date: "2026-10-26",
+    banners: [
+      {
+        title: "Peace, weariness and the phone",
+        items: [
+          "Once a war ends in peace, the War Room button for it goes away straight away.",
+          "Calls to arms in a war that has ended lapse, so leaving one unanswered no longer costs you reputation.",
+          "Peace terms show your own country's war weariness beside your enemy's, with a word for how weary each is.",
+          "Listening in on a region now opens on its country's feed first.",
+        ],
+      },
+    ],
+  },
+  {
+    // A player at war with Ireland had no War Room: the war was kept as Britain and Ireland against "1" and "2"
+    // (battle-of-europe-session-2, 2026-10-25).
+    id: "2026-10-war-sides",
+    kind: "minor",
+    date: "2026-10-25",
+    banners: [
+      {
+        title: "Wars have the right sides",
+        items: [
+          "A war you declared could be recorded with you and your enemy on the same side, so no front opened and the War Room button never appeared.",
+          "Such a war is now read the right way round when your game opens: its front opens on the next time skip, and with it the War Room.",
+          "New wars can no longer be recorded that way.",
+        ],
+      },
+    ],
+  },
+  {
+    // "get rid of the idle troop animation that makes it look like they are at war or battling" (the owner, 2026-10-25).
+    id: "2026-10-still-fronts",
+    kind: "minor",
+    date: "2026-10-25",
+    banners: [
+      {
+        title: "Quiet fronts stay quiet",
+        items: [
+          "Between time skips, troops on a front no longer push forward and fall back, and the ground along it no longer flickers between the two sides' colours.",
+          "A front now stands still until the next time skip, when what really happened is played out on the map as before.",
+          "Nothing about the fighting itself has changed.",
+        ],
+      },
+    ],
+  },
+  {
+    // "the ai is mistaking itself as being the player country talking to the united states (its talking to washington
+    // but it is playing the united states)" (the owner, 2026-10-25).
+    id: "2026-10-own-voice",
+    kind: "minor",
+    date: "2026-10-25",
+    banners: [
+      {
+        title: "Countries speak for themselves",
+        items: [
+          "Countries that write to you, or answer you in a conversation, are now told plainly which country they are and that you are the one they are writing to.",
+          "A message shown as another country's should no longer read as your side of the exchange, such as the United States telling Washington to back off.",
+          "This covers replies in your conversations, notes sent after events, and notes sent between turns.",
+        ],
+      },
+    ],
+  },
+  {
+    id: "2026-10-interactive-offers",
+    kind: "minor",
+    date: "2026-10-25",
+    banners: [
+      {
+        title: "Interactive events, less often",
+        items: [
+          "A time skip now offers an interactive event about one skip in five: one in four when it has an event worth playing out, and never on the skip right after the last offer.",
+          "A scene you play out no longer shortens the wait for the next offer.",
+          "Campaigns that start on the same date no longer get their offers on the same skips.",
+        ],
+      },
+    ],
+  },
+  {
+    id: "2026-10-faster-updates",
+    kind: "minor",
+    date: "2026-10-25",
+    banners: [
+      {
+        title: "Faster updates",
+        items: [
+          "An update found as the game opens no longer spends minutes going through every file you already have: it checks them against the list the last update left, in a second or two.",
+          "Only what changed is downloaded, as before, and the game restarts on the new version.",
+          "The first update after installing the game from its installer still goes through every file once.",
+        ],
+      },
+    ],
+  },
+  {
+    id: "2026-10-espionage-part-2",
+    kind: "major",
+    date: "2026-10-24",
+    banners: [
+      {
+        theme: "espionage2",
+        scene: "orders",
+        title: "Espionage, Part 2",
+        subtitle: "Orders in the dark",
+        lead: "Your agents now take orders. Send them after a country's army or its science, or have them sabotage, recruit and assassinate: the world feels what they do, and unless one is caught and made to talk, never learns it was you.",
+        sections: [
+          {
+            heading: "Orders",
+            icon: "chess",
+            items: [
+              "Tell each network what to collect on: diplomacy, the military, research and technology, economic policy or internal politics.",
+              "Order an operation: sabotage, recruit a source, assassinate, or anything else you can put in words.",
+              "Each order shows its odds of success and its risk of capture before you give it.",
+            ],
+          },
+          {
+            heading: "In the world",
+            icon: "eye",
+            items: [
+              "An operation is carried out during the next time skip, and the world reacts to what it did.",
+              "An operation that is never traced is never tied to you: the world only sees what happened.",
+              "A recruited source makes its network harder to catch, and its reports draw on what the source knows.",
+              "How much of an intercept you can read now rests on your own service: a world-class one reads nearly every word, a weak one only scraps.",
+            ],
+          },
+        ],
+      },
+      {
+        theme: "espionage2",
+        scene: "custody",
+        title: "Not Every Agent Talks",
+        subtitle: "Caught is not the same as identified",
+        lead: "A captured agent is not always made to say who sent them. One who never talks dies under interrogation, and the trail ends there.",
+        sections: [
+          {
+            heading: "Your agents",
+            icon: "people",
+            items: [
+              "An agent of yours who is caught may die in custody without giving you away, and the country that caught them never learns who sent them.",
+              "The Operations log in the Intelligence tab keeps what every operation came to.",
+            ],
+          },
+          {
+            heading: "Theirs",
+            icon: "wall",
+            items: [
+              "A foreign agent your service catches is not always identified either: when they die under interrogation, there is no one to expel or turn.",
+              "When your service does learn who sent them, you decide as before: expel them, or turn them.",
+            ],
+          },
+        ],
+        button: "To the field",
+      },
+    ],
+  },
+  {
+    // "the deployment tool in the war room doesnt seem to work. it does draw the line, but the troops are never actually
+    // deployed" (the owner, 2026-10-24).
+    id: "2026-10-deploy-calls-up",
+    kind: "minor",
+    date: "2026-10-24",
+    banners: [
+      {
+        title: "The Deploy tool deploys troops",
+        items: [
+          "In the War Room, drawing a deployment line or placing a swarm now calls up fresh troops there. They come in when time next passes.",
+          "Choose how many formations to call up as you draw it. Leave it empty for as many as a usual draft, or put 0 to only move where new troops arrive.",
+          "It works where your army is already large: only the men your country has left and the room along the front limit it.",
+          "The deployment's card says how many are coming, how many came, or why none could be called up, such as no men left to serve.",
+          "Levies, drafts and reinforcements still come in on the line or at the swarm's place afterwards.",
+        ],
+      },
+    ],
+  },
+  {
+    // "there is a report that on the android version during a time skip it just completely freezes permenantly and
+    // you cant click any buttons or do anything" (the owner, 2026-10-23).
+    id: "2026-10-skip-freeze",
+    kind: "minor",
+    date: "2026-10-24",
+    banners: [
+      {
+        title: "Time skips no longer freeze",
+        items: [
+          "A time skip no longer freezes the game on phones in scenarios with many countries, vassals and treaties, such as 1836: The Victorian Era.",
+          "Time skips are faster everywhere: the game works out who is who in the world's treaties and vassals once per check, and copies each country's politics far less often.",
+          "Nothing in your games changes: the same countries, treaties and vassals, worked out faster.",
+          "On a computer, an update found as the game opens no longer leaves its screen not responding.",
+        ],
+      },
+    ],
+  },
+  {
     id: "2026-10-national-stats-bindings",
     kind: "minor",
     date: "2026-10-21",
@@ -109,7 +370,7 @@ const NEW_UPDATES = [
           "Archiving or deleting the game you have open takes you back to the menu, an archived game can be deleted from its card, emptying Recently deleted works everywhere, and a diplomacy message's copy button stays while you reach for it. In the Actions tab, the suggested actions and your own open one at a time. Your own Agent can be OpenCode as well.",
           "Create a faction is now part of Play as a group, and choosing a group's area shows the country picker's map.",
           "The map follows the story: a country that replaces another takes its land, an annexation you order reaches the map when the turn tells it, a war under an armistice can still be settled, and a war fought overseas opens a battlefield where your troops stand on the enemy's land.",
-          "The map editor is laid out anew in the menus' style, with its sidebar on the right or the left, quicker tools, smooth zooming even on very detailed maps, pasted regions kept to the map's own detail, a Simplify button, and fewer notes in the way.",
+          "The map editor is laid out anew in the menus' style, with its sidebar on the right or the left, quicker tools, smooth zooming even on very detailed maps, pasted regions kept to the map's own detail, a Simplify button, and fewer notes in the way. A new map starts on the world map, the hand-drawn one with the most regions, or on the legacy world map, Modern Day's own.",
           "The Community tab can show only the scenarios that begin between two dates, and publishing says when a scenario's file is too large for GitHub.",
           "Modern Day is played on the real world's provinces again, and campaigns begun on the hand-drawn map keep it as Modern Day (classic map); the Northern Forests climate zone is redrawn.",
         ],

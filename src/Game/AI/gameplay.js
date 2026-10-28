@@ -282,8 +282,9 @@ import {
   spyProvenanceOps,
   unassessedHighPriorityEntries,
 } from "../../runtime/projects.js";
-import { activeSpies, applySpyOps, espionageBrief, intelligenceOf, isIntelligenceRated, normalizeIntelligenceRating, normalizeIntercepts, normalizeSpies, redactText, resolveEspionage, signalClarity } from "../../runtime/spycraft.js";
+import { activeSpies, applySpyOps, espionageBrief, intelligenceOf, isIntelligenceRated, normalizeIntelligenceRating, normalizeIntercepts, normalizeSpies, planCovertOperations, redactText, resolveEspionage, signalClarity } from "../../runtime/spycraft.js";
 import { buildSpyOrdersDirective } from "./spyOrdersDirective.js";
+import { collectionOrders, covertOperationsBlock, untracedTargets } from "./covertOperationsDirective.js";
 import { AGENT_REPORT_EVERY_ROUNDS, agentsDueToReport, agentsReportingWithSkip } from "./agentReports.js";
 import { assignAgentReports, boardOpsOf, liftBoardOps, providerRefusedContract, withoutBoardOps } from "./foldedSkip.js";
 import { renderOpenChatsForPrompt } from "../../runtime/chatEcho.js";
@@ -2872,7 +2873,10 @@ ${describeTravelPace(game?.gameDate, eraSettingOf(world))}`);
 
   if (isActiveFeatureEnabled("espionage")) {
     try {
-      const brief = espionageBrief(world, await readOpenedIntercepts(), { playerPolity: normalizeString(game?.country) });
+      const brief = espionageBrief(world, await readOpenedIntercepts(), {
+        playerPolity: normalizeString(game?.country),
+        hiddenTargets: normalizeArray(variables.covertHiddenTargets),
+      });
       if (brief) {
         blocks.push(`[Espionage]
 Known to you, not to the player, whose service sees only what it can decode. Let it shape events: a polity with an agent inside another acts on what it stole, a polity fed a planted story believes it, an expulsion sours relations. Never reveal in an event that an agent has been turned until it is discovered.
@@ -2881,6 +2885,8 @@ ${brief}`);
     } catch {
       /* no espionage context this turn */
     }
+    const covert = normalizeString(variables.covertOperations);
+    if (covert) blocks.push(covert);
   }
 
   try {
@@ -3113,7 +3119,7 @@ const buildTaskSystemPrompt = async (taskKey, { variables, lookups = null, remin
     const board = projects && !projects.startsWith("No projects")
       ? `\n\nThe board as it stands:\n${projects}`
       : "";
-    systemPrompt = `${systemPrompt}\n\n[Projects & Operations]\nThe player keeps a board of long-running efforts - research and industrial programmes, construction projects, military and covert operations, sustained political campaigns - each with a status, progress, timeline and next milestone. Keep it in step with what you narrate, using impacts.projectOps.\nWhen an event advances, delays, funds, starves, exposes or ends one of the efforts below, that SAME event must carry a projectOps entry moving it: op update for progress or a change of status, op milestone when a checkpoint is reached or missed, op complete when it finishes. Copy the id and name EXACTLY as they appear below - an op that names something not on the board is dropped. When an event STARTS a new multi-round effort (a power lays down a programme, opens a construction project, mounts an operation), open it with op create, including a foreign power's programme the player's services have learned of - set ownerCode to that country's full name.\nBe proportionate. A programme does not move every jump, and inventing progress is worse than reporting none: if nothing happened to it this period, leave it alone. A long jump should move the things that plausibly advanced over that span; a six-hour jump almost never moves any of them. Never open a project for an internal act - a rename, a recolour, a flag, a title, a proclamation, a reshuffle - or for a transfer the other side has already agreed to: those are enacted outright by the event that narrates them (see [Sovereign Acts and What Needs Consent]), and a progress bar for one is always wrong.${board}
+    systemPrompt = `${systemPrompt}\n\n[Projects & Operations]\nThe player keeps a board of long-running efforts - research and industrial programmes, construction projects, military and covert operations, sustained political campaigns - each with a status, progress, timeline and next milestone. Keep it in step with what you narrate, using impacts.projectOps.\nWhen an event advances, delays, funds, starves, exposes or ends one of the efforts below, that SAME event must carry a projectOps entry moving it: op update for progress or a change of status, op milestone when a checkpoint is reached or missed, op complete when it finishes. A checkpoint is reached when it happens, not on its date: the FIRST event that reports a pending checkpoint done carries op milestone for it, even weeks early, and once the board's Last reported line says a checkpoint is done, its date arriving later is not news - never narrate it a second time. Copy the id and name EXACTLY as they appear below - an op that names something not on the board is dropped. When an event STARTS a new multi-round effort (a power lays down a programme, opens a construction project, mounts an operation), open it with op create, including a foreign power's programme the player's services have learned of - set ownerCode to that country's full name.\nBe proportionate. A programme does not move every jump, and inventing progress is worse than reporting none: if nothing happened to it this period, leave it alone. A long jump should move the things that plausibly advanced over that span; a six-hour jump almost never moves any of them. Never open a project for an internal act - a rename, a recolour, a flag, a title, a proclamation, a reshuffle - or for a transfer the other side has already agreed to: those are enacted outright by the event that narrates them (see [Sovereign Acts and What Needs Consent]), and a progress bar for one is always wrong.${board}
 
 Whose project it is. Entries marked THEIRS belong to another power; everything else is the player's own. A foreign programme moves because ITS OWNER moved it and the player's services observed as much - never because the player wished it stopped or ordered it stopped. The player has no priority dial and no cancel over another government's work, so an order of theirs is not a reason to touch a foreign entry: if their orders this period were aimed at a rival's programme, what happens is that THEIR OWN counter-effort advances - the sabotage, the embargo, the covert operation, the race to build first - and the rival's entry then moves only insofar as that effort actually bit, narrated as an event with the consequences that follow. Retaliation is the same rule, not an exception to it: a wrecked programme is wrecked by an event that says who did what and at what cost, and if the operation failed then the rival's programme carries right on. Never close, cancel or deprioritise a foreign entry to satisfy an instruction; close it only when the story genuinely ended it, and say what ended it.
 
@@ -9068,7 +9074,7 @@ const applySimulationResult = async ({
   // vanished. Only when the skip resolved the queue at all: a scene or a check
   // that leaves the orders planned has not answered them.
   let nextActions = result.clearActions
-    ? settleOrders(normalizeActions(baseActions), freshEvents)
+    ? settleOrders(normalizeActions(baseActions), freshEvents, { round: nextGame.round })
     : normalizeActions(baseActions);
   // An order the skip narrated but never CITED stays queued, because nothing in
   // the answer says it was carried out. The model is told at the top of its next
@@ -9503,8 +9509,9 @@ const applySimulationResult = async ({
       // one player the list is the player alone, and nothing changes.
       playerPolities: humanCountriesOf(baseGame),
       candidatesFor: espionageCandidatesFor,
+      operations: normalizeArray(result.covertOperations),
     })
-    : { spies: normalizeArray(worldWithImpacts.spies), events: [], notices: [] };
+    : { spies: normalizeArray(worldWithImpacts.spies), events: [], notices: [], operations: [] };
   worldWithImpacts.spies = espionage.spies;
   // A spy in the world needs a seal for what it will report under.
   if (!isSeal(worldWithImpacts.spySeal) && espionage.spies.length) worldWithImpacts.spySeal = newSeal();
@@ -9628,10 +9635,11 @@ const applySimulationResult = async ({
       wars: worldWithImpacts.wars,
       heldBefore: landHolders(baseWorld),
       heldAfter: landHolders(worldWithImpacts),
+      round: nextGame.round,
     });
     if (pruned.removed.length) {
       worldWithImpacts = { ...worldWithImpacts, units: pruned.units, pendingUnitOrders: pruned.orders };
-      logDebugEvent("turn", `${pruned.removed.length} unit${pruned.removed.length === 1 ? "" : "s"} left the map: ${pruned.removed.map(({ unit, reason }) => `${unit.name} (${reason === "war-ended" ? "its war ended" : `${unit.ownerCode} holds no land`})`).join(", ")}.`);
+      logDebugEvent("turn", `${pruned.removed.length} unit${pruned.removed.length === 1 ? "" : "s"} left the map: ${pruned.removed.map(({ unit, reason }) => `${unit.name} (${reason === "war-ended" ? "its war ended" : reason === "voyage-ended" ? "its voyage is over" : `${unit.ownerCode} holds no land`})`).join(", ")}.`);
     }
   }
   // Each segment was checked on its own; this is the merged round. A finished
@@ -9899,6 +9907,7 @@ const applySimulationResult = async ({
       events: freshEvents,
       round: nextGame.round,
       lastOfferRound: baseWorld?.lastInteractiveOfferRound,
+      history: baseWorld?.simulationHistory,
     });
     worldWithImpacts = {
       ...worldWithImpacts,
@@ -10244,6 +10253,7 @@ const applySimulationResult = async ({
         clearActions: result.clearActions,
         mode: result.mode,
         receipt,
+        covertOperations: result.covertOperations,
       })
       : null,
   });
@@ -13640,6 +13650,7 @@ const prepareSpyReport = async (bundle, spy, { sharedVariables = null } = {}) =>
     `TARGET DOSSIER:\n${dossier || "(nothing recorded)"}`,
     politicalAssessmentOrder,
     orders,
+    collectionOrders(spy, name),
   ].filter(Boolean).join("\n\n");
   return {
     name,
@@ -15476,6 +15487,13 @@ export const runChatActionBatch = async ({
     signal,
     ...(agentKind ? { agentKind } : {}),
     userMessage: [
+      // Whose words these are: "its talking to washington but it is playing the united states" (the owner, 2026-10-25).
+      [
+        "[Whose voice]",
+        `You write ONLY as ${aiParticipants.join(", ")}${aiParticipants.length > 1 ? ", each in its own voice" : ""}.`,
+        `${player} is the human player: the lines marked ${player} in the conversation are what it said to you. Answer them as the polity you write for, never as ${player}.`,
+        `A message is that polity's own words (its own "we" and "our"), addressed to ${[player, ...otherPeople].join(" and ")} or the others here: never ${player}'s words, and never addressed to the speaker's own government, capital or leader.`,
+      ].join("\n"),
       normalizeString(catchUp),
       playerMessage
         ? `${player} has just said: ${playerMessage}`
@@ -16670,6 +16688,13 @@ const runJumpSegments = async ({ context, onEvents, onProgress, signal, state })
   // written under it.
   if (state.folded === undefined) state.folded = !foldedSkipRefused;
   if (state.folded && !state.foldedPrep) state.foldedPrep = await prepareFoldedSkip({ bundle, originDate, variables, campaignId: context.campaignId });
+  if (!Array.isArray(state.covertOperations)) {
+    state.covertOperations = isActiveFeatureEnabled("espionage")
+      ? planCovertOperations(normalizeWorldState(bundle.world), { round: (bundle.game?.round || 1) + 1, playerPolity: normalizeString(bundle.game?.country) })
+      : [];
+  }
+  const covertBrief = covertOperationsBlock(state.covertOperations);
+  const covertHiddenTargets = untracedTargets(state.covertOperations);
 
   // Starts at 0 on a fresh jump, and at the failed segment on a retry.
   let segmentIndex = state.nextSegment;
@@ -16765,6 +16790,8 @@ const runJumpSegments = async ({ context, onEvents, onProgress, signal, state })
       const segmentShares = combinedShares({ focus: focusContext.focus, worldShare: direction?.worldShare });
       const segmentVariables = {
         ...variables,
+        covertOperations: segmentIndex === 0 ? covertBrief : "",
+        covertHiddenTargets,
         playerFocusWorldShare: segmentShares.world,
         playerFocusDirective: buildPlayerFocusDirective({
           focus: focusContext.focus,
@@ -17432,6 +17459,12 @@ const UNIT_DIRECTOR_INSTRUCTION =
   // A player's order to place a garrison became a march of the one
   // armoured division there (2026-09-29): a garrison is fixed where it is put.
   + "A garrison placed, stationed or established at a named place is likewise new: spawn it there with type \"garrison\"; never march an existing field formation in its place. "
+  // The Lantern Grace carried a stolen dragon egg and was never on the map
+  // (a Game of Thrones save, 298 AC): only warships became counters.
+  // The army of the dead grew with every kill in a Game of Thrones save and its
+  // counters never changed: a host growing was nobody's operation.
+  + "A force that GROWS in an event (recruits arrive, a host swells, the slain rise to join it) gains strength: raise its unit with op strength, and when that unit is already at full strength spawn a second formation of the same power beside it. This holds even when the fighting itself is not part of any war. "
+  + "A candidate marked storyShip is the player's own story ship (a hired cog, a courier, a ship carrying a prize), not a warship: when it sets sail, spawn it with storyVessel true, type \"naval\", for the player, where it sails from; move it as later events carry it; remove it when it arrives and unloads. "
   // A player asked for it (2026-09-29), and placement enforces it (militaryPosts.js).
   + "On the power's own land a garrison is placed directly. On another power's land it is placed too, and one of the power's formations holds it: when none stands there, move one there in the same event. "
   // Seen in a player's Game (2026-09-30): Russia invaded Ukraine and fought
@@ -18131,6 +18164,7 @@ const finishTimelineJump = async ({ context, signal, state }) => {
     filedEvents: state.filedEvents,
     boardProvisionalEventIds: state.boardProvisionalEventIds,
     receipt: state.receipt,
+    covertOperations: normalizeString(state.generation?.source) === "fallback" ? [] : normalizeArray(state.covertOperations),
     scriptedEventState: state.scriptedEventState,
     // A canned turn is never held: the fallback page already says the model is
     // not answering. Nor once the player chose to keep the turn as it is.
@@ -19918,6 +19952,17 @@ const chatParticipantNamesKey = (chat) => normalizeArray(chat?.countries)
 
 let eventReactionInFlight = false;
 
+// Whose note it is, for a note a polity writes to the player (idle diplomacy and an event's outreach): "the ai is
+// mistaking itself as being the player country talking to the united states (its talking to washington but it is
+// playing the united states)" (the owner, 2026-10-25).
+const noteVoiceText = (player) => [
+  "[Whose voice]",
+  `${player} is the PLAYER: the country the note is written TO. You are never ${player}.`,
+  "You write as the polity named in speaker, and only as it: in its own first person (\"we\", \"our government\"),"
+  + ` addressed to ${player}'s government, leader or capital.`,
+  `The note is never ${player}'s words and never says ${player}'s side of anything, and it never addresses the speaker's own government, capital or leader.`,
+].join("\n");
+
 export const processPendingEventOutreach = async ({ debug = false } = {}) => {
   if (eventReactionInFlight) return debug ? { processed: 0, reason: "already-in-flight", retryAfterMs: 1000 } : null;
   if (isSimulationBusy()) return debug ? { processed: 0, reason: "simulation-busy", retryAfterMs: 5000 } : null;
@@ -20033,6 +20078,7 @@ export const processPendingEventOutreach = async ({ debug = false } = {}) => {
         lookups: buildTaskLookups(bundle),
         userMessage:
           "Evaluate the supplied canonical event once. Decide whether one AI-controlled polity or a genuinely joint small group would naturally send the player a diplomatic note about it right now, or whether silence is the natural outcome. Return unitOps as an empty array and no sighting."
+          + `\n\n${noteVoiceText(normalizeString(bundle.game?.country))}`
           + conversationContext
           + (politicalDecisionContext ? `\n\n${politicalDecisionContext}` : "")
           + "\n\nReturn JSON only.",
@@ -21138,6 +21184,7 @@ export const maybeSendIdleDiplomacy = async () => {
       lookups: buildTaskLookups(bundle),
       requestKind: BACKGROUND_REQUEST,
       userMessage: "A quiet moment between rounds. Decide whether any single polity would send the player a short diplomatic note right now, and whether any forces would visibly move."
+        + `\n\n${noteVoiceText(bundle.game.country)}`
         + conversationContext
         + (institutionRoutingContext ? `\n\n${institutionRoutingContext}` : "")
         + (politicalDecisionContext ? `\n\n${politicalDecisionContext}` : "")

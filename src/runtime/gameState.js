@@ -36,7 +36,7 @@ import { applyReportOps, normalizeReportOp, normalizeReports } from "./reports.j
 import { normalizeGmChanges, normalizeReminders } from "./gmChanges.js";
 import { normalizePlayerGoals } from "./playerGoal.js";
 import { normalizeInteractiveOffer } from "./interactiveOffer.js";
-import { normalizeSpyOp } from "./spycraft.js";
+import { normalizeSpyOp, spyTasking } from "./spycraft.js";
 import { eventsFromLegacyChat, normalizeChatEvents, projectChatThread, withUnloggedMessages } from "./chatThreads.js";
 import { latestTurnEventIds, unseenEvents, withoutUnseenChats, withoutUnseenEvents, withoutUnseenReports } from "./unseenEvents.js";
 import { COUNTRY_STATS_EVENT_RESCALE_LIMIT, mergeCountryStatPatch, normalizeCountryStatSheet, normalizeCountryStatDemographicClock } from "./countryStats.js";
@@ -567,6 +567,8 @@ export const normalizeActionEntry = (entry, index = 0) => {
     text: text || rawInput || title,
     title: title || rawInput || text,
     ...(unitRevert ? { unitRevert } : {}),
+    // The round a skip carried the order out in (AI/playerFocus.js settleOrders).
+    ...(Number.isInteger(entry.resolvedRound) ? { resolvedRound: entry.resolvedRound } : {}),
     // Carried over unanswered from the last time skip (AI/playerFocus.js
     // settleOrders): the next skip answers it first.
     ...(entry.overdue === true ? { overdue: true } : {}),
@@ -1340,6 +1342,11 @@ export const normalizeUnitEntry = (entry, index = 0) => {
     // here keeps its name and what it is, and takes its place and strength back
     // when the battlefield closes. Absent on every other unit.
     ...(normalizeOptionalString(entry.committedTo) ? { committedTo: normalizeOptionalString(entry.committedTo) } : {}),
+    // A ship the player's story turns on (a hired cog carrying a stolen egg), not
+    // a warship: shown while it sails and taken off the map at expiresRound
+    // (AI/nativeUnitDirector.js pruneWarUnits) if no arrival removes it first.
+    ...(entry.storyVessel === true ? { storyVessel: true } : {}),
+    ...(Number.isInteger(entry.expiresRound) ? { expiresRound: entry.expiresRound } : {}),
     source: UNIT_SOURCE_SET.has(source) ? source : "scenario",
     orderId: normalizeOptionalString(entry.orderId),
     createdAt: normalizeOptionalString(entry.createdAt) || timestamp,
@@ -2989,6 +2996,9 @@ export const resumeStandingOrders = (world, { round = 0, previousSystem = "" } =
 // context: { markers, gameDate, elapsedDays, round, extraAnchors, eventId }
 //   elapsedDays === null | undefined  ->  no travel clamp (the old behaviour, and
 //   what a non-Gregorian scenario date must fall back to).
+// How many rounds a story ship stays on the map when no arrival removes it.
+export const STORY_VESSEL_ROUNDS = 10;
+
 export const applyUnitOpBatch = (units, orders, ops, context = {}) => {
   const {
     gameDate = "", elapsedDays = null, round = 0, extraAnchors = [], eventId = "", era = null,
@@ -3018,6 +3028,13 @@ export const applyUnitOpBatch = (units, orders, ops, context = {}) => {
       if (spawnId && next.some((unit) => unit.id === spawnId)) continue;
 
       const unit = { ...op.unit };
+      // A story ship is a ship whatever the model called it, unlisted because
+      // nothing guards it, and kept for STORY_VESSEL_ROUNDS at most.
+      if (unit.storyVessel) {
+        unit.type = "naval";
+        unit.covert = true;
+        unit.expiresRound = (Number(round) || 0) + STORY_VESSEL_ROUNDS;
+      }
       const anchors = buildOwnerFootprint({ units: next, markers }, unit.ownerCode, extraAnchors);
       // Reach/supply feasibility: a spawn its owner could not support where the
       // model put it is downgraded rather than dropped.
@@ -3953,10 +3970,13 @@ const normalizeWorldWar = (entry, index = 0) => {
   };
 
   const id = normalizeOptionalString(entry.id) || `war-${index}`;
-  const sideA = uniquePolities(entry.sideA);
-  const sideAKeys = new Set(sideA.map((name) => name.toLocaleLowerCase()));
-  const sideB = uniquePolities(entry.sideB)
-    .filter((name) => !sideAKeys.has(name.toLocaleLowerCase()));
+  // A polity's name has a letter in it. A war kept as "United Kingdom, Ireland" against "1, 2" (a time skip wrote its
+  // event numbers where the opponents go, battle-of-europe-session-2, 2026-10-25) is its two parties against each other.
+  const named = (list) => uniquePolities(list).filter((name) => /\p{L}/u.test(name));
+  const read = named(entry.sideA);
+  const readKeys = new Set(read.map((name) => name.toLocaleLowerCase()));
+  const others = named(entry.sideB).filter((name) => !readKeys.has(name.toLocaleLowerCase()));
+  const [sideA, sideB] = others.length === 0 && read.length === 2 ? [[read[0]], [read[1]]] : [read, others];
   if (!sideA.length || !sideB.length) return null;
 
   const rawStatus = normalizeOptionalString(entry.status).toLowerCase();
@@ -4000,6 +4020,24 @@ const normalizeWorldWars = (value) => {
     .slice(0, MAX_WORLD_WARS);
 };
 
+// One identity index per identity world. normalizeWorldState makes that world
+// afresh for each pass and only reads it, so the index built for its first
+// name holds for all the rest. Without this every relation, agreement and
+// puppet row built the index again, each time reading every polity and every
+// region's owner: a pass cost rows x regions, the game makes hundreds of
+// passes in a skip, and on a phone a scenario with many puppets froze the
+// page for minutes before the skip's request was even sent (2026-10-23).
+const diplomaticIdentityIndexes = new WeakMap();
+const diplomaticIdentityIndexOf = (identityWorld) => {
+  if (!identityWorld || typeof identityWorld !== "object") return null;
+  let index = diplomaticIdentityIndexes.get(identityWorld);
+  if (!index) {
+    index = buildPolityIdentityIndex(identityWorld);
+    diplomaticIdentityIndexes.set(identityWorld, index);
+  }
+  return index;
+};
+
 const resolveWorldDiplomaticPolity = (token, identityWorld) => {
   const raw = normalizeOptionalString(token);
   if (!raw) return "";
@@ -4008,6 +4046,7 @@ const resolveWorldDiplomaticPolity = (token, identityWorld) => {
     requireActive: false,
     allowCoreMatch: true,
     allowStockBase: true,
+    identityIndex: diplomaticIdentityIndexOf(identityWorld),
   });
   return normalizeOptionalString(resolved?.resolved || toCountryName(raw) || raw);
 };
@@ -4292,7 +4331,7 @@ export const normalizeWorldState = (world) => {
       .filter(([polityCode, value]) => polityCode && Number.isFinite(value))
       .map(([polityCode, value]) => [polityCode, Math.max(0, Math.min(100, Math.round(value)))]),
   );
-  const SPY_STATUSES = ["active", "discovered", "turned", "exposed", "recalled"];
+  const SPY_STATUSES = ["active", "discovered", "turned", "exposed", "recalled", "dead"];
   const spies = normalizeArray(nextWorld.spies)
     .map((spy, index) => {
       const target = normalizeOptionalString(spy?.target || spy?.polity);
@@ -4310,6 +4349,7 @@ export const normalizeWorldState = (world) => {
         exposedAt: normalizeOptionalString(spy?.exposedAt),
         coverStory: normalizeOptionalString(spy?.coverStory),
         suspected: spy?.suspected === true,
+        ...spyTasking(spy),
       };
     })
     .filter(Boolean);
@@ -4351,7 +4391,7 @@ export const normalizeWorldState = (world) => {
     ...(Object.hasOwn(nextWorld, "frontPersonnel") ? { frontPersonnel: normalizeFrontPersonnel(nextWorld.frontPersonnel) } : {}),
     politicalActors: normalizePoliticalActors(nextWorld.politicalActors),
     politicalSimulation: normalizePoliticalSimulationClock(nextWorld.politicalSimulation),
-    institutions: normalizeInstitutions(nextWorld.institutions, diplomaticIdentityWorld),
+    institutions: normalizeInstitutions(nextWorld.institutions, diplomaticIdentityWorld, diplomaticIdentityIndexOf(diplomaticIdentityWorld)),
     powerStatus: normalizePowerStatus(nextWorld.powerStatus, diplomaticIdentityWorld),
     actionSuggestions: normalizeActionSuggestions(nextWorld.actionSuggestions),
     activeInteractive: normalizeInteractive(nextWorld.activeInteractive),
