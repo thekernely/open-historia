@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { addGameDays } from "../../runtime/gameDates.js";
-import { normalizeEvents, applyEventImpactsToWorld } from "../../runtime/gameState.js";
+import { EVENT_IMPACT_KEYS, normalizeEvents, applyEventImpactsToWorld } from "../../runtime/gameState.js";
 import { planNativeStatsTurnChronology } from "../../runtime/statsTurnChronology.js";
 import { planNativeStatsLiveTurn } from "../../runtime/statsLiveTurnClock.js";
 import { mergeCountryStatPatch } from "../../runtime/countryStats.js";
@@ -134,4 +134,30 @@ test("date-true native event survives the full wartime Statistics and territory 
     assert.equal(after.countryStatsHistory[name].at(-1).date, toDate);
   }
   assert.ok(!Object.hasOwn(world, "regionSovereigntyOverrides"), "original world remains unchanged");
+});
+
+test("a newly published front event has the COMPLETE canonical impact shape for downstream gameplay consumers", () => {
+  // The territory reducer normalizes a separate copy and can appear green
+  // even when gameplay later loops over event.impacts.createdChats directly.
+  // This is a regression for a real 60-day full simulateTimelineJump failure.
+  const narrative = event("narrated", "2024-03-25");
+  const published = publish([narrative], [flip(8), flip(14, "r2")]);
+  assert.equal(published.length, 3);
+  assert.equal(published[2], narrative, "already normalized AI carriers are not rewritten");
+  for (const native of published.filter((entry) => entry.source === "front")) {
+    assert.equal(native.title, "Frontline control changes");
+    assert.equal(native.impacts.regionControlOps.length, 1);
+    for (const family of EVENT_IMPACT_KEYS) {
+      assert.ok(Array.isArray(native.impacts[family]), "missing canonical family "+family);
+    }
+    assert.deepEqual(native.impacts.createdChats, [], "later chat publication must safely iterate");
+    assert.deepEqual(native.impacts.projectOps, []);
+    assert.deepEqual(native.impacts.regionTransfers, []);
+    assert.deepEqual(native.impacts.unitOps, []);
+    const stored = normalizeEvents([native])[0];
+    assert.equal(stored.id, native.id);
+    assert.equal(stored.date, native.date);
+    assert.equal(stored.impacts.regionControlOps.length, native.impacts.regionControlOps.length);
+    assert.deepEqual(stored.impacts.createdChats, [], "the persistence normalizer retains the full shape");
+  }
 });

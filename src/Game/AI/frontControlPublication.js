@@ -4,12 +4,14 @@
  * their actual dates. No new front outcome is inferred here.
  */
 import { addGameDays, compareGameDates, diffGameDays, isCanonicalGameDate } from "../../runtime/gameDates.js";
+import { EVENT_IMPACT_KEYS } from "../../runtime/gameState.js";
 import { FRONT_MARK } from "./frontTurn.js";
 
 const rows = (value) => Array.isArray(value) ? value : [];
 const clean = (value) => typeof value === "string" ? value.trim() : "";
 const publicEvent = (event) => rows(event?.audience).length === 0 && !clean(event?.audience);
 const fail = (reason) => { throw new Error(`Native front control publication refused: ${reason}`); };
+const emptyNativeImpacts = () => Object.fromEntries(EVENT_IMPACT_KEYS.map((key) => [key, []]));
 
 // Called after the front engine and before native Statistics / event reduction.
 // Preserve AI-authored events and their relative order, keep same-day public
@@ -96,10 +98,14 @@ export const publishDatedFrontControlEvents = ({
       title: "Frontline control changes",
       description: "The native front engine recorded territorial control changes on this date.",
       kind: "world", importance: "minor", source: "front", notable: false,
-      impacts: { regionControlOps: syntheticOps },
+      impacts: { ...emptyNativeImpacts(), regionControlOps: syntheticOps },
     });
   }
+  // These are NEW canonical events, not provider events. Downstream gameplay
+  // iterates impact families directly (createdChats, etc.), whereas the
+  // territory reducer normalizes only its own copy. Use the canonical family
+  // keys above for a complete in-memory event, without re-normalizing or
+  // altering already-verified region-control operations.
   // Stable sorting leaves the model events in their original same-day order.
-  // New native entries follow already accepted events on their actual day.
   return [...cleanEvents, ...produced].sort((a, b) => compareGameDates(a.date, b.date));
 };
