@@ -88,6 +88,8 @@ import {
   resolveGameMasterBaseGeographyScope,
   scopeContainsRegion,
 } from "./gmTerritoryScope.js";
+import { GAME_MASTER_MODES, GM_AUTO_MODE, validateGameMasterModeSelection } from "./gameMasterAutoMode.js";
+import { buildGameMasterStatsPreview } from "./gameMasterStatsPreview.js";
 import {
   gameMasterPolityKey,
   gameMasterStateFingerprint,
@@ -95,6 +97,9 @@ import {
   validateGameMasterBreakawaySovereignty,
   validateGameMasterChronology,
   validateGameMasterPolityLifecycle,
+  validateGameMasterStatsAuthority,
+  validateGameMasterDirectMutation,
+  validateGameMasterFiniteEconomicInfluences,
   verifyGameMasterTerritoryPostconditions,
 } from "./gameMasterValidation.js";
 import { buildCuratorInput, candidatesWorthJudging, curateGeneratedEventsWithHidden } from "./nativeTimelineCurator.js";
@@ -18581,7 +18586,7 @@ export const retryHeldPlayerEvents = async ({ keep = false, onEvents, onProgress
 // The AI plans a structured transaction; native code validates it against the
 // live world, shows every operation to the administrator, and only Apply
 // persists exactly that preview. Direct prose execution no longer exists.
-const GAME_MASTER_MODE_SET = new Set(["direct", "exact-event", "world-intervention"]);
+const GAME_MASTER_MODE_SET = new Set(GAME_MASTER_MODES);
 
 const relationPairKeyForHistory = (a, b) => [normalizeString(a), normalizeString(b)]
   .filter(Boolean)
@@ -19109,6 +19114,11 @@ const validateGameMasterPreviewPayload = async (candidate, {
     if (!normalizeString(event?.description)) return `$.events[${index}].description must not be blank.`;
   }
 
+  const statsAuthorityError = validateGameMasterStatsAuthority(candidate, { mode });
+  if (statsAuthorityError) return statsAuthorityError;
+  const finiteEconomicError = validateGameMasterFiniteEconomicInfluences(candidate);
+  if (finiteEconomicError) return finiteEconomicError;
+
   const requestedDateError = validateGameMasterRequestedExactDate(candidate, { mode, request });
   if (requestedDateError) return requestedDateError;
 
@@ -19141,6 +19151,9 @@ const validateGameMasterPreviewPayload = async (candidate, {
     institutionLifecycleAuthority: "admin",
   });
   if (worldChangeError) return worldChangeError;
+
+  const directMutationError = validateGameMasterDirectMutation(candidate, { mode });
+  if (directMutationError) return directMutationError;
 
   const statError = validateGameMasterStatPatches(candidate.countryStatPatches, world, candidate.events);
   if (statError) return statError;
@@ -19352,11 +19365,13 @@ const pruneOrphanedGameMasterHistory = (historyInput, eventsInput) => {
 // Generate and validate a GM transaction WITHOUT persisting it. Preview receives
 // stable transaction/event ids now so Apply persists exactly the object the
 // administrator inspected; Apply never asks the AI to reinterpret it.
-export const previewGameMasterCommand = async (requestText, { mode = "world-intervention" } = {}) => {
+export const previewGameMasterCommand = async (requestText, { mode = GM_AUTO_MODE } = {}) => {
   const request = normalizeString(requestText);
   const selectedMode = normalizeString(mode).toLowerCase();
   if (!request) throw new Error("Enter a GM request first.");
-  if (!GAME_MASTER_MODE_SET.has(selectedMode)) throw new Error(`Unsupported GM mode "${selectedMode}".`);
+  if (selectedMode !== GM_AUTO_MODE && !GAME_MASTER_MODE_SET.has(selectedMode)) {
+    throw new Error(`Unsupported GM mode "${selectedMode}".`);
+  }
 
   beginSimulation();
   try {
@@ -19375,16 +19390,26 @@ export const previewGameMasterCommand = async (requestText, { mode = "world-inte
       agentKind: "gameMaster",
       lookups: buildTaskLookups(bundle),
       userMessage: `Generate a ${selectedMode} GM transaction preview for the administrator request. Do not apply anything.`,
-      validatePayload: (candidate) => validateGameMasterPreviewPayload(candidate, {
-        mode: selectedMode,
-        world: bundle.world,
-        game: bundle.game,
-        request,
-        baseGeographyCatalog,
-      }),
+      validatePayload: (candidate) => {
+        const chosen = selectedMode === GM_AUTO_MODE
+          ? normalizeString(candidate?.mode).toLowerCase() : selectedMode;
+        const routingError = validateGameMasterModeSelection({
+          requestedMode: selectedMode, selectedMode: chosen, request,
+        });
+        if (routingError) return routingError;
+        return validateGameMasterPreviewPayload(candidate, {
+          mode: chosen,
+          world: bundle.world,
+          game: bundle.game,
+          request,
+          baseGeographyCatalog,
+        });
+      },
       variables,
     });
 
+    const effectiveMode = selectedMode === GM_AUTO_MODE
+      ? normalizeString(payload.mode).toLowerCase() : selectedMode;
     const transactionId = createGameMasterTransactionId();
     const storylineUpdates = decodeWorldStorylineUpdates(payload?.storylineUpdates);
     const events = attachStorylineIdsByIndexes(
@@ -19402,10 +19427,16 @@ export const previewGameMasterCommand = async (requestText, { mode = "world-inte
     const agreementUpdates = bindAgreementUpdatesToEvents(decodeAgreementUpdates(payload?.agreementUpdates), events);
     const puppetUpdates = bindPuppetUpdatesToEvents(decodePuppetUpdates(payload?.puppetUpdates), events);
     const countryStatPatches = normalizeGameMasterStatPatches(payload?.countryStatPatches, bundle.world);
+    const statsPreview = buildGameMasterStatsPreview({
+      world: bundle.world, events, countryStatPatches,
+    });
 
     return {
       id: transactionId,
-      mode: selectedMode,
+      mode: effectiveMode,
+      requestedMode: selectedMode,
+      modeReason: normalizeString(payload?.modeReason).slice(0,240),
+      statsPreview,
       request,
       date: bundle.game.gameDate || bundle.game.startDate || "",
       round: bundle.game.round || 0,
@@ -19413,7 +19444,7 @@ export const previewGameMasterCommand = async (requestText, { mode = "world-inte
       summary: normalizeString(payload?.summary),
       transaction: {
         id: transactionId,
-        mode: selectedMode,
+        mode: effectiveMode,
         summary: normalizeString(payload?.summary),
         events,
         countryStatPatches,
@@ -19443,6 +19474,10 @@ export const applyGameMasterPreview = async (preview) => {
     throw new Error("This GM preview is missing its transaction identity. Generate a fresh preview.");
   }
   if (!GAME_MASTER_MODE_SET.has(mode)) throw new Error(`Unsupported GM mode "${mode}".`);
+  const routingError = validateGameMasterModeSelection({
+    requestedMode: preview?.requestedMode || mode, selectedMode: mode, request,
+  });
+  if (routingError) throw new Error(`GM mode authorization failed: ${routingError}`);
   if (!normalizeString(preview?.baseFingerprint)) {
     throw new Error("This preview carries no safety fingerprint. Generate a fresh preview before applying.");
   }

@@ -9,10 +9,78 @@ import { compareGameDates, normalizeGameDate } from "../../runtime/gameDates.js"
 import { normalizeEvents, normalizeWorldState } from "../../runtime/gameState.js";
 import { toCountryName } from "../../runtime/ownerNames.js";
 import { resolvePolityIdentity } from "../../runtime/polityIdentity.js";
+import { validateFiniteEconomicInfluenceForm } from "../../runtime/statsEventEffects.js";
 
 const normalizeString = (value) => String(value ?? "").trim();
 const normalizeArray = (value) => (Array.isArray(value) ? value : []);
 const normalizeGameMasterIsoDate = (value) => normalizeGameDate(value);
+
+// The Game Master has two fundamentally different authorities:
+// Direct is an explicit admin correction of existing baseline data;
+// Exact Event / World Intervention author narrative consequences. The latter
+// must use bounded, dated statsEffects rather than overwrite a nation's GDP,
+// population or other clock-owned readings with absolute baseline figures.
+// Evaluate both when previewing and when revalidating immediately before Apply.
+export const validateGameMasterStatsAuthority = (candidate, { mode } = {}) => {
+  if (mode === "direct") return "";
+  if (mode !== "exact-event" && mode !== "world-intervention") return "";
+  if (normalizeArray(candidate?.countryStatPatches).length) {
+    return "$.countryStatPatches is reserved for authoritative baseline corrections in Direct mode. World interventions and authored events must use dated, typed polityChanges[].statsEffects for evidenced national consequences.";
+  }
+  const clockOwned = new Set(["gdp", "gdpPerCapita", "coreGdpPerCapita",
+    "otherGdpPerCapita", "gdpGrowth", "inflation", "unemployment",
+    "publicDebt", "budgetBalance"]);
+  for (const [eventIndex, event] of normalizeArray(candidate?.events).entries()) {
+    for (const [changeIndex, change] of normalizeArray(event?.impacts?.polityChanges).entries()) {
+      if (normalizeString(change?.operation).toLowerCase() !== "update") continue;
+      const stats = change?.stats;
+      if (!stats || typeof stats !== "object" || Array.isArray(stats)) continue;
+      const absolute = ["population", "territorialComponents", "gdpBreakdown", "continuity"]
+        .some((key) => Object.hasOwn(stats, key))
+        || (stats.economy && typeof stats.economy === "object"
+          && Object.keys(stats.economy).some((key) => clockOwned.has(key)));
+      if (absolute) {
+        return `$.events[${eventIndex}].impacts.polityChanges[${changeIndex}].stats contains absolute native-clock-owned Stats. Use dated, typed statsEffects for an intervention, or Direct mode for an explicitly authorized baseline correction.`;
+      }
+    }
+  }
+  return "";
+};
+
+// A Direct GM request edits current canon; prose-only previews are not a
+// successful operation. In particular, a model must not claim to have corrected
+// GDP while returning empty events, countryStatPatches and every other write
+// family. The same validator runs on the generated preview and again at Apply.
+// Exact Event / World Intervention retain their separate event contracts.
+export const validateGameMasterDirectMutation = (candidate, { mode } = {}) => {
+  if (mode !== "direct") return "";
+  const changeFamilies = [
+    "countryStatPatches", "storylineUpdates", "warUpdates",
+    "relationUpdates", "agreementUpdates", "puppetUpdates",
+    "diplomaticOutreach",
+  ];
+  const hasTopLevelMutation = changeFamilies.some((key) => normalizeArray(candidate?.[key]).length);
+  const hasEventMutation = normalizeArray(candidate?.events)
+    .some((event) => eventHasImpacts(event, EVENT_IMPACT_KEYS));
+  if (hasTopLevelMutation || hasEventMutation) return "";
+  return "Direct GM mode requires at least one actual canonical state-changing operation. An AI summary or prose-only event cannot fulfill an administrative correction. Supply the requested native operation or explicitly report that the correction is unsupported.";
+};
+
+// This is a non-writing admission check. The canonical event writer owns the
+// exact same growth-form validator; the GM must reject malformed finite effects
+// before displaying an approved Preview and again before Apply.
+export const validateGameMasterFiniteEconomicInfluences = (candidate) => {
+  for (const [eventIndex, event] of normalizeArray(candidate?.events).entries()) {
+    for (const [changeIndex, change] of normalizeArray(event?.impacts?.polityChanges).entries()) {
+      if (!change?.statsEffects) continue;
+      const error = validateFiniteEconomicInfluenceForm(change.statsEffects, event?.date);
+      if (error) {
+        return `$.events[${eventIndex}].impacts.polityChanges[${changeIndex}].statsEffects: ${error}. Finite growth causes are production, trade or policy; destruction is reserved for GDP stock damage.`;
+      }
+    }
+  }
+  return "";
+};
 
 export const gameMasterPolityKey = (value) => normalizeString(value).toLowerCase();
 

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { normalizeEvents } from './gameState.js';
 import { buildCountryEconomicCoverage as inspect, createCountryEconomicCoverageReader } from './statsEconomicCoverage.js';
+import { buildNationalEconomicCoverageAudit } from './statsEconomicCoverageAudit.js';
 import { normalizeStatsEconomicEventAccounting, validateGeneratedStatsEconomicAccounting } from './statsEconomicEventAccounting.js';
 
 const date = '2127-11-02';
@@ -38,6 +39,64 @@ test('evidenced national exposure survives canonical event save normalization un
   assert.equal(report.confirmed[0].channel, 'credit');
   assert.equal(report.confirmed[0].sourceStorylineId, 'global-credit-collapse');
   assert.equal(JSON.stringify(world()), snapshot);
+});
+
+test('1912 Ruhr regression: a direct accepted growth effect closes its own evidenced exposure', () => {
+  const event = {
+    id: 'event-ai-r0002-19120208-005', date: '1912-02-08',
+    title: 'A massive wildcat strike erupts among coal miners in the Ruhr valley.',
+    tags: ['Economy'],
+    economicAccounting: { status: 'applied', reason: 'Coal mining and industrial fuel output disrupted.',
+      exposures: [{ polity: 'German Empire', channel: 'production', exposure: 'direct',
+        evidence: 'Total strike action halts coal output across major pits in the Ruhrland region for several weeks.' }] },
+    impacts: { polityChanges: [{ operation: 'update', code: 'German Empire',
+      statsEffects: { annualRealGrowthDelta: -0.2, durationDays: 30,
+        gdpCause: 'production', reason: 'Coal output disruption reduced near-term growth.' } }] },
+  };
+  const receipt = {
+    eventId: event.id, polity: 'German Empire', date: event.date,
+    reason: 'Coal output disruption reduced near-term growth.',
+    process: { eventId: event.id, startDate: event.date, endDate: '1912-03-09',
+      annualRealGrowthDelta: -0.2, cause: 'production' }, changes: [],
+  };
+  const state = { countryStats: { 'German Empire': {}, 'French Republic': {} },
+    statsEventReceipts: [receipt] };
+  const inspectGermany = (worldValue, eventValue = event) => inspect({
+    world: worldValue, events: [eventValue], polity: 'German Empire', date: '1912-03-31',
+  });
+  const result = inspectGermany(state);
+  assert.equal(result.status, 'none');
+  assert.equal(result.confirmedCount, 0);
+  assert.equal(result.assessedCount, 1);
+  const audit = buildNationalEconomicCoverageAudit({ world: state, events: [event], date: '1912-03-31' });
+  assert.equal(audit.status, 'complete');
+  assert.equal(audit.documentedUnresolvedCount, 0);
+  assert.equal(audit.assessedCount, 1);
+  assert.equal(inspectGermany({ ...state, statsEventReceipts: [] }).confirmedCount, 1,
+    'model claim alone does not prove the growth influence was applied');
+  assert.equal(inspectGermany({ ...state, statsEventReceipts: [{ ...receipt, polity: 'French Republic' }] }).confirmedCount, 1,
+    'another country\'s accepted effect cannot close Germany\'s exposure');
+  assert.equal(inspectGermany({ ...state, statsEventReceipts: [{ ...receipt,
+    process: { ...receipt.process, annualRealGrowthDelta: -1 } }] }).confirmedCount, 1,
+    'a mismatched growth influence must not close the disruption');
+  assert.equal(inspectGermany({ ...state, statsEventReceipts: [{ ...receipt,
+    date: '1912-02-09' }] }).confirmedCount, 1,
+    'a differently dated receipt must not be assigned to the original event');
+  const directGdpEvent = { ...event, impacts: { polityChanges: [{
+    code: 'German Empire', statsEffects: { gdpChangePercent: -1, gdpCause: 'production',
+      reason: 'Recorded output loss from the same coal production disruption.' },
+  }] } };
+  const directGdpReceipt = { ...receipt, process: undefined,
+    changes: [{ metric: 'economy.gdp', before: 100000000, after: 99000000 }] };
+  assert.equal(inspectGermany({ ...state, statsEventReceipts: [directGdpReceipt] },
+    directGdpEvent).status, 'none', 'an accepted same-event GDP stock delta also closes output coverage');
+  assert.equal(inspectGermany(state, { ...event, economicAccounting: {
+    ...event.economicAccounting, status: 'unquantified' } }).confirmedCount, 1,
+  'an explicitly unquantified event cannot borrow a receipt to claim coverage');
+  assert.equal(inspectGermany(state, { ...event, impacts: { polityChanges: [{
+    code: 'German Empire', statsEffects: { debtFinancedOutlayPercentGdp: 1,
+      debtFinancedOutlayCause: 'relief', reason: 'Emergency debt financed relief.' } }] } }).confirmedCount, 1,
+  'borrowing is not proof that an industrial output disruption was quantified');
 });
 
 test('multi-country coverage reader preserves independent single-country results without rewriting the world', () => {

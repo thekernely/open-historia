@@ -2307,8 +2307,9 @@ export const GAME_MASTER_SCHEMA = {
     mode: {
       type: "string",
       enum: ["direct", "exact-event", "world-intervention"],
-      description: "GM mode selected by the administrator.",
+      description: "Actual selected GM mode. In Auto, choose one of these three modes; never return auto.",
     },
+    modeReason: textSchema("Brief reason Auto selected this mode; an explanation only, never an authorization."),
     summary: textSchema("Concise explanation of what this transaction would change if applied."),
     events: {
       type: "array",
@@ -2413,6 +2414,7 @@ export const GAME_MASTER_TRANSPORT_SCHEMA = {
       type: "string",
       enum: ["direct", "exact-event", "world-intervention"],
     },
+    modeReason: textSchema("Why this mode fits the GM request (one sentence); descriptive only."),
     summary: textSchema("Concise explanation of what the transaction would change if applied."),
     eventsJson: textSchema("JSON array text for canonical event objects. Use [] when none."),
     territorialScopesJson: textSchema("JSON array text for exhaustive rendered base-geography territorial scopes. Use [] when none."),
@@ -2522,6 +2524,7 @@ export const decodeGameMasterTransportPayload = (value) => {
     const payload = {
       mode: String(value.mode ?? "").trim(),
       summary: String(value.summary ?? "").trim(),
+      ...(typeof value.modeReason === "string" ? { modeReason: value.modeReason.trim() } : {}),
     };
     for (const [field, key] of GAME_MASTER_TRANSPORT_FIELDS) {
       payload[key] = parseGameMasterTransportArray(value[field], field);

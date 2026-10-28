@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mergeCountryStatPatch } from "./countryStats.js";
-import { planStatsEventEffect } from "./statsEventEffects.js";
+import { planStatsEventEffect, validateFiniteEconomicInfluenceForm } from "./statsEventEffects.js";
 import { appendAcceptedStatsReceipt, normalizeStatsEventReceipts } from "./statsEventReceipts.js";
 
 const base = () => mergeCountryStatPatch(null, {
@@ -35,6 +35,21 @@ test("typed GDP destruction scales canonical production rather than a separate n
   assert.ok(Math.abs(after.economy.publicDebt * after.economy.gdp
     - before.economy.publicDebt * before.economy.gdp) < before.economy.gdp * .00005,
     "debt ratio rounding is bounded to half of its 0.0001-point precision");
+});
+
+test("GM preview and accepted writer share the finite growth cause boundary", () => {
+  const bank = { annualRealGrowthDelta: -2.5, durationDays: 180,
+    gdpCause: "destruction", reason: "Bank liquidity freeze" };
+  const date = "2026-01-01";
+  const error = "Finite economic influence needs a dated, bounded duration and cause";
+  assert.equal(validateFiniteEconomicInfluenceForm(bank, date), error);
+  assert.throws(() => plan(bank, { eventDate: date }), new RegExp(error));
+  const trade = { ...bank, gdpCause: "trade" };
+  assert.equal(validateFiniteEconomicInfluenceForm(trade, date), "");
+  assert.ok(plan(trade, { eventDate: date }).process,
+    "the accepted native writer must permit a valid dated trade growth influence");
+  assert.equal(validateFiniteEconomicInfluenceForm({ durationDays: 50 }, date),
+    "Economic duration requires a finite influence");
 });
 
 test("signed causes, bounds, shape and conflicting absolute patches fail closed", () => {

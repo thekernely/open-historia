@@ -89,6 +89,31 @@ test("the answer's requestedSubordination overrides an English false positive", 
   assert.equal(gameMasterRequestAsksForPuppet({ requestedSubordination: false }, request), false);
 });
 
+test("an unequivocal native puppet installation cannot be suppressed by a mistaken AI false flag", () => {
+  for (const request of [
+    "Make Belgium a puppet state of Germany.",
+    liveRequest,
+    "Install Estonia as a protectorate under Sweden.",
+    "Make Belgium a puppet state of Germany. Release all prisoners.",
+  ]) {
+    assert.equal(gameMasterRequestAsksForPuppet({ requestedSubordination: false }, request), true, request);
+    assert.match(validateGameMasterRequestedPuppetCompleteness({
+      requestedSubordination: false, puppetUpdates: [],
+    }, { request }), /no install operation/i, request);
+    assert.equal(validateGameMasterRequestedPuppetCompleteness({
+      requestedSubordination: false, puppetUpdates: [install],
+    }, { request }), "", request);
+  }
+  for (const request of [
+    "Do not make Belgium a puppet state of Germany.",
+    "Record a speech: Make Belgium a puppet state of Germany.",
+    "Make Belarus a satellite state of Russia no more than a week after the treaty.",
+    "Make Belarus independent of Russia and end its puppet status.",
+  ]) {
+    assert.equal(gameMasterRequestAsksForPuppet({ requestedSubordination: false }, request), false, request);
+  }
+});
+
 test("without the field the English patterns still decide", () => {
   assert.equal(gameMasterRequestAsksForPuppet({ puppetUpdates: [] }, liveRequest), true);
   assert.equal(gameMasterRequestAsksForPuppet({}, "Do not make Lithuania a puppet state of Latvia."), false);

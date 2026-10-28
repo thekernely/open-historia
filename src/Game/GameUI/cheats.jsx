@@ -3214,7 +3214,7 @@ const PuppetStatesView = ({ meta, header, busy, status, game, polities, runBusy,
 const ToolView = ({ tool, header, busy, status, game, polities, refresh, runBusy, beginClickMode, endClickMode, setStatus, navigateTool, closePanel }) => {
     const meta = TOOLS.find((entry) => entry.id === tool);
     const [text, setText] = useState("");
-    const [gmMode, setGmMode] = useState("world-intervention");
+    const [gmMode, setGmMode] = useState("auto");
     const [gmPreview, setGmPreview] = useState(null);
     const [gmApplyResult, setGmApplyResult] = useState(null);
     const [gmExpandedSections, setGmExpandedSections] = useState({});
@@ -3500,6 +3500,17 @@ const ToolView = ({ tool, header, busy, status, game, polities, refresh, runBusy
         const claimOps = eventOps("regionClaims");
         const controlOps = eventOps("regionControlOps");
         const polityOps = eventOps("polityChanges");
+        const gmStatsRows = Array.isArray(gmPreview?.statsPreview?.rows) ? gmPreview.statsPreview.rows : [];
+        const gmStatsCount = gmPreview?.statsPreview ? gmStatsRows.length
+            : statPatches.length + polityOps.filter((op) => op.stats || op.statsEffects).length;
+        const seenAbsoluteStats = new Set();
+        const conflictingStats = gmStatsRows.filter((row) => {
+            if (row.kind !== "absolute") return false;
+            const key = `${row.country}:${row.field}`;
+            if (seenAbsoluteStats.has(key)) return true;
+            seenAbsoluteStats.add(key);
+            return false;
+        });
         const politicalOps = eventOps("politicalActorOps");
         const unitOps = eventOps("unitOps");
         const markerOps = eventOps("markerOps");
@@ -3565,6 +3576,11 @@ const ToolView = ({ tool, header, busy, status, game, polities, refresh, runBusy
 
         const modeOptions = [
             {
+                id: "auto",
+                title: "Auto · Recommended",
+                description: "Describe the change freely. The GM picks a validated mode before preview.",
+            },
+            {
                 id: "direct",
                 title: "Direct / OOC correction",
                 description: "Exact canonical/admin edits with the smallest possible scope.",
@@ -3617,7 +3633,7 @@ const ToolView = ({ tool, header, busy, status, game, polities, refresh, runBusy
                 <label style={labelStyle}>Mode</label>
                 {/* One per row on a phone: a third of the panel squeezed each
                     mode's description into a column a word or two wide. */}
-                <div style={{ display: "grid", gap: "0.4rem", gridTemplateColumns: isMobile ? "minmax(0, 1fr)" : "repeat(3, minmax(0, 1fr))", marginBottom: "0.7rem" }}>
+                <div style={{ display: "grid", gap: "0.4rem", gridTemplateColumns: isMobile ? "minmax(0, 1fr)" : "repeat(2, minmax(0, 1fr))", marginBottom: "0.7rem" }}>
                     {modeOptions.map((option) => {
                         const active = gmMode === option.id;
                         return (
@@ -3650,8 +3666,10 @@ const ToolView = ({ tool, header, busy, status, game, polities, refresh, runBusy
                 <textarea
                     value={text}
                     onChange={(event) => { setText(event.target.value); setGmPreview(null); setGmApplyResult(null); setGmExpandedSections({}); }}
-                    placeholder={gmMode === "direct"
-                        ? 'Example: "Germany should have a population of 72 million and GDP of €500 billion. Do not add a timeline event."'
+                    placeholder={gmMode === "auto"
+                        ? 'Example: "A Berlin bank collapses, triggering a prolonged German financial panic. Let the game reflect the consequences over time."'
+                        : gmMode === "direct"
+                            ? 'Example: "Germany should have a population of 72 million and GDP of €500 billion. Do not add a timeline event."'
                         : gmMode === "exact-event"
                             ? 'Example: "On 4 March 1927 Britain and Germany sign a naval consultation accord. Make it major and notable, create the agreement, and set relations to +45."'
                             : 'Example: "Russia enters a constitutional crisis; Finland gains broad autonomy, Polish unrest spreads, Nicholas II replaces the government, and Russia asks Germany for consultations."'}
@@ -3691,7 +3709,7 @@ const ToolView = ({ tool, header, busy, status, game, polities, refresh, runBusy
                             <div>
                                 <div style={{ color: gmApplied ? "#86efac" : "#93c5fd", fontSize: "0.65rem", fontWeight: 800, letterSpacing: "0.08em" }}>{gmApplied ? "APPLIED · CANON UPDATED" : "PREVIEW ONLY · NOTHING CHANGED"}</div>
                                 <div style={{ color: "rgba(255,255,255,0.42)", fontSize: "0.62rem", marginTop: "0.16rem" }}>
-                                    {gmPreview.date || "Current date"} · {gmPreview.mode} · source {gmPreview?.generation?.source || "unknown"}
+                                    {gmPreview.date || "Current date"} · {gmPreview.requestedMode === "auto" ? `Auto → ${modeOptions.find((option) => option.id === gmPreview.mode)?.title || gmPreview.mode}` : gmPreview.mode} · source {gmPreview?.generation?.source || "unknown"}
                                 </div>
                             </div>
                             <span style={{ border: "1px solid rgba(74,222,128,0.25)", borderRadius: 999, color: "#86efac", fontSize: "0.62rem", padding: "0.2rem 0.42rem" }}>
@@ -3699,6 +3717,11 @@ const ToolView = ({ tool, header, busy, status, game, polities, refresh, runBusy
                             </span>
                         </div>
 
+                        {gmPreview.requestedMode === "auto" && (
+                            <div style={{ color: "#bfdbfe", fontSize: "0.71rem", lineHeight: 1.45, marginTop: "0.55rem" }}>
+                                <strong>Auto mode selected:</strong> {modeOptions.find((option) => option.id === gmPreview.mode)?.title || gmPreview.mode}. {gmPreview.modeReason || "This existing GM mode will govern every operation in the preview; native validation still applies."}
+                            </div>
+                        )}
                         <div style={{ color: "rgba(255,255,255,0.82)", fontSize: "0.75rem", lineHeight: 1.45, marginTop: "0.55rem" }}>
                             {gmPreview.summary || "No summary returned."}
                         </div>
@@ -3711,7 +3734,7 @@ const ToolView = ({ tool, header, busy, status, game, polities, refresh, runBusy
                             {countChip("polities", impactCounts.polities)}
                             {countChip("politics", impactCounts.politics)}
                             {countChip("institutions", impactCounts.institutions)}
-                            {countChip("stats", statPatches.length)}
+                            {countChip("stats", gmStatsCount)}
                             {countChip("storylines", storylineUpdates.length)}
                             {countChip("units", impactCounts.units)}
                             {countChip("markers", impactCounts.markers)}
@@ -3723,6 +3746,34 @@ const ToolView = ({ tool, header, busy, status, game, polities, refresh, runBusy
                             {countChip("chats", impactCounts.chats + outreach.length)}
                             {impactCounts.other > 0 && countChip("other", impactCounts.other)}
                         </div>
+
+                        {gmStatsRows.length > 0 && (
+                            <div data-gm-stats-summary="true" style={{ marginTop: "0.7rem" }}>
+                                {subsectionTitle("All Stats changes", gmStatsRows.length, "read-only · before Apply")}
+                                <div style={{ color: "rgba(255,255,255,0.46)", fontSize: "0.63rem", lineHeight: 1.4, marginBottom: "0.32rem" }}>
+                                    Absolute changes show the current canonical reading and proposed replacement. Dated effects show the proposed change, not a fabricated final GDP.
+                                </div>
+                                {conflictingStats.length > 0 && (
+                                    <div style={{ ...exactRowStyle, borderColor: "rgba(251,191,36,0.45)", color: "#fcd34d" }}>
+                                        Multiple operations replace the same country's Stats field. Event impacts apply before direct baseline patches; inspect both operations before Apply.
+                                    </div>
+                                )}
+                                {visibleOperationRows("all-stats", gmStatsRows).map((row, index) => (
+                                    <div key={`gm-stats-${row.country}-${row.field}-${index}`} style={exactRowStyle}>
+                                        <strong style={{ color: "rgba(255,255,255,0.88)" }}>{row.country} · {row.field}</strong>
+                                        <span style={{ color: "rgba(147,197,253,0.72)" }}> · {row.source}</span>
+                                        {Number.isInteger(row.eventIndex) && <span style={{ color: "rgba(255,255,255,0.36)" }}> · event {row.eventIndex}</span>}
+                                        <div style={{ color: row.kind === "absolute" ? "rgba(251,191,36,0.94)" : "rgba(191,219,254,0.9)", marginTop: "0.18rem" }}>
+                                            {row.kind === "effect"
+                                                ? <>Current reading: {row.before} · Proposed dated effect: {row.proposed} · not a final reading</>
+                                                : <>{row.before} → {row.proposed}</>}
+                                        </div>
+                                        {row.reason && <div style={{ color: "rgba(255,255,255,0.46)", marginTop: "0.14rem" }}>{row.reason}</div>}
+                                    </div>
+                                ))}
+                                {operationExpander("all-stats", gmStatsRows.length)}
+                            </div>
+                        )}
 
                         {events.length > 0 && (
                             <div style={{ marginTop: "0.7rem" }}>

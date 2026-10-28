@@ -6,6 +6,7 @@
 // wrong acceptance keeps a bad one for good.
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -15,8 +16,130 @@ import {
   validateGameMasterBreakawaySovereignty,
   validateGameMasterChronology,
   validateGameMasterPolityLifecycle,
+  validateGameMasterStatsAuthority,
+  validateGameMasterDirectMutation,
+  validateGameMasterFiniteEconomicInfluences,
   verifyGameMasterTerritoryPostconditions,
 } from "./gameMasterValidation.js";
+
+test("GM intervention must not turn a financial catastrophe into an absolute GDP baseline edit", () => {
+  const crisis = {
+    events: [{ date: "1912-03-31", title: "Berlin banking panic",
+      impacts: { polityChanges: [] } }],
+    countryStatPatches: [{ country: "German Empire",
+      patch: { stability: 62, economy: { gdp: 515000000000 } },
+      eventIndexes: [0], reason: "Bank collapse" }],
+  };
+  for (const mode of ["world-intervention", "exact-event"]) {
+    assert.match(validateGameMasterStatsAuthority(crisis, { mode }),
+      /countryStatPatches.*Direct mode/,
+      "a narrative GM event must not authorize a macro baseline override");
+  }
+  assert.equal(validateGameMasterStatsAuthority(crisis, { mode: "direct" }), "",
+    "explicit Direct mode retains the baseline correction tool");
+  const typed = { events: [{ date: "1912-03-31", title: "Banking panic",
+    impacts: { polityChanges: [{ operation: "update", code: "German Empire",
+      statsEffects: { annualRealGrowthDelta: -3, durationDays: 45,
+        gdpCause: "trade", reason: "Temporary interbank credit freeze." } }] } }],
+    countryStatPatches: [] };
+  assert.equal(validateGameMasterStatsAuthority(typed, { mode: "world-intervention" }), "",
+    "native bounded event effects remain usable by a GM intervention");
+  const illicitEvent = { ...typed, events: [{ ...typed.events[0],
+    impacts: { polityChanges: [{ operation: "update", code: "German Empire",
+      stats: { economy: { gdp: 515000000000 } } }] } }] };
+  assert.match(validateGameMasterStatsAuthority(illicitEvent, { mode: "world-intervention" }),
+    /polityChanges.*absolute.*Stats/,
+    "same absolute GDP must not bypass the guard through event polityChanges.stats");
+  assert.equal(validateGameMasterStatsAuthority(illicitEvent, { mode: "direct" }), "",
+    "Direct corrections retain the existing whole-polity administrative path");
+  const currencyEvent = { ...typed, events: [{ ...typed.events[0],
+    impacts: { polityChanges: [{ operation: "update", code: "German Empire",
+      stats: { economy: { currency: "German mark" } } }] } }] };
+  assert.equal(validateGameMasterStatsAuthority(currencyEvent, { mode: "world-intervention" }), "",
+    "currency denomination is not a numeric GDP/macro re-baseline");
+  const populationEvent = { ...typed, events: [{ ...typed.events[0],
+    impacts: { polityChanges: [{ operation: "update", code: "German Empire",
+      stats: { population: { total: 78108988 } } }] } }] };
+  assert.match(validateGameMasterStatsAuthority(populationEvent, { mode: "world-intervention" }),
+    /absolute native-clock-owned Stats/,
+    "population must not bypass the same event/baseline boundary");
+});
+
+test("GM Direct mode must reject the real Auto GDP-preview no-op, without weakening valid corrections", () => {
+  const empty = {
+    mode: "direct",
+    summary: "Set Bolivarian Republic of Venezuela's GDP baseline.",
+    events: [],
+    countryStatPatches: [], storylineUpdates: [], warUpdates: [],
+    relationUpdates: [], agreementUpdates: [], puppetUpdates: [],
+    diplomaticOutreach: [],
+  };
+  assert.match(validateGameMasterDirectMutation(empty, { mode: "direct" }),
+    /Direct.*canonical.*operation/i);
+  assert.match(validateGameMasterDirectMutation({
+    ...empty, events: [{ title: "Pretend correction", description: "GDP is fixed.",
+      impacts: {} }],
+  }, { mode: "direct" }), /Direct.*canonical.*operation/i,
+  "mere event prose is not proof that a baseline correction occurred");
+  assert.equal(validateGameMasterDirectMutation({
+    ...empty,
+    countryStatPatches: [{ country: "German Empire", patch: { economy: { gdp: 170000000000 } } }],
+  }, { mode: "direct" }), "", "native Direct Stats correction remains available");
+  assert.equal(validateGameMasterDirectMutation({
+    ...empty, events: [{ impacts: { polityChanges: [{ operation: "update", code: "Germany",
+      stats: { stability: 65 } }] } }],
+  }, { mode: "direct" }), "", "legitimate event-embedded canonical mutation is accepted");
+  assert.equal(validateGameMasterDirectMutation({
+    ...empty, storylineUpdates: [{ id: "storyline-1", op: "create" }],
+  }, { mode: "direct" }), "", "a real storyline update also counts as mutation");
+  assert.equal(validateGameMasterDirectMutation(empty, { mode: "exact-event" }), "",
+    "event/World Intervention requirements remain owned by their existing validators");
+});
+
+test("GM Preview rejects finite growth influence cause that canonical Apply rejects", () => {
+  // The real Gemini banking intervention passed Preview with "destruction" as
+  // a 180-day growth influence; Apply subsequently rejected it before writes.
+  const crisis = { events: [{
+    date: "2026-01-01", title: "Banking Panic in Caracas",
+    impacts: { polityChanges: [{
+      code: "Bolivarian Republic of Venezuela", operation: "update",
+      statsEffects: { annualRealGrowthDelta: -2.5, durationDays: 180,
+        gdpCause: "destruction", reason: "Banking liquidity freeze." },
+    }] },
+  }] };
+  assert.match(validateGameMasterFiniteEconomicInfluences(crisis),
+    /Finite economic influence needs a dated, bounded duration and cause/);
+  const fixed = structuredClone(crisis);
+  fixed.events[0].impacts.polityChanges[0].statsEffects.gdpCause = "trade";
+  assert.equal(validateGameMasterFiniteEconomicInfluences(fixed), "");
+  const noDuration = structuredClone(fixed);
+  delete noDuration.events[0].impacts.polityChanges[0].statsEffects.durationDays;
+  assert.match(validateGameMasterFiniteEconomicInfluences(noDuration), /Finite economic influence/);
+  const orphanDuration = structuredClone(fixed);
+  delete orphanDuration.events[0].impacts.polityChanges[0].statsEffects.annualRealGrowthDelta;
+  assert.match(validateGameMasterFiniteEconomicInfluences(orphanDuration), /Economic duration requires/);
+});
+
+test("GM Preview/Apply share the canonical finite influence preflight", () => {
+  const source = readFileSync(new URL("./gameplay.js", import.meta.url), "utf8");
+  assert.ok(source.includes("validateGameMasterFiniteEconomicInfluences(candidate)"));
+  assert.ok(source.includes("const validationError = await validateGameMasterPreviewPayload(candidate, {"),
+    "the GM Apply path reuses the same Preview validation");
+});
+
+test("GM preview and Apply both enforce non-empty Direct canonical state changes", () => {
+  const source = readFileSync(new URL("./gameplay.js", import.meta.url), "utf8");
+  assert.match(source, /validateGameMasterDirectMutation\(candidate, \{ mode \}\)/);
+  assert.match(source, /const validationError = await validateGameMasterPreviewPayload\(candidate, \{/,
+    "the Apply path reuses the same semantic validation");
+});
+
+test("GM preview and Apply both enforce the same native Stats authority contract", () => {
+  const source = readFileSync(new URL("./gameplay.js", import.meta.url), "utf8");
+  assert.match(source, /const statsAuthorityError = validateGameMasterStatsAuthority\(candidate, \{ mode \}\)/);
+  assert.match(source, /const validationError = await validateGameMasterPreviewPayload\(candidate, \{/,
+    "Apply must revalidate the identical transaction against the live canonical world");
+});
 
 const polityChange = (operation, code, extra = {}) => ({ operation, code, ...extra });
 const withChanges = (...changes) => ({ events: [{ date: "1915-06-01", title: "Edit", impacts: { polityChanges: changes } }] });

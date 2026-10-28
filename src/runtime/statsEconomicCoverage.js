@@ -3,7 +3,7 @@
  * quantified effects. Never derive numerical macro impacts from these rows.
  */
 import { buildOwnerAliasMap, canonicalOwnerName } from './ownerNames.js';
-import { compareGameDates, isCanonicalGameDate } from './gameDates.js';
+import { compareGameDates, diffGameDays, isCanonicalGameDate } from './gameDates.js';
 import { normalizeStatsEconomicEventAccounting } from './statsEconomicEventAccounting.js';
 import { normalizeStatsEventReceipts } from './statsEventReceipts.js';
 import { normalizeStatsCrisisEstimate, estimateGrowthLimit } from './statsCrisisEstimate.js';
@@ -28,6 +28,36 @@ const hasRetainedAssessment = (effect) => {
       ? effect.gdpCause !== 'trade' : effect.gdpCause !== 'production')
     || typeof effect.reason !== 'string' || effect.reason.trim().length < 12) return false;
   return true;
+};
+
+// A direct, already-accepted economic change is an assessment of its OWN
+// documented national exposure. A claim of "applied" alone is not evidence:
+// require a matching native receipt for this event, date and polity, plus the
+// GDP/growth operation that receipt actually records. Borrowing, demographics,
+// stability and changes in other countries cannot close output-loss coverage.
+// Follow-up estimates of OTHER events retain their separate source-linked rules.
+const hasAcceptedDirectEconomicEffect = (event, polity, receipts, resolve) => {
+  if (event?.economicAccounting?.status !== 'applied') return false;
+  const matching = array(receipts).filter((row) =>
+    row.eventId === event.id && row.date === event.date && resolve(row.polity) === polity);
+  if (matching.length !== 1) return false;
+  const receipt = matching[0];
+  return array(event?.impacts?.polityChanges).some((change) => {
+    if (resolve(change?.code) !== polity) return false;
+    const effect = change?.statsEffects;
+    if (!effect || typeof effect !== 'object' || Array.isArray(effect)) return false;
+    const process = receipt.process;
+    const growth = Number.isFinite(effect.annualRealGrowthDelta)
+      && effect.annualRealGrowthDelta !== 0 && Number.isInteger(effect.durationDays)
+      && process?.eventId === event.id && process.startDate === event.date
+      && process.annualRealGrowthDelta === effect.annualRealGrowthDelta
+      && process.cause === effect.gdpCause
+      && diffGameDays(process.startDate, process.endDate) === effect.durationDays;
+    const gdp = Number.isFinite(effect.gdpChangePercent)
+      && effect.gdpChangePercent !== 0 && receipt.changes.some((row) =>
+        row.metric === 'economy.gdp' && Number.isFinite(row.delta) && row.delta !== 0);
+    return growth || gdp;
+  });
 };
 
 // An accepted, retained event supplies evidence after the bounded receipt
@@ -92,10 +122,16 @@ export const createCountryEconomicCoverageReader = ({
   const sources = new Map(array(world.storylines)
     .filter((source) => sourceCounts.get(token(source?.id)) === 1)
     .map((source) => [source.id, source]));
-  const assessedReceipts = normalizeStatsEventReceipts(world.statsEventReceipts)
-    .filter((receipt) => receipt.assessesUnquantifiedEventId
-      && isCanonicalGameDate(receipt.date)
-      && compareGameDates(receipt.date, date) <= 0);
+  const acceptedReceipts = normalizeStatsEventReceipts(world.statsEventReceipts)
+    .filter((receipt) => compareGameDates(receipt.date, date) <= 0);
+  const directReceiptsByEvent = new Map();
+  for (const receipt of acceptedReceipts) {
+    const rows = directReceiptsByEvent.get(receipt.eventId) || [];
+    rows.push(receipt);
+    directReceiptsByEvent.set(receipt.eventId, rows);
+  }
+  const assessedReceipts = acceptedReceipts.filter((receipt) =>
+    receipt.assessesUnquantifiedEventId);
   // One shared retained-event assessment index also drives the AI follow-up
   // briefing, so receipt pruning cannot make a country look unassessed there.
   const assessedHistory = indexRetainedEconomicAssessments({
@@ -144,7 +180,12 @@ export const createCountryEconomicCoverageReader = ({
     const resolvedAfterPruning = array(assessedHistory.get(id)).some((row) =>
       row.polity === target && compareGameDates(row.date, eventDate) > 0
       && linked.some((source) => source.id === row.sourceId));
-    if (resolvedByReceipt || resolvedAfterPruning) { assessedCount++; continue; }
+    const resolvedInOriginalEvent = Boolean(coverage) && hasAcceptedDirectEconomicEffect(
+      event, target, directReceiptsByEvent.get(id), resolve);
+    if (resolvedInOriginalEvent || resolvedByReceipt || resolvedAfterPruning) {
+      assessedCount++;
+      continue;
+    }
     if (coverage) {
       confirmed.push({ eventId: id, date: eventDate,
         title: token(event.title).slice(0, 120),

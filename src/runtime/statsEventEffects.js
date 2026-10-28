@@ -19,6 +19,24 @@ const DEBT_OUTLAY_CAUSES = new Set(["procurement", "mobilization", "relief", "re
 const has = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
 const record = (value) => value && typeof value === "object" && !Array.isArray(value);
 
+// The model-facing GM Preview and the canonical event writer must agree on
+// whether a dated growth influence is even eligible for the native clock.
+// A one-off destruction of GDP stock is not a valid recurring growth cause.
+export const validateFiniteEconomicInfluenceForm = (effect, eventDate) => {
+  if (!record(effect)) return "";
+  if (!has(effect, "annualRealGrowthDelta")) {
+    return has(effect, "durationDays") ? "Economic duration requires a finite influence" : "";
+  }
+  if (!isCanonicalGameDate(eventDate) || typeof effect.annualRealGrowthDelta !== "number"
+    || !Number.isFinite(effect.annualRealGrowthDelta) || effect.annualRealGrowthDelta === 0
+    || Math.abs(effect.annualRealGrowthDelta) > 20 || !Number.isInteger(effect.durationDays)
+    || effect.durationDays < 1 || effect.durationDays > 730
+    || !["production", "trade", "policy"].includes(effect.gdpCause)) {
+    return "Finite economic influence needs a dated, bounded duration and cause";
+  }
+  return "";
+};
+
 export const planStatsEventEffect = ({ effect, sheet, absoluteStats = null, statSheetDefinition = null, eventId = "", eventDate = "", eventStorylineIds = [], storylines = [], polity = "", receipts = [], historicalEvents = [], resolvePolity = (name) => name } = {}) => {
   // The event applier already owns a rename-safe polity resolver. Reuse it for
   // historical source/receipt identity instead of comparing displayed names.
@@ -175,13 +193,8 @@ export const planStatsEventEffect = ({ effect, sheet, absoluteStats = null, stat
     resolution = { eventId: target, resolvedDate: eventDate, resolvedByEventId: eventId };
   }
   if (finite) {
-    if (!isCanonicalGameDate(eventDate) || typeof effect.annualRealGrowthDelta !== "number"
-      || !Number.isFinite(effect.annualRealGrowthDelta) || effect.annualRealGrowthDelta === 0
-      || Math.abs(effect.annualRealGrowthDelta) > 20 || !Number.isInteger(effect.durationDays)
-      || effect.durationDays < 1 || effect.durationDays > 730
-      || !["production", "trade", "policy"].includes(effect.gdpCause)) {
-      throw new Error("Finite economic influence needs a dated, bounded duration and cause");
-    }
+    const finiteError = validateFiniteEconomicInfluenceForm(effect, eventDate);
+    if (finiteError) throw new Error(finiteError);
     const existing = sheet.continuity?.economicInfluences || [];
     if (shockEstimate && Array.isArray(existing) && existing.some((row) =>
       row?.economicShockEstimate && row.sourceStorylineId === sourceStorylineId
