@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { provenZeroBlockadeDays, planNativeStatsLiveTurn } from "./statsLiveTurnClock.js";
+import { provenZeroBlockadeDays, planNativeStatsLiveTurn, applyNativeDatedBlockadeDay } from "./statsLiveTurnClock.js";
+import { advanceNativeFiscalClock } from "./statsFiscalClock.js";
 import { mergeCountryStatPatch } from "./countryStats.js";
 
 const fixture = () => ({
@@ -254,4 +255,42 @@ test('complete zero naval pressure in an ongoing war preserves peaceful monthly 
   const b = noPressure.afterEvents(wartime, 0);
   assert.deepEqual(b.countryStats.Aland, a.countryStats.Aland);
   assert.deepEqual(b.countryStatsHistory.Aland, a.countryStatsHistory.Aland);
+});
+
+
+test("dated blockade zero-budget transition retires fiscal cursor instead of retroactive debt", () => {
+  // The one-day naval charge exactly extinguishes an otherwise valid fiscal
+  // reading. An old cursor must not later resume for the zero-balance period.
+  const rate = 3 / 365;
+  const initial = fixture();
+  const world = { ...initial, countryStats: { ...initial.countryStats,
+    Aland: mergeCountryStatPatch(initial.countryStats.Aland,
+      { economy: { budgetBalance: rate } }) } };
+  const first = planNativeStatsLiveTurn({ baseWorld: world, fromDate: "1912-01-01",
+    toDate: "1912-01-02", events: [], round: 2 });
+  assert.ok(first);
+  const onJan2 = first.afterEvents(world, 0);
+  assert.ok(onJan2.countryStats.Aland.continuity.fiscalClock);
+  const blockaded = applyNativeDatedBlockadeDay(onJan2, {
+    fromDate: "1912-01-01", toDate: "1912-01-02",
+    blockadeDays: [{ country: "Aland", date: "1912-01-02",
+      pressure: 0.5, covered: 0.5, by: ["Borduria"] }],
+  });
+  const affected = blockaded.countryStats.Aland;
+  assert.equal(affected.economy.budgetBalance, 0);
+  assert.equal(affected.continuity.fiscalClock, undefined,
+    "the old nonzero fiscal accrual cursor cannot remain authoritative at zero balance");
+
+  const oneQuietDay = planNativeStatsLiveTurn({ baseWorld: blockaded,
+    fromDate: "1912-01-02", toDate: "1912-01-03", events: [], round: 3 });
+  assert.ok(oneQuietDay);
+  const quiet = oneQuietDay.afterEvents(blockaded, 0);
+  const restarted = { ...quiet, countryStats: { ...quiet.countryStats,
+    Aland: mergeCountryStatPatch(quiet.countryStats.Aland,
+      { economy: { budgetBalance: rate } }) } };
+  const next = advanceNativeFiscalClock(restarted, {
+    baselineWorld: restarted, fromDate: "1912-01-03", toDate: "1912-01-04",
+  });
+  assert.equal(next.countryStats.Aland.continuity.fiscalClock?.anchorDate, "1912-01-03",
+    "resumed fiscal authority must anchor at the new interval, not accrue through the zero day");
 });

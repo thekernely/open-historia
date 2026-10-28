@@ -203,6 +203,16 @@ export const applyNativeDatedBlockadeDay = (world, step) => {
       economy: { gdp: nextGdp, budgetBalance: budget, ...(debt !== null ? { publicDebt: debt } : {}) },
       ...(fiscalClock ? { continuity: { fiscalClock } } : {}),
     }, { maxAggregateRescale: 10 });
+    // A blockade can bring the annual budget balance to exactly zero. In that
+    // case the old nonzero fiscal clock is no longer authoritative: retaining
+    // it would let a later return to the old rate accrue debt retroactively
+    // across the zero-balance interval. Keep the new GDP and debt settlement,
+    // but retire only that stale cursor when it could not be reanchored.
+    if (oldFiscal && !fiscalClock && oldFiscal.balance !== budget
+      && updated.continuity?.fiscalClock) {
+      updated.continuity = { ...updated.continuity };
+      delete updated.continuity.fiscalClock;
+    }
     if (!(updated?.economy?.gdp > 0) || !(updated.economy.gdp < gdp)
       || updated.economy.budgetBalance !== budget) throw new Error("Dated blockade did not settle canonical GDP and budget");
     const clock = updated.continuity?.nativeEconomyClock;

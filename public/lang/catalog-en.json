@@ -252,6 +252,7 @@
  "A World in Every Language",
  "A basemap: a picture (.png, .jpg) or a painted map (.geojson, .kml, .zip…). Or a detailed map: a .pmtiles file of picture tiles, up to 500 MB. GeoTIFF files and .pmtiles of vector tiles are shown for the current session only.",
  "A bigger country picker",
+ "A blockade that wipes out a country's budget balance no longer makes later debt calculations count the intervening zero-balance days.",
  "A captured agent dies under interrogation",
  "A captured agent is not always made to say who sent them. One who never talks dies under interrogation, and the trail ends there.",
  "A change in relations was not recorded: both of its sides were the same country.",

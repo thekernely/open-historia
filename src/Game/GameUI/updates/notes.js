@@ -355,6 +355,7 @@ const NEW_UPDATES = [
           "Scenario Statistics now checks generated countries against each other for unusually wide economic-scale differences, shows a review list, and asks before saving flagged figures. It never silently changes historical estimates.",
           "Scenario authors can now save an edited Statistics display sheet without discarding pending country proposals; fictional economic disparities remain reviewable rather than forcing numerical changes.",
           "Standard national Statistics now open in the modern dashboard even when a scenario has not saved a custom layout; authored dashboards still take precedence.",
+          "A blockade that wipes out a country's budget balance no longer makes later debt calculations count the intervening zero-balance days.",
         ],
       },
     ],
