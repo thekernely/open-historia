@@ -86,6 +86,33 @@ export const provenPositiveBlockadeDays = ({ baseWorld, turnFronts, warUpdates =
       from: row?.fromCode, to: row?.toCode })));
   const expectedControl = [...flips, ...authored];
   const actualControl = sea?.controlChronology;
+  // Naval chronology is not sufficient by itself: a front flip must also be
+  // carried by an accepted dated event, or the canonical region-control writer
+  // will never publish it. Its event date must be the actual front-control day;
+  // otherwise monthly occupation history and coastline history would disagree.
+  const frontOps = events.flatMap((event) => arr(event?.impacts?.regionControlOps)
+    .filter((op) => op?.by === "front")
+    .map((op) => ({
+      day: isCanonicalGameDate(event?.date) ? diffGameDays(fromDate, event.date) : NaN,
+      regionId: op.regionId, from: op.fromCode, to: op.toCode, op: op.op,
+    })));
+  if (frontOps.length !== flips.length) return null;
+  const keyOf = (row) => JSON.stringify([row.day, row.regionId, row.from, row.to]);
+  const remaining = new Set();
+  for (const flip of flips) {
+    if (flip?.kind !== "control" || !Number.isInteger(flip.day)
+      || flip.day < 1 || flip.day > diffGameDays(fromDate, toDate)
+      || (flip.date && flip.date !== addGameDays(fromDate, flip.day))
+      || !flip.regionId || !flip.from || !flip.to) return null;
+    const key = keyOf(flip);
+    if (remaining.has(key)) return null;
+    remaining.add(key);
+  }
+  for (const op of frontOps) {
+    const key = keyOf(op);
+    if (op.op !== "control" || !remaining.delete(key)) return null;
+  }
+  if (remaining.size) return null;
   if (expectedControl.length) {
     // Native wartime occupancy growth requires a real map/territorial join,
     // not the implicit assumption that a coast takeover has no GDP cost.

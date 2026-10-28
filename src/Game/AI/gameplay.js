@@ -221,6 +221,7 @@ import { planNativeStatsLiveTurn } from "../../runtime/statsLiveTurnClock.js";
 import { captureNativeEconomicExposureHistory } from "../../runtime/statsEconomicExposure.js";
 import { planNeutralStatsLiveTurn } from "../../runtime/statsNeutralTurnClock.js";
 import { applyTurnFronts, citiesFollowCountries, withBlockadeEconomy, turnBlockades, regionHoldingsOf, forecastTurnFronts, frontsListBlock, frontPlansBlock, frontPowers, frontRegionTest, frontWarJoins, frontWarStarts, frontsLiveBlock, openScenarioFronts, routesIntoOthers, transportWaysFor, readFrontCities, scenarioFrontsPending, warRoomChartFor, warRoomIntelText, withFrontUnits, withoutFrontPowers } from "./frontApply.js";
+import { publishDatedFrontControlEvents } from "./frontControlPublication.js";
 import { withTurnStrikes } from "../../runtime/strikes.js";
 import { playerDiplomacy, turnDays, turnWarAndPeace } from "./warAndPeace.js";
 import { PEACE_BLOCK_HEADING, buildPeaceBlock } from "./peacePrompt.js";
@@ -9027,6 +9028,9 @@ const applySimulationResult = async ({
     existingEvents: priorEvents,
     newEvents: curatedEvents,
     round: (baseGame.round || 1) + 1,
+    // Intervene's accepted journal has already received its canonical IDs.
+    // Preserve them only when the allocator can verify round/date/uniqueness.
+    preserveAcceptedIds: reveal === "shown",
   });
   const freshEvents = canonicalEventIdentity.events;
   if ((result.mode === "jump" || result.mode === "auto") && freshEvents.some((event) => event.economicAccounting)) {
@@ -9127,13 +9131,23 @@ const applySimulationResult = async ({
     strikePlaces: createStrikePlaceReader(baseWorld),
     warUpdates,
   });
-  if (turnFronts) freshEvents.splice(0, freshEvents.length, ...turnFronts.events);
   if (phaseBeforeWar) phases?.enter(phaseBeforeWar);
+  if (turnFronts) {
+    // The front's temporary nearest-narrative carriers are not the dates on
+    // which its regions changed hands. Publish those exact control days before
+    // the canonical event/Statistics fold, keeping public same-day carriers.
+    const dated = publishDatedFrontControlEvents({
+      events: turnFronts.events, flips: turnFronts.flips,
+      fromDate: baseGame.gameDate, toDate: nextGame.gameDate,
+      round: nextGame.round, historicalIds: priorEvents.map((event) => event.id),
+    });
+    freshEvents.splice(0, freshEvents.length, ...dated);
+  }
 
-  // Native Statistics cutover is conditional on complete ZERO blockade
-  // evidence. Unknown/positive naval pressure remains on the original writer
-  // until GDP and fiscal blockade settlement have one agreed dated owner.
-  // Custom scenario stat sheets retain their existing runtime authority.
+  // Native Statistics cutover requires complete dated naval evidence, and
+  // each front control mutation must match its accepted canonical event date.
+  // Unsupported pressure or chronology retains the existing guarded path;
+  // custom scenario stat sheets keep their separate runtime authority.
   let nativeStatsChronology = null;
   let nativeStatsRegionCatalog = null;
   if ((result.mode === "jump" || result.mode === "auto") && Object.keys(baseWorld?.countryStats || {}).length) {

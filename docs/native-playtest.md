@@ -75,6 +75,51 @@ gameplay schema must accept that payload before events reach the reducer.
 An empty `events` list is a **no-event native baseline**; it is not an AI
 assessment of the crisis.
 
+## Guarded wartime neutral-only acceptance (1912)
+
+When a real campaign has ongoing wars but no **independently verified naval
+report**, full-country Statistics settlement is **not authorized**. An explicit
+`--neutral-scope true` permits exactly the same `planNeutralStatsLiveTurn`
+fallback used by production. It calculates only canonical nonbelligerent
+countries and leaves wartime combatants' economic accounts to the production
+war/legacy writer. This does not synthesize missing blockade results.
+
+```powershell
+$game = "server/data/games/1912-a-world-in-balance-session"
+$out = Join-Path $env:LOCALAPPDATA "OpenHistoria\LiveDiagnostics\1912-neutral-new-folder"
+node scripts/native-playtest.mjs --game-dir $game --days 7 --neutral-scope true --out $out
+```
+
+**Verified actual saved campaign:** January 1 to January 8, 1912, 79
+national Statistics sheets, active Italo-Turkish War. **77/79** countries
+advanced by the native neutral-scope clock. The **Kingdom of Italy** and
+**Ottoman Empire** were explicitly excluded: they are **not** claimed to have
+been settled or exposed to zero naval pressure. The separately established
+Austrian Empire display-name migration to Austria-Hungary was preserved; it is
+not a third wartime exclusion.
+
+The report sets `partial=true`, `mode="native-neutral-scope-only"`,
+`nativeSettledCountryCount=77`, names both
+`notNativeSettledCountries`, and marks individual country rows with
+`nativeSettled`. Whole-world all-GDP-increased/all-unemployment-decreased
+observations are explicitly false for a partial run. The CLI refuses full
+saved-game economic comparison on a partial result because it cannot check
+an excluded belligerent's legacy-war settlement against a native-only replay.
+
+Native source security also now requires a purported war participant to be
+established **independently of the war record itself**. The general Political
+World roster includes names found in active wars, so validating war sides
+against that entire roster was circular and could authorize an invented
+belligerent. `statsNeutralTurnClock.js` builds its eligibility list without
+war-derived membership and fails closed on unknown participants, including
+ones with stray legacy countryStats rows.
+
+**Still open:** complete wartime maritime/naval-blockade outcomes for Italy and
+the Ottoman Empire, day-sliced economic consequences and comparison with an
+actual provider-generated full-war turn. The saved 1912 campaign contains no
+dated naval observation for that future turn, so none has been fabricated.
+The original saved state is never modified.
+
 ## Output
 
 - `report.json` — from/to dates, sheet counts, accepted event counts, new

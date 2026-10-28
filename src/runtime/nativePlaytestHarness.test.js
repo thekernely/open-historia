@@ -50,6 +50,9 @@ test("the real native clock runs without an AI provider, preserves all source ob
   assert.equal(first.report.mode, "native-stats-only");
   assert.equal(first.report.providerCalled, false);
   assert.equal(first.report.fullGameplayTurn, false);
+  assert.equal(runNativePlaytest({ ...fixture,
+    turn: { toDate: datePlus, events: [], neutralOnly: true } }).report.partial, false,
+    "the opt-in must never replace a fully supported peaceful native chronology");
   assert.equal(first.report.originalCountryCount, 2);
   assert.equal(first.report.resultingCountryCount, 2);
   assert.equal(first.report.newStatsReceiptCount, 0);
@@ -88,7 +91,87 @@ test("rejects invalid accounting, duplicate events, unsupported war chronology a
   const wartime = { ...fixture, world: { ...fixture.world,
     wars: [{ id: "active-war", status: "active", sideA: ["Aland"], sideB: ["Neutral"] }] } };
   assert.throws(() => runNativePlaytest({ ...wartime,
-    turn: { toDate: datePlus, events: [] } }), /Native full Statistics chronology unavailable/);
+    turn: { toDate: datePlus, events: [] } }), /No unverified full-country fallback/);
+});
+
+test("a wartime neutral-only opt-in advances only verified nonbelligerents and cannot invent zero naval pressure", () => {
+  const fixture = source();
+  fixture.world.ownerCodes.push("Farland");
+  fixture.world.polityOverrides.Farland = { code: "Farland", name: "Farland" };
+  fixture.world.countryStats.Farland = country("Farland");
+  fixture.world.wars = [{ id: "war-1912", status: "active",
+    sideA: ["Aland"], sideB: ["Neutral"] }];
+  const originalHash = digest(fixture);
+  assert.throws(() => runNativePlaytest({ ...fixture,
+    turn: { toDate: datePlus, events: [] } }), /No unverified full-country fallback/);
+  const first = runNativePlaytest({ ...fixture,
+    turn: { toDate: datePlus, events: [], neutralOnly: true } });
+  const second = runNativePlaytest({ ...fixture,
+    turn: { toDate: datePlus, events: [], neutralOnly: true } });
+  assert.deepEqual(first, second);
+  assert.equal(digest(fixture), originalHash);
+  assert.equal(first.report.partial, true);
+  assert.equal(first.report.mode, "native-neutral-scope-only");
+  assert.equal(first.report.nativeSettledCountryCount, 1);
+  assert.deepEqual(first.report.notNativeSettledCountries, ["Aland", "Neutral"]);
+  assert.equal(first.report.resultingCountryCount, 3);
+  assert.equal(first.report.newStatsReceiptCount, 0);
+  assert.equal(first.report.observations.everyCountryGdpIncreased, false);
+  assert.equal(first.snapshot.world.countryStats.Farland.continuity.nativeEconomyClock.lastDate, datePlus);
+  assert.ok(first.snapshot.world.countryStats.Farland.economy.gdp >
+    fixture.world.countryStats.Farland.economy.gdp);
+  for (const belligerent of ["Aland", "Neutral"]) {
+    assert.equal(first.snapshot.world.countryStats[belligerent].economy.gdp,
+      fixture.world.countryStats[belligerent].economy.gdp);
+    assert.equal(first.snapshot.world.countryStats[belligerent].continuity?.nativeEconomyClock,
+      undefined);
+  }
+  const broken = structuredClone(fixture);
+  broken.world.wars[0].sideB = ["Unknown fake polity"];
+  assert.throws(() => runNativePlaytest({ ...broken,
+    turn: { toDate: datePlus, events: [], neutralOnly: true } }),
+  /No unverified full-country fallback/);
+});
+
+test("wartime CLI requires explicit neutral-scope authorization and does not touch the original save", () => {
+  const fixture = source();
+  fixture.world.ownerCodes.push("Farland");
+  fixture.world.polityOverrides.Farland = { code: "Farland", name: "Farland" };
+  fixture.world.countryStats.Farland = country("Farland");
+  fixture.world.wars = [{ id: "war-1912", status: "active",
+    sideA: ["Aland"], sideB: ["Neutral"] }];
+  const root = mkdtempSync(path.join(os.tmpdir(), "oh-wartime-neutral-"));
+  try {
+    const gameDir = path.join(root, "game");
+    mkdirSync(path.join(gameDir, "storage"), { recursive: true });
+    const files = [
+      [path.join(gameDir, "game.json"), fixture.game],
+      [path.join(gameDir, "world.json"), fixture.world],
+      [path.join(gameDir, "storage", "events.json"), fixture.historicalEvents],
+    ];
+    for (const [filename, data] of files) writeFileSync(filename, JSON.stringify(data));
+    const hashes = files.map(([filename]) => digest(readFileSync(filename, "utf8")));
+    const out = path.join(root, "out");
+    assert.throws(() => main(["--game-dir", gameDir, "--days", "7",
+      "--out", out]), /No unverified full-country fallback/);
+    assert.equal(existsSync(out), false);
+    assert.throws(() => main(["--game-dir", gameDir, "--days", "7",
+      "--neutral-scope", "false", "--out", out]), /Usage:/);
+    assert.equal(existsSync(out), false);
+    const response = main(["--game-dir", gameDir, "--days", "7",
+      "--neutral-scope", "true", "--out", out]);
+    assert.equal(response.report.partial, true);
+    assert.deepEqual(response.report.notNativeSettledCountries, ["Aland", "Neutral"]);
+    assert.equal(JSON.parse(readFileSync(path.join(out, "report.json"))).nativeSettledCountryCount, 1);
+    const comparisonOut = path.join(root, "comparison-rejected");
+    assert.throws(() => main(["--game-dir", gameDir, "--days", "7",
+      "--neutral-scope", "true", "--compare-game-dir", gameDir, "--out", comparisonOut]),
+    /Full saved-game economic comparison is unsupported for partial neutral scope/);
+    assert.equal(existsSync(comparisonOut), false);
+    assert.deepEqual(files.map(([filename]) => digest(readFileSync(filename, "utf8"))), hashes);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("read-only game-folder CLI writes only new diagnostic output and refuses overwrites", () => {

@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import { addGameDays, compareGameDates, diffGameDays, isCanonicalGameDate } from "../src/runtime/gameDates.js";
 import { applyEventImpactsToWorld, normalizeEvents, normalizeWorldState } from "../src/runtime/gameState.js";
 import { planNativeStatsLiveTurn } from "../src/runtime/statsLiveTurnClock.js";
+import { planNeutralStatsLiveTurn } from "../src/runtime/statsNeutralTurnClock.js";
 import { validateGeneratedStatsEconomicAccounting } from "../src/runtime/statsEconomicEventAccounting.js";
 import { normalizeGameplayPayload, validateGameplayPayload } from "../src/Game/AI/gameplaySchemas.js";
 import { buildNationalEconomicCoverageAudit } from "../src/runtime/statsEconomicCoverageAudit.js";
@@ -35,6 +36,9 @@ export const runNativePlaytest = ({ game, world, historicalEvents = [], colors =
   }
   if (turn.provider || turn.prompt || turn.model) {
     fail("Provider generation is unsupported by the offline runner; no AI request was made");
+  }
+  if (turn.neutralOnly !== undefined && turn.neutralOnly !== true) {
+    fail("neutralOnly may only be explicitly true; no unsupported automatic wartime fallback");
   }
   if (object(turn.generatedPayload) && turn.events !== undefined) {
     fail("Specify generatedPayload or events, not both");
@@ -72,13 +76,18 @@ export const runNativePlaytest = ({ game, world, historicalEvents = [], colors =
   const beforeWorld = normalizeWorldState(structuredClone(world));
   const beforeNames = Object.keys(beforeWorld.countryStats).sort();
   const round = game.round + 1;
-  const chronology = planNativeStatsLiveTurn({
+  const chronologyArgs = {
     baseWorld: beforeWorld, fromDate, toDate, round, events: eventRows,
     warUpdates: [], turnFronts: null, regionCatalog,
-  });
+  };
+  const full = planNativeStatsLiveTurn(chronologyArgs);
+  const chronology = full || (turn.neutralOnly
+    ? planNeutralStatsLiveTurn(chronologyArgs) : null);
   if (!chronology) {
-    fail("Native full Statistics chronology unavailable for this save/turn (war, blockade, unsupported state or incomplete evidence). Refusing fallback.");
+    fail("Native Statistics chronology unavailable (incomplete war/naval evidence or unsupported state). No unverified full-country fallback.");
   }
+  const nativeSettled = chronology.partial
+    ? new Set(chronology.scopedCountries) : null;
   const settled = applyEventImpactsToWorld({
     world: beforeWorld, colors: structuredClone(colors), events: eventRows,
     historicalEvents, regionCatalog,
@@ -94,15 +103,22 @@ export const runNativePlaytest = ({ game, world, historicalEvents = [], colors =
     const before = beforeWorld.countryStats[name];
     const after = afterWorld.countryStats[afterName];
     if (!after) fail(`Statistics sheet disappeared: ${name}`);
-    if (after.continuity?.nativeEconomyClock?.lastDate !== toDate) {
+    const selected = nativeSettled === null || nativeSettled.has(afterName);
+    if (selected && after.continuity?.nativeEconomyClock?.lastDate !== toDate) {
       fail(`Native GDP cursor did not reach target date: ${afterName}`);
+    }
+    if (nativeSettled && !selected && eventRows.length === 0
+      && (metric(before, "gdp") !== metric(after, "gdp")
+        || metric(before, "unemployment") !== metric(after, "unemployment"))) {
+      fail(`An excluded wartime polity acquired unverified native economic changes: ${afterName}`);
     }
     const previousGdp = metric(before, "gdp");
     const nextGdp = metric(after, "gdp");
     const previousUnemployment = metric(before, "unemployment");
     const nextUnemployment = metric(after, "unemployment");
     return {
-      country: afterName, gdpBefore: previousGdp, gdpAfter: nextGdp,
+      country: afterName, nativeSettled: selected,
+      gdpBefore: previousGdp, gdpAfter: nextGdp,
       gdpDelta: metricChange(previousGdp, nextGdp),
       unemploymentBefore: previousUnemployment,
       unemploymentAfter: nextUnemployment,
@@ -119,7 +135,12 @@ export const runNativePlaytest = ({ game, world, historicalEvents = [], colors =
     world: afterWorld, events: allEvents, date: toDate,
   });
   const report = {
-    schema: "open-historia-native-playtest/1", mode: "native-stats-only",
+    schema: "open-historia-native-playtest/1",
+    mode: chronology.partial ? "native-neutral-scope-only" : "native-stats-only",
+    partial: Boolean(chronology.partial),
+    nativeSettledCountryCount: countryChanges.filter((row) => row.nativeSettled).length,
+    notNativeSettledCountries: countryChanges.filter((row) => !row.nativeSettled)
+      .map((row) => row.country).sort(),
     providerCalled: false, fullGameplayTurn: false, originalInputModified: false,
     fromDate, toDate, round, originalCountryCount: beforeNames.length,
     resultingCountryCount: names.length, proposedEventCount: proposed.length,
@@ -128,9 +149,9 @@ export const runNativePlaytest = ({ game, world, historicalEvents = [], colors =
     countryChanges, coverage,
     observations: {
       everyCountryGdpIncreased: countryChanges.every((row) =>
-        row.gdpDelta !== null && row.gdpDelta > 0),
+        row.nativeSettled && row.gdpDelta !== null && row.gdpDelta > 0),
       everyCountryUnemploymentFell: countryChanges.every((row) =>
-        row.unemploymentDelta !== null && row.unemploymentDelta < 0),
+        row.nativeSettled && row.unemploymentDelta !== null && row.unemploymentDelta < 0),
       noNewCountryStatsReceipts: newReceipts.length === 0,
     },
   };

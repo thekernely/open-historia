@@ -1,5 +1,7 @@
 /*! Open Historia — canonical timeline event identity helpers. */
 
+import { isCanonicalGameDate } from "./gameDates.js";
+
 const norm = (value) => String(value ?? "").trim();
 
 const dateToken = (value) => {
@@ -36,12 +38,44 @@ export const allocateCanonicalTurnEventIds = ({
   existingEvents = [],
   newEvents = [],
   round = 0,
+  preserveAcceptedIds = false,
 } = {}) => {
   const used = new Set(
     (Array.isArray(existingEvents) ? existingEvents : [])
       .map((event) => norm(event?.id))
       .filter(Boolean),
   );
+
+  // Intervene re-applies a journal of events the canonical turn ALREADY
+  // accepted and the player already saw. Do not rebrand a native frontline
+  // capture as an AI event or change a stable reference on replay. This is
+  // deliberately not the normal new-generation path: every retained ID must
+  // belong to this round/date, be unique, and not appear in prior history.
+  // An old or malformed journal keeps the existing remapping behavior.
+  const candidates = Array.isArray(newEvents) ? newEvents : [];
+  if (preserveAcceptedIds && candidates.length) {
+    const seen = new Set();
+    const key = roundToken(round);
+    const retain = candidates.every((event) => {
+      const id = norm(event?.id);
+      const date = norm(event?.date);
+      const day = dateToken(date);
+      const aiPrefix = `event-ai-r${key}-${day}-`;
+      const nativeId = `event-native-front-r${key}-${date.startsWith("-") ? "bce-" : ""}${day}`;
+      const canonical = (isCanonicalGameDate(date)
+        && ((id.startsWith(aiPrefix) && /^\d{3,}$/.test(id.slice(aiPrefix.length)))
+          || (norm(event?.source) === "front" && id === nativeId)));
+      if (!canonical || used.has(id) || seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    });
+    if (retain) {
+      return {
+        events: candidates.map((event) => ({ ...event })),
+        idMap: new Map([...seen].map((id) => [id, id])),
+      };
+    }
+  }
 
   const idMap = new Map();
   let sequence = 0;

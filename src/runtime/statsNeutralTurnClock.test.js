@@ -87,6 +87,28 @@ test('invalid or unknown combatant names and incomplete war records never create
   ]) assert.equal(planNeutralStatsLiveTurn(options), null);
 });
 
+test('a war participant cannot authenticate itself from its own war record', () => {
+  const world = baseline();
+  world.wars[0].sideB = ['Unlisted belligerent'];
+  // The global scenario roster includes war-side names for political
+  // discovery. That inclusion alone must not authorize an economic writer.
+  const reasons = [];
+  const result = planNeutralStatsLiveTurn(args({
+    baseWorld: world,
+    warUpdates: [],
+    turnFronts: null,
+    onReject: (reason) => reasons.push(reason),
+  }));
+  assert.equal(result, null);
+  assert.deepEqual(reasons, ['unknown-established-belligerent']);
+  // A stale Stats ledger row is not an independent political roster member.
+  const withStaleSheet = { ...world,
+    countryStats: { ...world.countryStats, 'Unlisted belligerent': sheet('Unlisted belligerent') } };
+  assert.equal(planNeutralStatsLiveTurn(args({
+    baseWorld: withStaleSheet, warUpdates: [], turnFronts: null,
+  })), null);
+});
+
 test('native and legacy writers coexist in gameplay without asking AI to regenerate neutral Stats', () => {
   const source = readFileSync(new URL('../Game/AI/gameplay.js', import.meta.url), 'utf8');
   assert.match(source, /planNativeStatsLiveTurn\(statsTurnArgs\) \|\| planNeutralStatsLiveTurn\(statsTurnArgs\)/);

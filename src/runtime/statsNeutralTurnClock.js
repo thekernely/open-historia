@@ -25,7 +25,11 @@ const safeScope = ({ baseWorld, turnFronts, warUpdates, events }, onReject = nul
     || !Array.isArray(warUpdates) || (baseWorld.wars != null && !Array.isArray(baseWorld.wars))
     || (baseWorld.blockades != null && !Array.isArray(baseWorld.blockades))
     || (baseWorld.battlefields != null && !Array.isArray(baseWorld.battlefields))) return reject('malformed-canonical-war-or-stats-state');
-  const active = new Set(collectActiveScenarioPolityKeys(baseWorld));
+  // A war record is itself untrusted identity evidence. The general political
+  // roster may include names found ONLY in wars, so using that roster here
+  // would let an invented belligerent authenticate itself and falsely enable
+  // neutral-only GDP accrual. Require independent canonical polity membership.
+  const active = new Set(collectActiveScenarioPolityKeys({ ...baseWorld, wars: [] }));
   const byName = new Map([...active].map((name) => [name.toLowerCase(), name]));
   const resolve = createScenarioPolityResolver(baseWorld);
   const excluded = new Set();
